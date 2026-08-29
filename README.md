@@ -4,13 +4,17 @@
   <img src="assets/icon.png" width="128" height="128" alt="Agent Avatar cat-eared mascot icon">
 </p>
 
+<p align="center">
+  <b>English</b> · <a href="README.zh.md">简体中文</a>
+</p>
+
 **Stop watching a terminal to find out whether your agent is working or waiting for you.**
 
 Agent Avatar puts a Live2D character on your desktop that acts out what your AI coding
 agent is doing — thinking, running a tool, waiting on you, reviewing, stuck — and
 lip-syncs whenever the agent speaks.
 
-> 中文说明见 [README.zh.md](README.zh.md)。
+**macOS 14.2 or newer. Windows is what comes next.**
 
 <p align="center">
   <img src="assets/screenshots/desktop.png" width="900" alt="Agent Avatar on a desktop next to an agent session, the status pill reading Thinking">
@@ -20,15 +24,15 @@ lip-syncs whenever the agent speaks.
 
 ## Pick your agent. Pick your character. Neither one locks you in.
 
-Most desktop mascots are welded to one app and one character. Agent Avatar is the layer
-between the two, and **both ends are swappable**.
+A desktop character usually comes tied to one app and one look. Agent Avatar is the layer
+in between, and **both ends stay yours to choose**.
 
 | Your agent | Your character |
 |---|---|
-| **Five harnesses work out of the box** — Claude Code, Codex, Hermes, DeepSeek Harness, WorkBuddy | **Any Live2D Cubism model** — the one you bought, drew, or downloaded free |
-| **One click to connect**, from inside the app. No terminal, no scripts to find | **Install as many as you like** and switch from the right-click menu whenever you feel like it |
-| **Add your own harness** — the state contract is a documented, tiny [protocol](bridge/README.md) | **Decide how it performs** — map each agent state to a motion of your model, or let its `avatar.json` decide |
-| Run several agents at once; the avatar follows the most recently active, or pin it to one | Use the model's own motions, expressions and lip-sync parameters; nothing has to be authored for us |
+| **Five connectors are built in** — Claude Code, Codex, Hermes, DeepSeek Harness, WorkBuddy | **Most Live2D Cubism 3/4/5 models** — bought, drawn, or downloaded free |
+| **Install one in a click** from inside the app; no terminal. A couple of harnesses need one more step of their own, and the wizard tells you which | **Install as many as you like** and switch from the right-click menu, mid-session |
+| **Add your own harness** — the state contract is a small, documented [protocol](bridge/README.md) | **Loads without any authoring for us**; to give each agent state its own motion, map them in Settings (or ship an `avatar.json`) |
+| Run several agents at once: follow whichever is active, or pin the avatar to one | Models using Cubism 5.1 offscreen compositing are the exception — they are detected and reported, not drawn wrong |
 
 In the middle sits one small standard — the [Bridge Protocol](bridge/README.md) — and a
 single state machine shared by every connector. That is what keeps the two ends
@@ -42,18 +46,19 @@ model, and shipping someone's character without clear permission is not fair to 
 artist. So instead:
 
 - **Don't have one yet?** The first-launch card links straight to
-  [Live2D's free sample models](https://www.live2d.com/en/learn/sample/) — download,
-  extract, drop the folder in. A few minutes.
-- **Already have a favourite?** Use it. Any Cubism 3/4/5 model works, with no extra
-  authoring for us.
+  [Live2D's free sample models](https://www.live2d.com/en/learn/sample/): download,
+  extract, drop the folder in.
+- **Already have a favourite?** Use it. Most Cubism 3/4/5 models load with no extra
+  authoring — the exception is Cubism 5.1 offscreen compositing, which the app detects
+  and reports instead of drawing incorrectly.
 - **Are you a model author willing to let Agent Avatar ship your work?** Please
   [open an issue](https://github.com/joyparkray/agent-avatar/issues) or get in touch —
   you would be credited, with the licence stated plainly.
 
 ## What you get
 
-- **Status at a glance.** Thinking, executing, awaiting input, reviewing, syncing and
-  errors each look different, plus `blocked` and `interrupted` reactions on top.
+- **Stop tabbing back to check.** Whether the run is moving or waiting on you is visible
+  from across the desk — the full state table is below.
 - **A face for voice agents.** Real-time lip sync from system audio, a local audio file
   or a Hermes speech stream — not tied to one voice stack.
 - **Present without being in the way.** Transparent, always-on-top, and clicks pass
@@ -65,10 +70,8 @@ artist. So instead:
 
 ## Your agent works; the avatar performs
 
-A connector reports *what the agent is doing*; the avatar uses your model and settings
-to decide *how to perform it*. They communicate through the lightweight
-[Bridge Protocol](bridge/README.md), so the agent, model and motion mapping can evolve
-independently.
+A connector reports *what the agent is doing*; the avatar decides *how to perform it*
+using your model and your settings.
 
 | Agent state | What you see |
 |---|---|
@@ -93,11 +96,11 @@ Plus two reactions layered on top: `blocked` (permission denied) and `interrupte
 | | |
 |---|---|
 | **Swap characters** | Every installed model is in the menu — switch mid-session, no restart. Hide the ones you are not using. |
-| **Model Gallery** | One screen comparing every model you have installed: canvas size, how many motions and expressions, whether its `avatar.json` mapping is valid. Spot a broken model before it is on your desktop. |
+| **Model Gallery** | One screen comparing every installed model — size, motions, expressions, mapping validity — so you catch a problem before the model is on your desktop. |
 | **Focus Mode** | Show just the bust instead of the whole body, for a smaller footprint. The crop ratio is yours to set. |
-| **Expressions & Motions** | Play any of them from the menu. Click the avatar for a random expression, double-click for a random motion — and you choose which ones are in each pool. |
-| **Idle autonomy** | After N seconds of quiet it looks around and plays motions on its own, from a *separate* pool: a yawn is fine when idle, odd as a reply. Set N to 0 to switch it off. |
-| **Quality and frame rate** | Three render tiers and 30/60 FPS. Lowering quality saves more GPU than lowering frame rate, so the menu says so. |
+| **Expressions & Motions** | Play any from the menu; click for a random expression, double-click for a random motion — and you pick what is in each pool. |
+| **Idle autonomy** | It comes alive on its own after a quiet stretch, from a pool kept separate from the click pool — a yawn suits idling, not a reply. Off with one field. |
+| **Quality and frame rate** | Three render tiers and 30/60 FPS, so an always-on character costs what you are willing to spend on it. |
 | **Where it sits** | Always on top, snap to the bottom edge, center on screen, scale and opacity. |
 | **Eyes follow the cursor** | Optional, and idle autonomy steps aside while it is on. |
 | **Click Through** | The whole window stops catching clicks; hover the character for 3 seconds when you need it back. |
