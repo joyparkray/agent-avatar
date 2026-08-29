@@ -11,6 +11,22 @@ import { loadInventory, loadModelIndex, motionRefs, type ModelInventory } from "
 import { loadManifest } from "./manifest";
 import type { AvatarManifest } from "./types";
 import { language, loadPrefs, UNSUPPORTED_CUBISM_TEXT, type Language } from "./prefs";
+import { installGlobalDiagnostics } from "./diagnostics";
+
+/**
+ * 画廊出错时原来只剩**一片黑**：背景是深色、canvas 空的、没有任何提示，也不落日志
+ * （主窗口有 installGlobalDiagnostics，这里一直没有）。用户只能来问，而我们连问题在哪都不知道。
+ * 现在两件事一起做：写进和主窗口同一个日志文件，并把错误摆到页面上。
+ */
+installGlobalDiagnostics(event => void invoke("log_event", { event: JSON.stringify({ window: "gallery", ...event }) }).catch(() => {}));
+const errorBox = document.getElementById("err")!;
+const showFatal = (what: string, error: unknown): void => {
+  const detail = error instanceof Error ? error.message : String(error);
+  errorBox.textContent = `${what}\n${detail}`;
+  console.error(what, error);
+};
+addEventListener("error", event => showFatal(t9n("画廊出错了", "The gallery hit an error"), (event as ErrorEvent).error ?? (event as ErrorEvent).message));
+addEventListener("unhandledrejection", event => showFatal(t9n("画廊出错了", "The gallery hit an error"), (event as PromiseRejectionEvent).reason));
 
 /** 画廊与右键菜单同一套写法：一处给中英两句，不另建文案表（这里的词条不多）。 */
 let locale: Language = "zh-CN";
@@ -178,8 +194,9 @@ if (!entries.length) {
       app.stage.addChild(cell.model);
       cells.push(cell);
     } catch (error) {
+      // 一个模型坏掉不该让整页只剩黑屏：记下来、显示出来，其余照常渲染
       status.textContent = t9n(`${entry.dir} 加载失败：${String(error).slice(0, 120)}`, `${entry.dir} failed to load: ${String(error).slice(0, 120)}`);
-      console.error(entry.dir, error);
+      showFatal(t9n(`${entry.dir} 加载失败`, `${entry.dir} failed to load`), error);
     }
   }
   layout(cells);

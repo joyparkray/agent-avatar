@@ -110,3 +110,19 @@ describe("empty model onboarding", () => {
     expect(main).toContain("rememberLanguage(next)");
   });
 });
+
+/**
+ * 回归：gallery.html 原来在**普通内联脚本**里 `import("/src/gallery.ts")`。Vite 不把普通脚本
+ * 里的动态 import 当模块打包，而是把 .ts 原样拷进 dist；发布版的静态服务器按扩展名给 MIME，
+ * `.ts` → `application/octet-stream`，浏览器严格 MIME 检查拒绝加载 —— **画廊一片黑**。
+ * dev 下 Vite 现编译，所以只在发布版复现，测试跑不到，靠人肉打开才发现（2026-08-29）。
+ */
+describe("html entries load their script as a module", () => {
+  it.each(["index.html", "gallery.html", "settings.html"])("%s uses <script type=module src=…>", file => {
+    const html = readFileSync(file, "utf8");
+    expect(html).toMatch(/<script type="module" src="\/src\/[a-z-]+\.ts"><\/script>/);
+    // 普通脚本里的动态 import 正是上面那个坑
+    const classic = html.match(/<script(?![^>]*type="module")[^>]*>[\s\S]*?<\/script>/g) ?? [];
+    for (const block of classic) expect(block, `${file} 的普通脚本里不能有 import()`).not.toMatch(/import\(/);
+  });
+});

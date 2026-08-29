@@ -4,22 +4,71 @@
   <img src="assets/icon.png" width="128" height="128" alt="Agent Avatar cat-eared mascot icon">
 </p>
 
-A Live2D character that lives on your desktop and **acts out what your AI coding agent
-is doing** — thinking, running a command, waiting for you, hitting an error — and moves
-its mouth when the agent speaks.
+**Stop watching a terminal to find out whether your agent is working or waiting for you.**
 
-Works with five agent harnesses today: **Claude Code, Codex, Hermes, DeepSeek Harness,
-and WorkBuddy**.
+Agent Avatar puts a Live2D character on your desktop that acts out what your AI coding
+agent is doing — thinking, running a tool, waiting on you, reviewing, stuck — and
+lip-syncs whenever the agent speaks.
 
 > 中文说明见 [README.zh.md](README.zh.md)。
 
+<p align="center">
+  <img src="assets/screenshots/desktop.png" width="900" alt="Agent Avatar on a desktop next to an agent session, the status pill reading Thinking">
+</p>
+
 ---
 
-## What it actually does
+## Pick your agent. Pick your character. Neither one locks you in.
 
-The harness publishes *what it is doing*; the avatar decides *how to perform it*. Those
-two halves talk through one small contract, the [Bridge Protocol](bridge/README.md), so
-neither side needs to know anything about the other.
+Most desktop mascots are welded to one app and one character. Agent Avatar is the layer
+between the two, and **both ends are swappable**.
+
+| Your agent | Your character |
+|---|---|
+| **Five harnesses work out of the box** — Claude Code, Codex, Hermes, DeepSeek Harness, WorkBuddy | **Any Live2D Cubism model** — the one you bought, drew, or downloaded free |
+| **One click to connect**, from inside the app. No terminal, no scripts to find | **Install as many as you like** and switch from the right-click menu whenever you feel like it |
+| **Add your own harness** — the state contract is a documented, tiny [protocol](bridge/README.md) | **Decide how it performs** — map each agent state to a motion of your model, or let its `avatar.json` decide |
+| Run several agents at once; the avatar follows the most recently active, or pin it to one | Use the model's own motions, expressions and lip-sync parameters; nothing has to be authored for us |
+
+In the middle sits one small standard — the [Bridge Protocol](bridge/README.md) — and a
+single state machine shared by every connector. That is what keeps the two ends
+independent: a new harness does not need a new avatar, and a new character does not need
+a new connector.
+
+### About models: why none ships with the app
+
+**No Live2D model is bundled, deliberately.** Redistribution terms differ from model to
+model, and shipping someone's character without clear permission is not fair to the
+artist. So instead:
+
+- **Don't have one yet?** The first-launch card links straight to
+  [Live2D's free sample models](https://www.live2d.com/en/learn/sample/) — download,
+  extract, drop the folder in. A few minutes.
+- **Already have a favourite?** Use it. Any Cubism 3/4/5 model works, with no extra
+  authoring for us.
+- **Are you a model author willing to let Agent Avatar ship your work?** Please
+  [open an issue](https://github.com/joyparkray/agent-avatar/issues) or get in touch —
+  you would be credited, with the licence stated plainly.
+
+## What you get
+
+- **Status at a glance.** Thinking, executing, awaiting input, reviewing, syncing and
+  errors each look different, plus `blocked` and `interrupted` reactions on top.
+- **A face for voice agents.** Real-time lip sync from system audio, a local audio file
+  or a Hermes speech stream — not tied to one voice stack.
+- **Present without being in the way.** Transparent, always-on-top, and clicks pass
+  through everywhere except the character's own silhouette. Full click-through mode is
+  one menu item away, with a 3-second hover to make it interactive again.
+- **Alive when idle.** It glances around and plays motions when nothing is happening,
+  follows your cursor, and yields the instant you interact.
+- **Chinese and English throughout** — interface, status bar, setup guides and errors.
+
+## Your agent works; the avatar performs
+
+A connector reports *what the agent is doing*; the avatar uses your model and settings
+to decide *how to perform it*. They communicate through the lightweight
+[Bridge Protocol](bridge/README.md), so the agent, model and motion mapping can evolve
+independently.
 
 | Agent state | What you see |
 |---|---|
@@ -33,19 +82,33 @@ neither side needs to know anything about the other.
 
 Plus two reactions layered on top: `blocked` (permission denied) and `interrupted`.
 
-Other things it does:
+---
 
-- **Lip sync** from the system audio, an audio file, or a Hermes speech stream — so it
-  moves its mouth for any agent that talks.
-- **Click** for a random expression, **double-click** for a random motion. You choose
-  which ones are in the pool.
-- **Idle autonomy**: after a configurable idle time it looks around and plays motions on
-  its own, and stops the moment you interact.
-- **Eyes follow the cursor**, optionally, even outside the window.
-- **Click-through mode** for keeping it on screen without it ever getting in the way
-  (hover 3 seconds over the character to interact again).
-- Always-on-top, snap-to-bottom, focus crop, scale, opacity, render quality and frame rate.
-- Chinese and English UI.
+## Everything is a right-click away
+
+<p align="center">
+  <img src="assets/screenshots/connectors-and-menu.png" width="900" alt="Settings showing all five connectors connected, next to the avatar's right-click menu">
+</p>
+
+| | |
+|---|---|
+| **Swap characters** | Every installed model is in the menu — switch mid-session, no restart. Hide the ones you are not using. |
+| **Model Gallery** | One screen comparing every model you have installed: canvas size, how many motions and expressions, whether its `avatar.json` mapping is valid. Spot a broken model before it is on your desktop. |
+| **Focus Mode** | Show just the bust instead of the whole body, for a smaller footprint. The crop ratio is yours to set. |
+| **Expressions & Motions** | Play any of them from the menu. Click the avatar for a random expression, double-click for a random motion — and you choose which ones are in each pool. |
+| **Idle autonomy** | After N seconds of quiet it looks around and plays motions on its own, from a *separate* pool: a yawn is fine when idle, odd as a reply. Set N to 0 to switch it off. |
+| **Quality and frame rate** | Three render tiers and 30/60 FPS. Lowering quality saves more GPU than lowering frame rate, so the menu says so. |
+| **Where it sits** | Always on top, snap to the bottom edge, center on screen, scale and opacity. |
+| **Eyes follow the cursor** | Optional, and idle autonomy steps aside while it is on. |
+| **Click Through** | The whole window stops catching clicks; hover the character for 3 seconds when you need it back. |
+| **Audio Source** | System audio, an audio file, or a Hermes speech stream — whichever your setup actually produces. |
+| **Agent State Source** | Follow whichever agent is most recently active, or pin the avatar to one harness. |
+
+<p align="center">
+  <img src="assets/screenshots/desktop-zh.png" width="900" alt="The same setup with a different model and the Chinese interface">
+</p>
+
+<p align="center"><em>Same app, another model, Chinese interface — both are one menu away.</em></p>
 
 ---
 
@@ -104,15 +167,11 @@ Then pick the matching **Agent State Source** in the avatar's right-click menu.
 
 ---
 
-## Right-click menu
+## Settings
 
-Models · Motions · Expressions · Audio Source · Agent State Source · Always on Top ·
-Snap to Bottom · Focus Mode · Eyes Follow Cursor · Click Through · Center on Screen ·
-Settings… · Quit
-
-**Settings** has five tabs: General (language, status bar), Video (scale, opacity, focus
-crop, quality, frame rate), Agent (map each agent state to a motion of your model),
-Behavior (idle autonomy and the random pools) and Models (install, hide, delete).
+Five tabs: **General** (language, status bar), **Video** (scale, opacity, focus crop,
+quality, frame rate), **Agent** (connectors, and a motion for each agent state),
+**Behavior** (idle autonomy and the random pools), **Models** (install, hide, delete).
 
 ---
 

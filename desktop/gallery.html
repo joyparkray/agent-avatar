@@ -20,11 +20,5 @@
 <div id="grid"><div id="stage"></div><div id="cards"></div></div>
 <div id="bar"><button id="framing">Bust</button><span id="status">…</span></div>
 <div id="err"></div>
-<script>
-  const core = document.createElement("script");
-  core.src = "/vendor/live2d-core/live2dcubismcore.min.js";
-  core.onload = () => void import("/src/gallery.ts");
-  core.onerror = () => document.getElementById("err").textContent = "Cubism Core failed to load / Cubism Core 加载失败";
-  document.head.append(core);
-</script>
+<script type="module" src="/src/gallery-entry.ts"></script>
 </body></html>
