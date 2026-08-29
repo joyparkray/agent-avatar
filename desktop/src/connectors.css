@@ -1,0 +1,37 @@
+/* 接入向导与设置页共用（见 connectors.ts）。两处的背景不同，故只用相对色，不写死颜色。 */
+.connector-list { display: flex; flex-direction: column; gap: 6px; }
+.connector-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: center;
+  padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, currentColor 7%, transparent);
+}
+.connector-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.connector-actions { display: flex; gap: 6px; }
+/* nowrap：窗口只有 340px，「安装说明」一折行整块就散了 */
+.connector-actions button { font: inherit; font-size: 12px; padding: 4px 9px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+.connector-actions button[disabled] { opacity: .5; cursor: default; }
+.connector-actions .danger { color: color-mix(in srgb, #e5484d 82%, currentColor); }
+.connector-actions .ghost { opacity: .75; background: none; border: 1px solid color-mix(in srgb, currentColor 25%, transparent); }
+/* 主行动要看得出来是主行动。原来靠 style.css 的 `.fallback button:first-child` 蹭到主色，
+   加了「安装说明」之后第一个按钮不再是它 —— 颜色写在这里，两个窗口一致。 */
+.connector-actions .primary { color: #fff; background: #1683c7; border: 1px solid #1683c7; }
+
+/* 三档状态。**颜色只是辅助** —— 色觉障碍或截图转灰之后，文字仍然要能独立读懂。 */
+.connector-link { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; }
+.connector-link .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: currentColor; }
+.connector-row[data-link="missing"] .connector-link { opacity: .6; }
+.connector-row[data-link="unconfigured"] .connector-link { color: color-mix(in srgb, #f5a524 88%, currentColor); }
+.connector-row[data-link="connected"] .connector-link { color: color-mix(in srgb, #30a46c 82%, currentColor); }
+
+/* 进度 / 装完的手动步骤 / 安装说明：都是多行清单，必须保留换行。 */
+.connector-status:empty { display: none; }
+.connector-status, .connector-details {
+  grid-column: 1 / -1; margin: 2px 0 0; font-size: 12px; line-height: 1.55;
+  white-space: pre-wrap; opacity: .8;
+}
+.connector-details[hidden] { display: none; }
+.connector-details {
+  padding: 7px 9px; border-radius: 7px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+.connector-status.ok { color: color-mix(in srgb, #30a46c 80%, currentColor); opacity: 1; }
+.connector-status.error { color: color-mix(in srgb, #e5484d 82%, currentColor); opacity: 1; }

@@ -20,9 +20,11 @@ describe("settings information architecture", () => {
   it("orders Expressions before Motions and labels interaction columns explicitly", () => {
     const behavior = html.slice(html.indexOf('data-panel="behavior"'), html.indexOf('data-panel="models"'));
     expect(behavior.indexOf('data-list="expressions"')).toBeLessThan(behavior.indexOf('data-list="motions"'));
-    expect(behavior).toContain("鼠标单击");
-    expect(behavior).toContain("鼠标双击");
-    expect(behavior).toContain("闲置动作");
+    // 标题短是有意的：52px 的格子塞不下「鼠标双击 / Mouse Double-click」，英文下两个按钮
+    // 会一高一低。含义改由上面那句 hint 承担，这里只保证三列各有自己的标题。
+    expect(behavior).toContain(">单击<");
+    expect(behavior).toContain(">双击<");
+    expect(behavior).toContain(">闲置<");
   });
 
   it("offers Chinese and English through the persisted language control", () => {
@@ -87,20 +89,24 @@ describe("model interaction behavior", () => {
 
 describe("empty model onboarding", () => {
   const main = readFileSync("src/main.ts", "utf8");
-  it.each(["下载免费模型", "打开安装目录", "装好了，重新加载"])("offers %s", label => {
+  it.each(["下载免费模型", "打开模型文件夹", "装好了，重新加载"])("offers %s", label => {
     expect(main).toContain(label);
   });
   it("opens the managed model directory", () => {
     expect(main).toMatch(/data-act="open-models"[\s\S]*open_models_dir/);
   });
   it("makes the no-model window interactive and emphasizes the extracted folder", () => {
-    expect(main).toContain("解压后的模型文件夹");
+    // 「模型文件夹」是同一个东西在设置页/右键菜单里的叫法，引导页原来叫「安装目录」，
+    // 用户按提示去找一个别处根本不存在的名字（文案里不该再出现旧叫法，注释不算）
+    expect(main).toContain("解压出来的模型文件夹");
+    const copy = main.slice(main.indexOf("const ONBOARDING_TEXT"), main.indexOf("} as const;"));
+    expect(copy).not.toContain("安装目录");
     expect(main).toMatch(/set_hit_region[\s\S]*width: innerWidth[\s\S]*height: innerHeight/);
     expect(main).toContain('data-act="reload"');
   });
   it("offers a persisted Chinese and English language switch", () => {
     expect(main).toContain('data-act="onboarding-language"');
-    expect(main).toContain("Use your own model if you already have one");
+    expect(main).toContain("Use a model you already have");
     expect(main).toContain("rememberLanguage(next)");
   });
 });

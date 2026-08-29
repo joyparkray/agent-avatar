@@ -6,6 +6,10 @@ backup/
 
 # 组装与打包生成物。
 release/
+# 图标/素材工作区（本地中间产物，不进版本控制）。
+build/
+# 图标替换前的备份（本地保留，不进公开仓库）。
+desktop/src-tauri/icons.bak-*/
 
 # Python 本地测试缓存。
 __pycache__/

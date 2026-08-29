@@ -68,6 +68,9 @@ export class Live2DAvatarModel implements AvatarModel {
     // 缩放走窗口尺寸，模型始终 fit-to-window，故窗口变化后必须重新适配。
     this.stopResizeWatch = watchResize(this.host, () => this.fit());
     this.app.stage.addChild(this.model); this.log({ event: "model:stage:after", width: this.model.width, height: this.model.height, stageChildren: this.app.stage.children.length });
+    // mipLevelCount 是首帧上传时才算出来的，故等一帧再记。>1 = mipmap 生效（见 pixi.ts 的说明）；
+    // 恒为 1 时全身构图会重新变回「线条粗糙、断断续续的锯齿」，而那是个只能靠眼睛发现的退化。
+    requestAnimationFrame(() => this.log({ event: "model:textures", ...this.textureSnapshot() }));
   }
   /**
    * 嘴型走库自带的口型通道，而不是直接写 `ParamMouthOpenY`。
@@ -132,6 +135,14 @@ export class Live2DAvatarModel implements AvatarModel {
       internal.viewport[3] = gl.drawingBufferHeight;
       draw(gl);
     };
+  }
+  /** 纹理尺寸与 mipmap 层级。缩小绘制的清晰度全看这两项。 */
+  private textureSnapshot(): object {
+    // 纹理挂在 **Live2DModel 上**（库的 d.ts：`textures: Texture[]`），不在 internalModel 上。
+    // 取错地方时这条日志恒为 count:0 —— 看起来像 mipmap 没生效，实际是探针自己坏了（实测踩到）。
+    const textures = (this.model as unknown as { textures?: { source?: { width: number; height: number; mipLevelCount: number } }[] })?.textures ?? [];
+    const first = textures[0]?.source;
+    return { count: textures.length, size: first ? [first.width, first.height] : null, mipLevels: first?.mipLevelCount ?? null, resolution: renderResolution(this.quality) };
   }
   private live2dSnapshot(): object {
     const internal = this.model!.internalModel!, motion = internal.motionManager, state = motion.state;

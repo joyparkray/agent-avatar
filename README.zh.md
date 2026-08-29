@@ -1,5 +1,9 @@
 # Agent Avatar
 
+<p align="center">
+  <img src="assets/icon.png" width="128" height="128" alt="Agent Avatar 猫耳形象图标">
+</p>
+
 一个住在桌面上的 Live2D 形象，**把你的 AI 编程 agent 正在干什么演出来** —— 思考、执行命令、
 等你回话、出错 —— 并在 agent 出声时跟着动嘴。
 
@@ -42,12 +46,18 @@ harness 只发布**她现在在干什么**，形象层自己决定**怎么演**�
 
 - **macOS 14.2 或更新**（系统音频捕获走 Core Audio process tap）。
 - 一个 Live2D 模型 —— **不随包分发**，见下。
-- 暂不支持 Windows。
+- 暂不支持 Windows —— 这是下一步要做的。
 
 ## 安装
 
-1. 从 [Releases](../../releases) 下载 `Agent Avatar.app`，拖进「应用程序」。目前尚未公证，
-   首次打开需要**右键 → 打开**。
+1. 按你的芯片选对应的构建，从 [Releases](../../releases) 下载后拖进「应用程序」：
+
+   | 你的 Mac | 文件 |
+   |---|---|
+   | Apple 芯片（M1/M2/M3/M4） | `Agent-Avatar-1.0.0-Apple-Silicon.dmg` |
+   | Intel | `Agent-Avatar-1.0.0-Intel.dmg` |
+
+   已用 Apple Developer ID 签名并通过公证，**直接双击打开即可**，不需要右键。
 2. 启动。没装模型时会看到引导卡片，附 Live2D 官方免费模型的链接。
 3. 装模型 —— 把模型文件夹拖进**设置 → 模型**，或放进卡片给你打开的模型目录。
    详见 [docs/MODELS.md](docs/MODELS.md)。
@@ -57,7 +67,12 @@ harness 只发布**她现在在干什么**，形象层自己决定**怎么演**�
 
 ## 接上你的 agent
 
-每个 connector 是对应 harness 的一个插件，把 agent 状态报给形象。安装只要跑一个脚本，
+**最省事的装法是在 app 里点一下**：设置 → Agent → 接入，选你用的那家点「安装」，
+app 会自己下载、解压、运行安装脚本，并把装完还需要你做的步骤显示出来。
+首次装好模型后也会自动弹出这个向导。
+
+下面是手动装法（离线、或想先看脚本干了什么）。每个 connector 是对应 harness 的一个插件，
+把 agent 状态报给形象。安装只要跑一个脚本，
 但**装完之后各家还要做的事不一样** —— 漏掉这一步是「装了没反应」最常见的原因：
 
 | Harness | 安装 | 装完之后 |
@@ -100,6 +115,7 @@ docs/         模型安装、接入、排查
 
 ## 文档
 
+- [快速上手 —— 10 分钟、无需 clone 源码](docs/QUICKSTART.zh.md)
 - [模型 —— 安装、要求、什么不支持](docs/MODELS.md)
 - [接入 —— 各家的设置与坑](docs/CONNECTORS.md)
 - [排查](docs/TROUBLESHOOTING.md)
@@ -107,6 +123,18 @@ docs/         模型安装、接入、排查
 - [架构 —— 三层怎么拼起来的](ARCHITECTURE.md)
 - [参与开发 —— 构建与测试](CONTRIBUTING.md)
 - [变更记录](CHANGELOG.md)
+
+## 支持我们
+
+Agent Avatar 是免费开源的，用业余时间做的。如果它让你的桌面多了点生气、你想表达感谢，可以：
+
+| 微信 | 支付宝 |
+|---|---|
+| <img src="assets/donate-weixin.png" width="200" alt="微信收款码"> | <img src="assets/donate-alipay.png" width="200" alt="支付宝收款码"> |
+
+海外的话也可以走 [Buy Me a Coffee](https://buymeacoffee.com/joyparkray) 或 [PayPal](https://www.paypal.com/donate/?business=KP5WLPJ9TJBZL&no_recurring=0&currency_code=USD)。
+
+另外，提 [issue](https://github.com/joyparkray/agent-avatar/issues)、发 [PR](https://github.com/joyparkray/agent-avatar/pulls)、点颗星，也都是一种支持。谢谢使用。❤️
 
 ## 许可
 

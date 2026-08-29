@@ -4,3 +4,29 @@
 .status[data-pos="top-right"]{top:14px;bottom:auto;left:auto;right:18px}
 .status[data-pos="bottom-right"]{left:auto;right:18px}
 .status[data-pos="none"]{display:none}
+
+/* 接入向导：窗口只有 340×440，五家 + 手动步骤放不下时让卡片自己滚，不要撑出窗口。
+   行内配色跟随卡片文字（connectors.css 只用相对色），故这里只管尺寸。 */
+.connector-wizard{position:absolute;inset:0;margin:16px;padding:16px;max-height:calc(100% - 32px);overflow:auto;z-index:10}
+.connector-wizard b{margin-bottom:6px;font-size:15px}
+.connector-wizard p{margin:0 0 12px;font-size:12px}
+.connector-wizard .connector-list{margin-bottom:12px}
+/* .fallback button:first-child 会把卡片里第一个按钮涂成主色。「以后再说」是退出口不是主行动，
+   涂成主色会把它变成最显眼的东西，而最显眼的应当是那五个「安装」。 */
+/* .fallback button:first-child 会把每组按钮里的第一个涂成主色 —— 在这里那是「安装说明」和
+   「以后再说」，两个都不是主行动。主行动是「安装」，它的配色写在 connectors.css。 */
+.connector-wizard .fallback-actions button:first-child,
+.connector-wizard .connector-actions button:first-child{color:#16466b;background:none;border-color:#9bc8e8}
+.connector-wizard .fallback-actions button:first-child{background:#fff}
+
+/* 引导卡片的顶栏（见 main.ts 的 cardBar）。无边框窗口没有系统标题栏，这三件事卡片自己给。 */
+.fallback .card-bar{display:flex;align-items:center;gap:8px;margin:-8px -8px 10px;padding:4px 6px;border-radius:10px}
+.fallback .card-bar .grip{flex:1;color:#7ba7c6;font-size:13px;letter-spacing:2px;cursor:grab;user-select:none}
+.fallback .card-bar .grip:active{cursor:grabbing}
+.fallback .card-bar .onboarding-language{position:static;display:flex;align-items:center;gap:5px}
+.fallback .card-button{width:24px;height:22px;padding:0;flex:none;color:#16466b;background:#fff;border:1px solid #b8daf4;border-radius:6px;font-size:12px;line-height:1;cursor:pointer}
+.fallback .card-button:hover{background:#e3f1fb}
+/* 顶栏接管了语言下拉，原来给它留的空白不再需要 */
+.onboarding{padding-top:16px}
+/* 向导可滚动，顶栏必须跟着停在顶上 —— 滚下去之后关不掉窗口正是这次要修的毛病 */
+.connector-wizard .card-bar{position:sticky;top:-16px;z-index:2;background:#eef7ff}

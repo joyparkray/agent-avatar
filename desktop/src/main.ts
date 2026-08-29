@@ -1,5 +1,5 @@
 import "./style.css"; import "./state.css"; import { invoke } from "@tauri-apps/api/core"; import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleExpressionPoolKey, idleMotionPoolKey, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, readStateSource, writeStateSource, type Language, type StateSource, type SettingsChange } from "./prefs";
+import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleExpressionPoolKey, idleMotionPoolKey, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, readStateSource, writeStateSource, connectorWizardSeen, rememberConnectorWizardSeen, type Language, type StateSource, type SettingsChange } from "./prefs";
 import type { ModelChoice } from "./native-menu";
 import type { ModelSource } from "./prefs";
 import type { AvatarSource } from "./types";
@@ -9,6 +9,7 @@ import { installGlobalDiagnostics } from "./diagnostics";
 import { installWindowDragging } from "./drag";
 import { buildFallbackMenu, buildNativeMenu, type NativeMenuHandlers } from "./native-menu";
 import { IdleAutonomy } from "./idle";
+import { CONNECTOR_TEXT, renderConnectors, type ConnectorState } from "./connectors";
 
 /** 用户装的皮肤（Rust 侧扫数据目录得来）。 */
 type InstalledModel = { dir: string; label: string; model3: string; adapted: boolean };
@@ -74,22 +75,118 @@ async function probeAssets(): Promise<void> {
 let currentState = "", clickThroughHint = false, manualActivityTimer: number | undefined;
 let manual: { kind: "expression" | "motion"; name: string } | undefined;
 let notice: "unsupported-cubism" | undefined, noticeTimer: number | undefined;
+/**
+ * 「模型文件夹」是同一个东西在设置页、右键菜单、这里的叫法，三处必须一致 ——
+ * 原来这张卡叫它「安装目录」，用户照着提示去找一个别处根本不存在的名字。
+ */
 const ONBOARDING_TEXT = {
   "zh-CN": {
     title: "需要安装 Live2D 模型",
-    description: "发布版本不内置模型。如果你已有模型，可以直接使用自己的模型；否则可下载免费模型。请先完成解压，再把",
-    emphasis: "解压后的模型文件夹",
-    suffix: "放入安装目录。",
-    download: "下载免费模型", open: "打开安装目录", reload: "装好了，重新加载",
+    description: "发布版本不内置模型。你可以用自己已有的模型，也可以下载一个免费模型。下载的包要先解压，再把",
+    emphasis: "解压出来的模型文件夹",
+    suffix: "放进模型文件夹。",
+    download: "下载免费模型", open: "打开模型文件夹", reload: "装好了，重新加载",
   },
   en: {
     title: "A Live2D model is required",
-    description: "No model is bundled with this release. Use your own model if you already have one, or download a free model. Extract it first, then place the ",
+    description: "No model is bundled with this release. Use a model you already have, or download a free one. Extract the download first, then put the ",
     emphasis: "extracted model folder",
-    suffix: " in the installation directory.",
-    download: "Download Free Model", open: "Open Installation Folder", reload: "Reload After Installation",
+    suffix: " into the models folder.",
+    download: "Download Free Model", open: "Open Models Folder", reload: "Reload After Installing",
   },
 } as const;
+
+/**
+ * 引导卡片的顶栏：拖动、最小化、关闭。
+ *
+ * 主窗口是**无边框透明窗**，平时靠人物身上的 `.drag` 条拖动。但两张引导卡要么把 `.shell`
+ * 整个换掉（模型引导），要么盖住整窗（接入向导）—— 于是窗口既拖不动、也没有任何可见的
+ * 关闭入口，卡在屏幕中央（右键菜单里其实有「退出」，但没人猜得到，实机被当成死机）。
+ * 卡片自己把系统标题栏那三件事补上。
+ */
+const CARD_TEXT: Record<Language, { drag: string; minimize: string; quit: string; close: string }> = {
+  "zh-CN": { drag: "按住这里可拖动窗口", minimize: "最小化", quit: "退出应用", close: "关闭" },
+  en: { drag: "Drag here to move the window", minimize: "Minimize", quit: "Quit", close: "Close" },
+};
+
+function cardBar(locale: Language, dismiss: { label: string; run: () => void }, extra?: HTMLElement): HTMLElement {
+  const copy = CARD_TEXT[locale];
+  const bar = document.createElement("div");
+  bar.className = "card-bar";
+  // `data-tauri-drag-region`：交给系统拖窗口，不必自己算位移（人物身上那条阈值逻辑
+  // 是为了不吞掉单击/双击，卡片上没有这个顾虑）。
+  bar.setAttribute("data-tauri-drag-region", "");
+  const grip = document.createElement("span");
+  grip.className = "grip"; grip.textContent = "⠿"; grip.title = copy.drag;
+  grip.setAttribute("data-tauri-drag-region", "");
+  bar.append(grip);
+  if (extra) bar.append(extra);
+  const minimize = document.createElement("button");
+  minimize.type = "button"; minimize.className = "card-button"; minimize.textContent = "–"; minimize.title = copy.minimize;
+  minimize.addEventListener("click", () => void getCurrentWindow().minimize()
+    .catch(error => log({ event: "card:minimize:error", error: String(error).slice(0, 200) })));
+  const close = document.createElement("button");
+  close.type = "button"; close.className = "card-button"; close.textContent = "\u2715"; close.title = dismiss.label;
+  close.addEventListener("click", dismiss.run);
+  bar.append(minimize, close);
+  return bar;
+}
+
+/**
+ * 首次运行的第二步：装完模型之后，把 agent 接上。
+ *
+ * 装模型引导只解决「看得见」，接上 connector 才解决「会动」—— 少了这一步，用户看到的是
+ * 一个永远 idle 的形象，而他没有任何线索知道差的是什么（原来的做法是让他去 Release
+ * 下 connectors.zip，在终端里跑脚本，这一步把绝大多数人挡在门外）。
+ *
+ * 只在**一家都没接**且没出现过时弹一次；之后的入口在设置 → Agent → 接入（同一份界面）。
+ */
+let wizardOpen = false;
+async function maybeShowConnectorWizard(): Promise<void> {
+  if (connectorWizardSeen()) return;
+  const states = await invoke<ConnectorState[]>("list_connectors").catch(() => [] as ConnectorState[]);
+  // 已经接上过的用户（老用户升级、或手动跑过脚本）不该被引导打扰
+  if (states.some(state => state.installed)) { rememberConnectorWizardSeen(); return; }
+  const locale = language(), copy = CONNECTOR_TEXT[locale];
+  const card = document.createElement("div");
+  card.className = "fallback onboarding connector-wizard";
+  card.innerHTML = `<b></b><p></p><div class="connector-list" data-list="connectors"></div>`
+    + `<div class="fallback-actions"><button data-act="close-wizard"></button></div>`;
+  card.querySelector("b")!.textContent = copy.title;
+  card.querySelector("p")!.textContent = copy.hint;
+  const close = card.querySelector<HTMLButtonElement>('[data-act="close-wizard"]')!;
+  close.textContent = copy.skip;
+  const dismiss = () => {
+    rememberConnectorWizardSeen();
+    wizardOpen = false; card.remove();
+    log({ event: "connector-wizard:closed" });
+  };
+  card.prepend(cardBar(locale, { label: CARD_TEXT[locale].close, run: dismiss }));
+  renderConnectors(card.querySelector<HTMLElement>('[data-list="connectors"]')!, locale,
+    () => { close.textContent = copy.done; });
+  close.addEventListener("click", dismiss);
+  root.append(card);
+  wizardOpen = true;
+  log({ event: "connector-wizard:shown" });
+}
+
+/** 模型加载失败时那张卡。与引导卡不同，它显示的是**已经出错**的处境，两种语言都要有。 */
+const FAILURE_TEXT: Record<Language, { title: string; detail: string; pick: string; reload: string }> = {
+  "zh-CN": {
+    title: "模型加载失败",
+    detail: "已退回上一个能用的模型仍然失败。换一个模型，或直接退出。",
+    pick: "换一个模型…", reload: "重新加载",
+  },
+  en: {
+    title: "The model failed to load",
+    detail: "Falling back to the last working model did not help either. Pick another model, or quit.",
+    pick: "Pick another model…", reload: "Reload",
+  },
+};
+
+/** 错误原文会被拼进 innerHTML —— 模型名/路径里的 `<` 不能当成标签。 */
+const escapeHtml = (value: string): string =>
+  value.replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 
 function applyOnboardingLanguage(locale: Language): void {
   const copy = ONBOARDING_TEXT[locale];
@@ -113,14 +210,16 @@ const STATE_LABELS: Record<Language, Record<string, string>> = {
     syncing: "同步中", error: "出错",
   },
   en: {
-    idle: "idle", writing: "thinking", researching: "thinking",
-    executing: "executing", awaiting: "awaiting", reviewing: "reviewing",
-    syncing: "syncing", error: "error",
+    // 首字母大写：状态栏与窗口标题都用它（`Agent Avatar · Thinking`），
+    // 而设置页的英文状态名同样是大写开头，两处必须一致
+    idle: "Idle", writing: "Thinking", researching: "Thinking",
+    executing: "Executing", awaiting: "Awaiting", reviewing: "Reviewing",
+    syncing: "Syncing", error: "Error",
   },
 };
 const REACTION_LABELS: Record<Language, Record<string, string>> = {
   "zh-CN": { blocked: "受阻", interrupted: "被打断" },
-  en: { blocked: "blocked", interrupted: "interrupted" },
+  en: { blocked: "Blocked", interrupted: "Interrupted" },
 };
 const CLICK_THROUGH_HINT: Record<Language, string> = {
   "zh-CN": "穿透中，悬停 3 秒可操作",
@@ -324,6 +423,9 @@ log({ event: "endpoint:discovered", url: discovered?.url ?? null, hasToken: Bool
       return snapshot;
     }, s => { director.setSemantic(s); if (s !== "idle") notifyIdleBusy(); }, 200, 2000, reaction => director.setReaction(reaction)).start(); log({ event: "semantic:started" });
     await installMenu(model, audio, avatarSource, source => { stateSource = source; });
+    // 模型已经在动了，接下来才轮到「接上你的 agent」——
+    // 两张卡片同时糊在脸上没人看得懂先做哪一件。
+    void maybeShowConnectorWizard();
 (window as any).echoSkin = { voice, director, model, audio }; } catch (error) {
     log({ event: "model:failed", error: String(error).slice(0, 300) });
     console.error(error);
@@ -357,18 +459,25 @@ log({ event: "endpoint:discovered", url: discovered?.url ?? null, hasToken: Bool
         + `<label class="onboarding-language"><span>Language</span><select data-act="onboarding-language"><option value="zh-CN">中文</option><option value="en">English</option></select></label>`
         + `<b data-onboarding="title"></b><p><span data-onboarding="description"></span><strong data-onboarding="emphasis"></strong><span data-onboarding="suffix"></span></p>`
         + `<div class="fallback-actions"><button data-act="download-model">下载免费模型</button>`
-        + `<button data-act="open-models">打开安装目录</button>`
+        + `<button data-act="open-models">打开模型文件夹</button>`
         + `<button data-act="reload">装好了，重新加载</button></div></div>`
-      : `<div class="fallback"><b>模型加载失败</b><p>${String(error)}</p>`
-        + `<p>已退回上一个能用的模型仍然失败。换一个模型，或直接退出。</p>`
+      : `<div class="fallback"><b>${FAILURE_TEXT[language()].title}</b><p>${escapeHtml(String(error))}</p>`
+        + `<p>${FAILURE_TEXT[language()].detail}</p>`
         // 按钮而不是只写「去右键菜单里换」：这张卡片盖住了整个窗口，
         // 而右键菜单在这种处境下正是用户最想不起来的东西。
-        + `<button data-act="pick-model">换一个模型…</button>`
-        + `<button data-act="reload">重新加载</button></div>`;
+        + `<button data-act="pick-model">${FAILURE_TEXT[language()].pick}</button>`
+        + `<button data-act="reload">${FAILURE_TEXT[language()].reload}</button></div>`;
     // 没有模型时没有人物包围盒，默认命中策略会把整窗穿透；引导页必须临时整窗可交互。
     void invoke("set_hit_region", { x: 0, y: 0, width: innerWidth, height: innerHeight, mode: "normal", trackCursor: false })
       .catch(error => log({ event: "onboarding:hit-region:error", error: String(error).slice(0, 200) }));
     const locale = language();
+    // 两张卡都盖住整窗：没有顶栏的话窗口拖不动、也看不到任何关闭入口（右键菜单里有「退出」，
+    // 但没人猜得到）。语言下拉一并收进顶栏，省掉原来给它留的那 54px 空白。
+    const card = root.querySelector<HTMLElement>(".fallback");
+    if (card) {
+      const languageLabel = root.querySelector<HTMLElement>(".onboarding-language") ?? undefined;
+      card.prepend(cardBar(locale, { label: CARD_TEXT[locale].quit, run: () => void getCurrentWindow().close() }, languageLabel));
+    }
     const languageSelect = root.querySelector<HTMLSelectElement>('[data-act="onboarding-language"]');
     if (languageSelect) {
       languageSelect.value = locale; applyOnboardingLanguage(locale);
@@ -630,6 +739,13 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
  */
 function startHitReporting(model: Live2DAvatarModel, mode: () => "normal" | "through", trackCursor: () => boolean): () => void {
   const report = () => {
+    // 接入向导是一张盖住整个窗口的卡片。人物包围盒之外默认是穿透的，
+    // 不整窗放开的话卡片上的按钮一个都点不动（首启引导页同一条道理）。
+    if (wizardOpen) {
+      void invoke("set_hit_region", { x: 0, y: 0, width: innerWidth, height: innerHeight, mode: "normal", trackCursor: false })
+        .catch(error => log({ event: "hit-region:error", error: String(error).slice(0, 200) }));
+      return;
+    }
     // HTML 菜单时代这里有一条「菜单打开时整窗可交互」的特例。原生菜单不需要：
     // 它由系统绘制并自行抓取事件，实机日志确认各项回调照常触发，与窗口穿透状态无关。
     const box = model.bounds();

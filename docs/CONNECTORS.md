@@ -9,7 +9,12 @@ Five harnesses are supported and have all been verified on real sessions.
 
 ## Install
 
-Run the installer for your harness from the repository root:
+**If you downloaded the app (not the source)** — use the Quick Start path:
+download `agent-avatar-connectors.zip` from the Release page, unzip it, and run the
+installer for your harness from the unzipped folder. See
+[docs/QUICKSTART.md](../docs/QUICKSTART.md).
+
+**If you cloned the repo**, run the installer for your harness from the repository root:
 
 ```bash
 connectors/claude-code/install-plugin.sh

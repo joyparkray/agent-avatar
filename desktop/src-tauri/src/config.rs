@@ -6,6 +6,7 @@
 //! M3 要做签名公证，往自己包里写东西等于自杀；`/Applications` 下普通用户也没有写权限，
 //! 而且每次更新会整包覆盖。同一份文档指定的正确去处是 `Library/Application Support/<bundle-id>`,
 //! 也就是 Tauri `app_data_dir()` 返回的路径。
+use crate::user_error;
 use serde_json::{json, Value};
 use std::{fs, path::{Path, PathBuf}, process::Command};
 use tauri::{Manager, Runtime};
@@ -81,7 +82,7 @@ fn migrate_legacy_data_dir(new_dir: &Path) {
     }
 }
 
-fn data_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+pub fn data_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
     migrate_legacy_data_dir(&dir);
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
@@ -200,7 +201,7 @@ fn copy_tree(from: &Path, to: &Path, budget: &mut (u64, usize)) -> Result<(), St
             budget.0 += entry.metadata().map_err(|error| error.to_string())?.len();
             budget.1 += 1;
             if budget.0 > MAX_MODEL_BYTES || budget.1 > MAX_MODEL_FILES {
-                return Err("这个文件夹太大了，看起来不像一个模型目录".to_owned());
+                return Err(user_error::TOO_LARGE.to_owned());
             }
             fs::copy(&source, &target).map_err(|error| error.to_string())?;
         }
@@ -223,23 +224,23 @@ pub fn install_model(app: tauri::AppHandle, path: String) -> Result<Value, Strin
     if !source.is_dir() {
         let name = source.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
         if ARCHIVE_EXTS.iter().any(|ext| name.ends_with(ext)) {
-            return Err("这是压缩包：请先双击解压，再把解压出来的**文件夹**拖进来".to_owned());
+            return Err(user_error::ARCHIVE.to_owned());
         }
-        return Err("请拖入模型所在的文件夹（不是单个文件）".to_owned());
+        return Err(user_error::NOT_A_FOLDER.to_owned());
     }
     let name = source.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_owned();
     if !is_safe_dir_name(&name) {
-        return Err(format!("文件夹名 “{name}” 不能用作模型名：请改成只含字母、数字、- 或 _"));
+        return Err(format!("{}|{name}", user_error::BAD_NAME));
     }
     // 顶层没有就往下找两层：官方包解压后模型常在子目录里（见 MODEL_SCAN_DEPTH）。
     let mut found = vec![];
     find_model_dirs(&source, "", MODEL_SCAN_DEPTH, &mut found);
     let Some((_, model3)) = found.first().cloned() else {
-        return Err("这个文件夹里（含下两层子目录）没有 *.model3.json，不是 Cubism 模型目录".to_owned());
+        return Err(user_error::NO_MODEL3.to_owned());
     };
     let target = models_dir(&app)?.join(&name);
     if target.exists() {
-        return Err(format!("已经装过 “{name}” 了：先在模型文件夹里删掉它再重装"));
+        return Err(format!("{}|{name}", user_error::ALREADY_INSTALLED));
     }
     // 先拷到临时名再改名：中途失败不会留下半个模型目录，让菜单里多出一个打不开的条目。
     let staging = target.with_extension("installing");
@@ -276,14 +277,38 @@ fn deletion_target(root: &Path, dir: &str, found: &[(String, String)]) -> Option
         .then(|| dir.split('/').fold(root.to_path_buf(), |path, part| path.join(part)))
 }
 
+/// 删完模型目录后，把**已经不含任何模型**的上层目录一并清掉。
+///
+/// 官方下载包解压出来是 `ren_zh-Hans/runtime/`，被认成模型的是 `runtime` 那一层，
+/// 而外层还躺着 `.cmo3`/`.can3`/`.psd`/ReadMe。只删 `runtime` 的话，用户在访达里
+/// 看到「删除了却还剩一堆文件」，而那些残留他在界面上再也删不掉（没有 model3，
+/// 列表里根本不出现）—— 实机撞到。
+///
+/// **上层还有别的模型时不动它**：一个文件夹里常装着好几个角色
+/// （`tororo_hijiki_ja` 里有 tororo 和 hijiki），删一个不该把另一个带走。
+fn prune_modelless_ancestors(root: &Path, deleted: &Path) {
+    let mut current = deleted.parent();
+    while let Some(dir) = current {
+        // 只在模型根**之内**往上走，绝不删到根自己
+        if dir == root || !dir.starts_with(root) { return; }
+        let mut remaining = vec![];
+        find_model_dirs(dir, "", MODEL_SCAN_DEPTH, &mut remaining);
+        if !remaining.is_empty() { return; }
+        if fs::remove_dir_all(dir).is_err() { return; }
+        current = dir.parent();
+    }
+}
+
 /// 删除一个扫描得到的用户模型。先用扫描结果确认目标，避免前端参数变成任意目录删除器。
 #[tauri::command(async)]
 pub fn delete_model(app: tauri::AppHandle, dir: String) -> Result<(), String> {
     let root = models_dir(&app)?;
     let mut found = vec![];
     find_model_dirs(&root, "", MODEL_SCAN_DEPTH, &mut found);
-    let target = deletion_target(&root, &dir, &found).ok_or("找不到这个已安装模型")?;
-    fs::remove_dir_all(target).map_err(|error| error.to_string())
+    let target = deletion_target(&root, &dir, &found).ok_or(user_error::UNKNOWN_MODEL)?;
+    fs::remove_dir_all(&target).map_err(|error| error.to_string())?;
+    prune_modelless_ancestors(&root, &target);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -398,6 +423,39 @@ mod tests {
         super::find_model_dirs(&root, "", super::MODEL_SCAN_DEPTH, &mut found);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].0, "model");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn deleting_a_nested_model_takes_the_download_folder_leftovers_with_it() {
+        // 官方包是 `<包名>/runtime/`，模型是 runtime 那层，外层还有 .cmo3/.psd/ReadMe。
+        // 只删 runtime 的话用户看到「删了却还剩一堆文件」，而且再也删不掉（实机撞到）。
+        let root = scratch("prune");
+        fs::create_dir_all(root.join("ren_zh-Hans/runtime")).unwrap();
+        fs::write(root.join("ren_zh-Hans/runtime/ren.model3.json"), b"{}").unwrap();
+        fs::write(root.join("ren_zh-Hans/ren_t01.cmo3"), b"source").unwrap();
+        fs::write(root.join("ren_zh-Hans/ReadMe.txt"), b"readme").unwrap();
+        let target = root.join("ren_zh-Hans/runtime");
+        fs::remove_dir_all(&target).unwrap();
+        super::prune_modelless_ancestors(&root, &target);
+        assert!(!root.join("ren_zh-Hans").exists(), "外层残留必须一起清掉");
+        assert!(root.is_dir(), "模型根目录本身绝不能被删");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn deleting_one_character_keeps_its_siblings() {
+        // 一个下载包里常有好几个角色（tororo_hijiki_ja 里有 tororo 和 hijiki）
+        let root = scratch("prune-sibling");
+        for name in ["tororo", "hijiki"] {
+            fs::create_dir_all(root.join(format!("pack/{name}/runtime"))).unwrap();
+            fs::write(root.join(format!("pack/{name}/runtime/{name}.model3.json")), b"{}").unwrap();
+        }
+        let target = root.join("pack/tororo/runtime");
+        fs::remove_dir_all(&target).unwrap();
+        super::prune_modelless_ancestors(&root, &target);
+        assert!(!root.join("pack/tororo").exists(), "被删角色的空壳目录该清掉");
+        assert!(root.join("pack/hijiki/runtime/hijiki.model3.json").is_file(), "另一个角色必须原样保留");
         fs::remove_dir_all(&root).unwrap();
     }
 

@@ -77,7 +77,7 @@ describe("status bar language", () => {
   const main = readFileSync("src/main.ts", "utf8");
   it("localizes state, reaction, click-through hint and manual activity", () => {
     expect(main).toMatch(/STATE_LABELS[\s\S]*"zh-CN": \{[\s\S]*idle: "空闲"[\s\S]*executing: "执行中"/);
-    expect(main).toMatch(/STATE_LABELS[\s\S]*en: \{[\s\S]*idle: "idle"/);
+    expect(main).toMatch(/STATE_LABELS[\s\S]*en: \{[\s\S]*idle: "Idle"/);
     expect(main).toContain('"zh-CN": { blocked: "受阻", interrupted: "被打断" }');
     expect(main).toContain('"zh-CN": "穿透中，悬停 3 秒可操作"');
     expect(main).toContain('"zh-CN": { expression: "表情", motion: "动作" }');
@@ -86,5 +86,27 @@ describe("status bar language", () => {
     expect(main).toMatch(/payload\.language\) \{ uiLanguage = payload\.language; renderStatus\(\); \}/);
     // 渲染时才拼字符串，否则切语言只会影响下一次状态变化
     expect(main).toMatch(/function renderStatus[\s\S]*currentState = stateText\(\)/);
+  });
+});
+
+// 回归：无边框窗口没有系统标题栏。两张引导卡都会盖住整窗，少了自带顶栏就变成
+// 「拖不动、关不掉、卡在屏幕中央」（实机撞到，用户以为死机）。
+describe("onboarding cards keep the window usable", () => {
+  const source = readFileSync("src/main.ts", "utf8");
+
+  it("gives both the model onboarding and the connector wizard a title bar", () => {
+    expect(source.split("cardBar(").length - 1).toBeGreaterThanOrEqual(3);  // 1 定义 + 2 调用
+  });
+
+  it("makes the bar draggable and offers minimize and close", () => {
+    const bar = source.slice(source.indexOf("function cardBar("), source.indexOf("首次运行的第二步"));
+    expect(bar).toContain("data-tauri-drag-region");
+    expect(bar).toContain("minimize()");
+    expect(bar).toContain("dismiss.run");
+  });
+
+  it("declares the window permission the minimize button needs", () => {
+    // 少了这条权限，按钮点下去被 Tauri 拒绝，又是一次「点了没反应」
+    expect(readFileSync("src-tauri/capabilities/default.json", "utf8")).toContain("core:window:allow-minimize");
   });
 });

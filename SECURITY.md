@@ -28,5 +28,15 @@ default log path is world-readable.
 
 ## Sandboxing and notarisation
 
-Builds are currently unsigned and un-notarised, so macOS Gatekeeper will warn on first
-launch. Verify you downloaded the app from the official Releases page.
+Release builds are signed with an Apple Developer ID certificate (hardened runtime,
+timestamped) and notarised by Apple, so Gatekeeper accepts a normal double-click. You can
+check any download yourself:
+
+```bash
+spctl -a -t open --context context:primary-signature -vv "Agent-Avatar-1.0.0-Intel.dmg"
+# expected: source=Notarized Developer ID
+#           origin=Developer ID Application: Xiaoxiao Sun (Z5G598ZZ8S)
+```
+
+The app is **not** sandboxed: it runs connector install scripts and reads the agent state
+file, both of which a sandbox would block. Download only from the official Releases page.

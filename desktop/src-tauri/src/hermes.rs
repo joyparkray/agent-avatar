@@ -65,6 +65,22 @@ fn state_file_name(harness: &str) -> String {
     else { format!("agent-avatar-state.{harness}.json") }
 }
 
+/// 这家 harness 的 hook 最后一次写状态文件是多久以前（秒）；从没写过 = None。
+///
+/// **这是「链路通没通」的唯一真信号**：插件目录在不在只说明文件装了，而没 enable（Hermes）、
+/// 没授信（Codex）、没重启（WorkBuddy）时目录照样在，用户看到的是「已安装但形象不动」。
+/// 状态文件是 hook 真的跑起来才会出现的东西。
+///
+/// 由 `connectors.rs` 用来显示接入状态 —— 文件名与落点的单一真相在本模块（对齐 Python 侧
+/// `bridge/state_machine.py: state_path()`），不在那边复制一份。
+pub fn last_signal_seconds(harness: &str) -> Option<u64> {
+    candidate_paths(harness).into_iter()
+        .filter_map(|path| fs::metadata(&path).ok()?.modified().ok())
+        .filter_map(|at| SystemTime::now().duration_since(at).ok())
+        .map(|age| age.as_secs())
+        .min()
+}
+
 fn candidate_paths(harness: &str) -> Vec<PathBuf> {
     let name = state_file_name(harness);
     let mut paths = vec![];

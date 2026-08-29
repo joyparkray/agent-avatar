@@ -207,6 +207,15 @@ export const UNSUPPORTED_CUBISM_TEXT: Record<Language, string> = {
 };
 export function rememberLanguage(value: Language): void { writeRaw("language", value); }
 
+/**
+ * 首次运行的「Agent 接入向导」是否已经出现过。
+ *
+ * 只记「出现过」，不记「装成功了」—— 用户可能就是不想现在接（或者用的 agent 不在五家里），
+ * 每次开机都糊一张卡片在脸上是骚扰。想再进来走设置 → Agent → 接入，那里是同一份界面。
+ */
+export function connectorWizardSeen(): boolean { return readRaw("connectorWizardSeen") === true; }
+export function rememberConnectorWizardSeen(): void { writeRaw("connectorWizardSeen", true); }
+
 export const stateMotionMapKey = (dir: string): string => `stateMotions:${dir}`;
 
 /** 只接受已知状态和 [group, non-negative integer]；模型库存校验由设置页负责。 */

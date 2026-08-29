@@ -36,9 +36,19 @@ First public release.
 
 - Connectors for Claude Code, Codex, Hermes, DeepSeek Harness and WorkBuddy, each
   verified on real sessions, sharing a single state machine through the Bridge Protocol.
+- **One-click setup from inside the app.** A first-run wizard (and Settings → Agent →
+  Connectors) downloads the connector bundle, extracts it and runs the harness's own
+  install script — no terminal, no zip to find. Install, reinstall and uninstall are all
+  in the UI.
+- Each harness shows one of three states: plugin not installed, installed but needing
+  manual setup, or connected and working — the middle one being the case where the files
+  are in place but the harness has not enabled, trusted or reloaded the plugin yet.
+- The manual steps an app cannot take for you (Hermes `plugins enable`, Codex `/hooks`
+  trust, WorkBuddy restart) are spelled out per harness, in Chinese and English.
 
 ### Known limitations
 
 - macOS only; Windows support is not started.
-- Builds are not yet signed or notarised.
+- Builds are signed with a Developer ID certificate (hardened runtime, timestamped) and
+  notarised, so a normal double-click works.
 - Live2D models using Cubism 5.1 offscreen compositing cannot be rendered.

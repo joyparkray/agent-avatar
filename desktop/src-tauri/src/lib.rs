@@ -4,8 +4,41 @@ use tauri::{Emitter, Manager, window::Color};
 use std::sync::OnceLock;
 mod hit_test;
 mod config;
+
+/// **面向用户的错误只返回代号，措辞留在前端。**
+///
+/// 界面语言存在前端（config.json 的 `language`），Rust 侧不知道现在是中文还是英文 ——
+/// 原来这些串是中文写死的，英文界面下会突然冒出一句中文（发布前逐条过文案时发现）。
+///
+/// 形状是 `code` 或 `code|detail`：detail 是要嵌进句子的东西（文件夹名、命令回显），
+/// 由前端决定怎么摆。前端见 `src/errors.ts`，那里每个代号都有中英两句；
+/// 认不出的代号原样显示，所以漏翻不会变成空白。
+pub mod user_error {
+    pub const ARCHIVE: &str = "archive";
+    pub const NOT_A_FOLDER: &str = "not-a-folder";
+    pub const BAD_NAME: &str = "bad-name";
+    pub const NO_MODEL3: &str = "no-model3";
+    pub const ALREADY_INSTALLED: &str = "already-installed";
+    pub const TOO_LARGE: &str = "too-large";
+    pub const UNKNOWN_MODEL: &str = "unknown-model";
+    pub const DOWNLOAD_FAILED: &str = "download-failed";
+    pub const EXTRACT_FAILED: &str = "extract-failed";
+    pub const BAD_ARCHIVE: &str = "bad-archive";
+    pub const INSTALL_FAILED: &str = "install-failed";
+    pub const LOCAL_ZIP_MISSING: &str = "local-zip-missing";
+    pub const UNKNOWN_HARNESS: &str = "unknown-harness";
+
+    /// 前端必须逐个有中英文案的那一份清单（`errors.ts` 与它对表，见那边的测试）。
+    pub const ALL: [&str; 13] = [ARCHIVE, NOT_A_FOLDER, BAD_NAME, NO_MODEL3, ALREADY_INSTALLED,
+        TOO_LARGE, UNKNOWN_MODEL, DOWNLOAD_FAILED, EXTRACT_FAILED, BAD_ARCHIVE, INSTALL_FAILED,
+        LOCAL_ZIP_MISSING, UNKNOWN_HARNESS];
+}
+/// Agent connector 一键接入（下载 / 解压 / 跑各家 install-plugin.sh）。
+mod connectors;
 /// Hermes 适配层：**可整体摘除**的边界（见 integrations/hermes/README.md）。
 /// 删掉这一行与 hermes.rs 后应用仍能跑，前端调不到命令会自动降级为常驻 idle。
+/// 唯一的外部牵连：connectors.rs 用 `hermes::last_signal_seconds` 判断 connector 通没通
+/// （状态文件的落点由本模块定义），一并摘除时那里的「已连通」要退回成只看目录。
 mod hermes;
 // static_server 只在 release 分支使用（见下方 #[cfg(not(debug_assertions))]），
 // debug 构建下整模块「未使用」但仍需编译与运行其单测，故只在 debug 下静音告警。
@@ -102,13 +135,15 @@ fn stop_global_audio() {
 #[tauri::command(async)]
 fn open_tool_window(app: tauri::AppHandle, name: String) -> Result<(), String> {
     let (label, page, title, width, height) = match name.as_str() {
-        "settings" => ("settings", "settings.html", "Agent Avatar 设置", 420.0, 560.0),
-        "gallery" => ("gallery", "gallery.html", "Agent Avatar 模型画廊", 960.0, 680.0),
+        // 标题只给应用名：窗口是哪个语言，Rust 不知道（界面语言存在前端配置里）。
+        // 本地化标题由各窗口自己 setTitle —— 原来这里写死中文，英文界面的标题栏里
+        // 一直挂着「设置」两个中文字（发布前逐条过文案时发现）。
+        "settings" => ("settings", "settings.html", "Agent Avatar", 460.0, 640.0),
+        "gallery" => ("gallery", "gallery.html", "Agent Avatar", 960.0, 680.0),
         other => return Err(format!("unknown tool window: {other}")),
     };
     if let Some(window) = app.get_webview_window(label) {
-        window.show().map_err(|error| error.to_string())?;
-        return window.set_focus().map_err(|error| error.to_string());
+        return bring_to_front(&window);
     }
     // 与主页面同源：dev 走 Vite，release 走内嵌静态服务器（见 setup 里的窗口 URL）。
     let main = app.get_webview_window("main").ok_or("main window is gone")?;
@@ -119,8 +154,28 @@ fn open_tool_window(app: tauri::AppHandle, name: String) -> Result<(), String> {
         .resizable(true).visible(false).build().map_err(|error| error.to_string())?;
     // 创建与复用走同一条可见性/聚焦路径。只 build 就返回时，macOS 首次点击可能只创建窗口，
     // 第二次进入上面的 existing 分支才真正把它带到前台。
+    bring_to_front(&window)
+}
+
+/// 把工具窗口真正带到最前面。
+///
+/// 只 `show()` + `set_focus()` 不够：主窗口是 always-on-top 的悬浮窗，而工具窗口不是 ——
+/// 从别的应用（浏览器、编辑器）切过来时，设置窗口时不时开在**别人后面**，
+/// 用户以为「点了没反应」，其实它就在下面（实机反馈）。
+///
+/// 做法是**短暂**置顶再撤掉：置顶保证它一定压过当前前台窗口，撤掉是因为一直置顶会挡住
+/// 用户想同时看的东西（比如照着文档改设置）。500ms 足够窗口管理器完成上浮。
+fn bring_to_front(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let _ = window.unminimize();   // 最小化过的窗口 show() 不会自己回来
     window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())
+    window.set_always_on_top(true).map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())?;
+    let handle = window.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(500));
+        let _ = handle.set_always_on_top(false);
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -135,6 +190,29 @@ fn set_hit_region(state: tauri::State<'_, Mutex<HitConfig>>, x: f64, y: f64, wid
 #[cfg(test)]
 mod tests {
     use super::{append_log_event, log_path, loopback_url, rotate_log_if_needed};
+
+    /// 注册了命令还不够：`capabilities/default.json` 引的 `allow-skin-commands`（见
+    /// `permissions/skin.toml`）是一份**白名单**，漏登记的命令会被 Tauri 直接拒掉。
+    ///
+    /// 这种漏最难查：前端多半 `.catch()` 兜了底，于是表现不是报错，而是**功能安静地什么都不做**
+    /// （实测：新加的 list_connectors 没登记，接入页把五家全显示成「未安装」；
+    /// delete_model 从来就没登记过，设置页的删除模型一直是坏的）。
+    #[test]
+    fn every_registered_command_is_allowed_by_the_capability() {
+        let source = include_str!("lib.rs");
+        // rsplit：本测试自己的源码里也有这个字符串，而真正的注册在文件末尾的 run() 里
+        let handlers = source.rsplit("generate_handler![").next().unwrap()
+            .split(']').next().unwrap();
+        let registered: Vec<&str> = handlers.split(',')
+            .map(|item| item.trim().rsplit("::").next().unwrap_or_default())
+            .filter(|name| !name.is_empty())
+            .collect();
+        let allowed = include_str!("../permissions/skin.toml");
+        for command in registered {
+            assert!(allowed.contains(&format!("\"{command}\"")),
+                    "命令 `{command}` 没登记进 permissions/skin.toml，前端调它会被拒绝");
+        }
+    }
     use std::{env, fs, path::PathBuf, process, sync::Arc, thread, time::{SystemTime, UNIX_EPOCH}};
 
     #[test]
@@ -293,6 +371,6 @@ pub fn run() {
             spawn_hit_test(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![log_event, hermes::read_semantic_state, hermes::discover_audio_endpoint, config::read_config, config::write_config, config::open_models_dir, config::install_model, config::delete_model, config::list_installed_models, config::list_model_issues, open_tool_window, set_hit_region, open_in_browser, start_global_audio, stop_global_audio])
+        .invoke_handler(tauri::generate_handler![log_event, hermes::read_semantic_state, hermes::discover_audio_endpoint, config::read_config, config::write_config, config::open_models_dir, config::install_model, config::delete_model, config::list_installed_models, config::list_model_issues, connectors::list_connectors, connectors::install_connector, connectors::uninstall_connector, open_tool_window, set_hit_region, open_in_browser, start_global_audio, stop_global_audio])
         .run(tauri::generate_context!()).expect("error while running Agent Avatar");
 }

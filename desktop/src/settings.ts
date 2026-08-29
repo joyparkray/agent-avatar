@@ -2,6 +2,7 @@ import "./settings.css";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { droppedPath } from "./drop";
 import { loadManifest } from "./manifest";
 import {
@@ -16,6 +17,8 @@ import {
   readHiddenModels, writeHiddenModels, SETTINGS_EVENT, type Language, type SettingsChange, type StatusPosition,
 } from "./prefs";
 import { SEMANTIC_STATES, type SemanticState } from "./types";
+import { renderConnectors } from "./connectors";
+import { errorMessage } from "./errors";
 
 /** 改动即时广播给主窗口；config.json 只负责持久化，不负责生效。 */
 const announce = (change: SettingsChange) => void emit(SETTINGS_EVENT, change).catch(console.error);
@@ -28,20 +31,20 @@ const TEXT: Record<Language, Record<string, string>> = {
     "tab.general": "通用", "tab.video": "视频", "tab.agent": "Agent", "tab.behavior": "行为", "tab.models": "模型",
     "general.language": "语言", "general.interfaceLanguage": "界面语言", "general.languageHint": "语言切换会立即应用到设置窗口。", "general.statusBar": "状态栏", "general.statusHint": "显示 Agent 当前在做什么，并可调整到不遮挡模型的位置。", "general.position": "位置",
     "video.display": "显示", "video.scale": "缩放", "video.opacity": "透明度", "video.focus": "聚焦范围：显示顶部", "video.focusHint": "仅在右键菜单启用聚焦模式时生效。", "video.rendering": "渲染", "video.renderHint": "降低画质通常比降低帧率更省 GPU。", "video.quality": "画质", "video.fps": "帧率",
-    "agent.mapping": "状态与动作", "agent.mappingHint": "为当前模型的每个 Agent 状态选择动作。选择“模型默认”会使用 avatar.json 的映射。", "agent.default": "模型默认",
-    "behavior.idle": "闲置自治", "behavior.idleHint": "无人交互且 Agent 空闲时，让形象自己看四周、播放动作或表情。", "behavior.delay": "静置多少秒后开始", "behavior.zero": "填 0 即关闭。", "behavior.random": "随机名单", "behavior.randomHint": "鼠标互动列用于手动触发，闲置动作列用于自治。点击列标题可全开或全关。", "behavior.motions": "动作", "behavior.expressions": "表情", "behavior.expressionClick": "鼠标单击", "behavior.motionDoubleClick": "鼠标双击", "behavior.idleActions": "闲置动作",
+    "agent.connectors": "接入", "agent.connectorsHint": "选择你在用的 agent，自动下载并安装对应的 connector；安装后如需手动步骤会显示在下面。", "agent.mapping": "状态与动作", "agent.mappingHint": "为当前模型的每个 Agent 状态选择动作。选择“模型默认”会使用 avatar.json 的映射。", "agent.default": "模型默认",
+    "behavior.idle": "闲置自治", "behavior.idleHint": "无人交互且 Agent 空闲时，让形象自己看四周、播放动作或表情。", "behavior.delay": "静置多少秒后开始", "behavior.zero": "填 0 即关闭。", "behavior.random": "随机名单", "behavior.randomHint": "「单击 / 双击」列是你亲自触发的，「闲置」列是没人理它时自己播的。点列标题可全开或全关。", "behavior.motions": "动作", "behavior.expressions": "表情", "behavior.expressionClick": "单击", "behavior.motionDoubleClick": "双击", "behavior.idleActions": "闲置",
     "models.title": "模型", "models.hint": "拖入包含 *.model3.json 的 Cubism 模型文件夹。", "models.drop": "拖模型文件夹到此处", "models.open": "在访达中打开模型文件夹",
-    "common.empty": "这个模型没有可用项", "models.empty": "尚未安装模型", "models.hide": "隐藏", "models.delete": "删除", "models.deleteConfirm": "确定删除模型", "models.installing": "安装中…", "models.installed": "已安装", "models.switchHint": "", "models.tauriOnly": "拖放安装需要在 Agent Avatar 应用内使用", "models.unrecognized": "无法识别。",
+    "common.empty": "这个模型没有可用项", "models.empty": "尚未安装模型", "models.hide": "隐藏", "models.delete": "删除", "models.deleteConfirm": "再点一次「确认删除」就会删除模型：", "models.deleteAgain": "确认删除", "models.installing": "安装中…", "models.installed": "已安装", "models.switchHint": "", "models.tauriOnly": "拖放安装需要在 Agent Avatar 应用内使用", "models.unrecognized": "无法识别。",
     ...Object.fromEntries(SEMANTIC_STATES.map(state => [`state.${state}`, state])),
   },
   en: {
     "tab.general": "General", "tab.video": "Video", "tab.agent": "Agent", "tab.behavior": "Behavior", "tab.models": "Models",
     "general.language": "Language", "general.interfaceLanguage": "Interface language", "general.languageHint": "Language changes apply to this settings window immediately.", "general.statusBar": "Status bar", "general.statusHint": "Show what the agent is doing and place the label where it does not cover the avatar.", "general.position": "Position",
     "video.display": "Display", "video.scale": "Scale", "video.opacity": "Opacity", "video.focus": "Focus crop: show top", "video.focusHint": "Only applies when Focus Mode is enabled from the context menu.", "video.rendering": "Rendering", "video.renderHint": "Lowering quality usually saves more GPU power than lowering frame rate.", "video.quality": "Quality", "video.fps": "Frame rate",
-    "agent.mapping": "Agent state and motion", "agent.mappingHint": "Choose a motion for each agent state on the current model. Model default uses the avatar.json mapping.", "agent.default": "Model default",
-    "behavior.idle": "Idle autonomy", "behavior.idleHint": "Let the avatar look around or play motions and expressions while the agent is idle.", "behavior.delay": "Start after idle seconds", "behavior.zero": "Set to 0 to disable.", "behavior.random": "Random pools", "behavior.randomHint": "Mouse interaction controls manual playback; Idle Actions controls autonomous behavior. Click a column heading to toggle all.", "behavior.motions": "Motions", "behavior.expressions": "Expressions", "behavior.expressionClick": "Mouse Click", "behavior.motionDoubleClick": "Mouse Double-click", "behavior.idleActions": "Idle Actions",
+    "agent.connectors": "Connectors", "agent.connectorsHint": "Pick the agent you use and install its connector. Any remaining manual step is shown below.", "agent.mapping": "Agent state and motion", "agent.mappingHint": "Choose a motion for each agent state on the current model. Model default uses the avatar.json mapping.", "agent.default": "Model default",
+    "behavior.idle": "Idle autonomy", "behavior.idleHint": "Let the avatar look around or play motions and expressions while the agent is idle.", "behavior.delay": "Start after this many idle seconds", "behavior.zero": "Set to 0 to disable.", "behavior.random": "Random pools", "behavior.randomHint": "The Click / Double-click columns are what you trigger yourself; Idle is what it plays on its own. Click a column heading to toggle all.", "behavior.motions": "Motions", "behavior.expressions": "Expressions", "behavior.expressionClick": "Click", "behavior.motionDoubleClick": "Double-click", "behavior.idleActions": "Idle",
     "models.title": "Models", "models.hint": "Drop a Cubism model folder containing a *.model3.json file.", "models.drop": "Drop a model folder here", "models.open": "Open Models Folder in Finder",
-    "common.empty": "No available items for this model", "models.empty": "No models installed", "models.hide": "Hide", "models.delete": "Delete", "models.deleteConfirm": "Delete model", "models.installing": "Installing…", "models.installed": "Installed", "models.switchHint": "", "models.tauriOnly": "Drag-and-drop installation is only available inside Agent Avatar", "models.unrecognized": "could not be recognized.",
+    "common.empty": "No available items for this model", "models.empty": "No models installed", "models.hide": "Hide", "models.delete": "Delete", "models.deleteConfirm": "Click Confirm again to delete the model:", "models.deleteAgain": "Confirm", "models.installing": "Installing…", "models.installed": "Installed", "models.switchHint": "", "models.tauriOnly": "Drag-and-drop installation is only available inside Agent Avatar", "models.unrecognized": "could not be recognized.",
     ...Object.fromEntries(SEMANTIC_STATES.map(state => [`state.${state}`, state[0].toUpperCase() + state.slice(1)])),
   },
 };
@@ -49,7 +52,14 @@ let locale: Language = "zh-CN";
 const tr = (key: string): string => TEXT[locale][key] ?? key;
 
 function applyLanguage(next: Language): void {
-  locale = next; document.documentElement.lang = next; document.title = next === "en" ? "Agent Avatar Settings" : "Agent Avatar 设置";
+  locale = next; document.documentElement.lang = next;
+  const title = next === "en" ? "Agent Avatar Settings" : "Agent Avatar 设置";
+  document.title = title;
+  // `document.title` 只改网页标题，**原生窗口的标题栏不跟着变** —— 必须显式 setTitle。
+  // `getCurrentWindow()` 在非 Tauri 环境下**同步抛错**，`.catch()` 接不住：不裹 try
+  // 的话浏览器里打开设置页会在这里断掉整个 boot（同 bindInstall 的那条注释）。
+  try { void getCurrentWindow().setTitle(title).catch(console.error); }
+  catch (error) { console.error("setTitle unavailable", error); }
   document.querySelectorAll<HTMLElement>("[data-i18n]").forEach(node => { node.textContent = tr(node.dataset.i18n!); });
   document.querySelectorAll<HTMLSelectElement>('[data-list="state-motions"] select').forEach(select => { select.options[0].text = tr("agent.default"); });
 }
@@ -125,6 +135,14 @@ function renderChecklist(
   }
 }
 
+/**
+ * 语言切换时要重画的动态内容。
+ *
+ * `applyLanguage` 只更新带 `data-i18n` 的静态节点，而名单是 JS 现生成的 ——
+ * 空名单那句「这个模型没有可用项」原来会在切到英文之后原样留在页面上（发布前逐条过文案时看到）。
+ */
+const redraws: (() => void)[] = [];
+
 function bindPool(
   kind: "motions" | "expressions",
   items: { key: string; label: string }[],
@@ -153,6 +171,7 @@ function bindPool(
     commit(column);
   }
   draw();
+  redraws.push(draw);
 }
 
 function bindStateMotions(dir: string, motions: { key: string; label: string; ref: MotionRef }[]): void {
@@ -208,12 +227,23 @@ async function showModels(): Promise<void> {
     });
     hide.append(checkbox, document.createTextNode(tr("models.hide")));
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "delete"; remove.textContent = tr("models.delete");
+    // 两步确认，不用 `confirm()` —— Tauri 的 webview 不实现它（返回 false），
+    // 表现是「点删除没有任何反应」。同 connectors.ts 里的卸载按钮。
+    let armed: number | undefined;
     remove.addEventListener("click", () => {
-      if (!confirm(`${tr("models.deleteConfirm")} “${model.label}”?`)) return;
+      if (armed === undefined) {
+        remove.textContent = tr("models.deleteAgain");
+        setLabel("install", `${tr("models.deleteConfirm")} “${model.label}”`);
+        armed = window.setTimeout(() => {
+          armed = undefined; remove.textContent = tr("models.delete"); setLabel("install", "");
+        }, 6000);
+        return;
+      }
+      clearTimeout(armed); armed = undefined; remove.textContent = tr("models.delete"); setLabel("install", "");
       void invoke("delete_model", { dir: model.dir }).then(() => {
         void showModels(); void showIssues();
         announce({ modelDeleted: model.dir });
-      }).catch(error => setLabel("install", String(error)));
+      }).catch(error => setLabel("install", errorMessage(error, locale)));
     });
     row.append(name, hide, remove); host.append(row);
   }
@@ -238,7 +268,7 @@ function bindInstall(): void {
         say(`${tr("models.installed")} “${installed.dir}”${tr("models.switchHint")}`, "ok");
         void showIssues(); void showModels();
       } catch (error) {
-        say(String(error), "error");
+        say(errorMessage(error, locale), "error");
       }
     }).catch(console.error);
   } catch (error) {
@@ -260,7 +290,7 @@ const issueText = (reason: string, rawName: string): string => {
   } else {
     if (reason === "archive") return `<b>${name}</b> 是压缩包。请先双击解压，把解压出来的<b>文件夹</b>留在这里。`;
     if (reason === "no-model3") return `<b>${name}</b> 里没找到 <code>*.model3.json</code>（向下找了两层）。`;
-    if (reason === "bad-name") return `<b>${name}</b> 的名字不能用作皮肤名：请改成只含字母、数字、- 或 _。`;
+    if (reason === "bad-name") return `<b>${name}</b> 的名字不能用作模型名：请改成只含字母、数字、- 或 _。`;
   }
   return `<b>${name}</b> ${tr("models.unrecognized")}`;
 };
@@ -273,6 +303,9 @@ async function showIssues(): Promise<void> {
     .join("");
 }
 
+/** 接入区块：与首次运行的向导共用同一份实现（见 connectors.ts）。 */
+const showConnectors = (): void => renderConnectors($<HTMLElement>('[data-list="connectors"]'), locale);
+
 /** 每一块独立失败：设置页有五组控件，一组坏了不该让其余四组一起消失。 */
 function guard(name: string, run: () => void): void {
   try { run(); } catch (error) { console.error(`settings:${name}`, error); }
@@ -283,7 +316,7 @@ async function boot(): Promise<void> {
   locale = language(); applyLanguage(locale); bindTabs();
   guard("language", () => bindSelect<Language>("language", LANGUAGES,
     value => value === "en" ? "English" : "简体中文", locale,
-    value => { rememberLanguage(value); applyLanguage(value); updateLocalizedSelects(); void showIssues(); void showModels(); announce({ language: value }); }));
+    value => { rememberLanguage(value); applyLanguage(value); updateLocalizedSelects(); void showIssues(); void showModels(); showConnectors(); redraws.forEach(redraw => redraw()); announce({ language: value }); }));
   guard("scale", () => bindSlider("scale", "scale", 100, scalePercent => ({ scalePercent })));
   guard("opacity", () => bindSlider("opacity", "opacity", 100, opacityPercent => ({ opacityPercent })));
   guard("focus", () => bindSlider("focus", "focusPercent", DEFAULT_FOCUS_PERCENT, focusPercent => ({ focusPercent })));
@@ -316,6 +349,7 @@ async function boot(): Promise<void> {
     "fps", FPS_CHOICES, value => `${value} FPS`, prefs.read("fps", 30) === 60 ? 60 : 30,
     value => announce({ fps: value })));
 
+  guard("connectors", showConnectors);
   guard("install", bindInstall);
   void showIssues(); void showModels();
 

@@ -6,10 +6,15 @@ import { Application } from "pixi.js";
 import { Live2DModel } from "@jannchie/pixi-live2d-display/cubism4";
 import { focusFrame, autoFocusZoom, type Framing } from "./dock";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { loadInventory, loadModelIndex, motionRefs, type ModelInventory } from "./inventory";
 import { loadManifest } from "./manifest";
 import type { AvatarManifest } from "./types";
-import { language, loadPrefs, UNSUPPORTED_CUBISM_TEXT } from "./prefs";
+import { language, loadPrefs, UNSUPPORTED_CUBISM_TEXT, type Language } from "./prefs";
+
+/** 画廊与右键菜单同一套写法：一处给中英两句，不另建文案表（这里的词条不多）。 */
+let locale: Language = "zh-CN";
+const t9n = (zh: string, en: string): string => (locale === "en" ? en : zh);
 
 interface Cell { dir: string; label: string; model: Live2DModel; manifest: AvatarManifest; inventory: ModelInventory; base: [number, number]; issues: string[] }
 
@@ -53,11 +58,11 @@ function manifestIssues(manifest: AvatarManifest, inventory: ModelInventory): st
   const issues: string[] = [];
   for (const [state, [group, index]] of Object.entries(manifest.motions ?? {}) as [string, [string, number]][]) {
     const found = inventory.motions.find(motion => motion.group === group);
-    if (!found) issues.push(`${state} → 组 ${group} 不存在`);
-    else if (index >= found.count) issues.push(`${state} → ${group}[${index}] 越界（0..${found.count - 1}）`);
+    if (!found) issues.push(t9n(`${state} → 组 ${group} 不存在`, `${state} → group ${group} does not exist`));
+    else if (index >= found.count) issues.push(t9n(`${state} → ${group}[${index}] 越界（0..${found.count - 1}）`, `${state} → ${group}[${index}] is out of range (0..${found.count - 1})`));
   }
   for (const [state, name] of Object.entries(manifest.expressions ?? {}) as [string, string][]) {
-    if (!inventory.expressions.includes(name)) issues.push(`${state} → 表情 ${name} 不存在`);
+    if (!inventory.expressions.includes(name)) issues.push(t9n(`${state} → 表情 ${name} 不存在`, `${state} → expression ${name} does not exist`));
   }
   return issues;
 }
@@ -129,12 +134,12 @@ function layout(cells: Cell[]): boolean {
     card.style.width = `${CARD_WIDTH}px`;
     card.innerHTML =
       `<b>${cell.label}<span style="color:#8b95a5;font-weight:400"> · ${cell.dir}</span></b>` +
-      `<dl><dt>尺寸</dt><dd>${Math.round(baseWidth)}×${Math.round(baseHeight)}</dd>` +
-      `<dt>宽高比</dt><dd>${aspect.toFixed(2)}</dd>` +
-      `<dt>聚焦判定</dt><dd class="${zoom === 1 ? "focus" : "full"}">${zoom === 1 ? "已是胸像·不裁" : `全身·放大 ${zoom}×`}</dd>` +
-      `<dt>动作</dt><dd>${cell.inventory.motions.length} 组 / ${motions} 个</dd>` +
-      `<dt>表情</dt><dd>${cell.inventory.expressions.length}</dd>` +
-      `<dt>manifest</dt><dd class="${cell.issues.length ? "bad" : "focus"}">${cell.issues.length ? `${cell.issues.length} 处问题` : "有效"}</dd></dl>` +
+      `<dl><dt>${t9n("尺寸", "Size")}</dt><dd>${Math.round(baseWidth)}×${Math.round(baseHeight)}</dd>` +
+      `<dt>${t9n("宽高比", "Aspect")}</dt><dd>${aspect.toFixed(2)}</dd>` +
+      `<dt>${t9n("聚焦判定", "Focus")}</dt><dd class="${zoom === 1 ? "focus" : "full"}">${zoom === 1 ? t9n("已是胸像·不裁", "Already a bust · no crop") : t9n(`全身·放大 ${zoom}×`, `Full body · zoom ${zoom}×`)}</dd>` +
+      `<dt>${t9n("动作", "Motions")}</dt><dd>${t9n(`${cell.inventory.motions.length} 组 / ${motions} 个`, `${cell.inventory.motions.length} groups / ${motions} total`)}</dd>` +
+      `<dt>${t9n("表情", "Expressions")}</dt><dd>${cell.inventory.expressions.length}</dd>` +
+      `<dt>manifest</dt><dd class="${cell.issues.length ? "bad" : "focus"}">${cell.issues.length ? t9n(`${cell.issues.length} 处问题`, `${cell.issues.length} issue(s)`) : t9n("有效", "valid")}</dd></dl>` +
       (cell.issues.length ? `<div class="bad" style="margin-top:4px;font-size:11px">${cell.issues.join("<br>")}</div>` : "");
     cards.append(card);
   });
@@ -150,10 +155,21 @@ async function galleryEntries(): Promise<GalleryEntry[]> {
   return [...bundled, ...installed.map(item => ({ dir: item.dir, label: item.label, source: "installed" as const, model3: item.model3 }))];
 }
 
-await loadPrefs();   // 语言从配置来（画廊里唯一要本地化的就是那条「渲染器不支持」）
+await loadPrefs();   // 语言从配置来，和设置窗口用同一份
+locale = language();
+document.documentElement.lang = locale;
+{
+  const title = t9n("Agent Avatar 模型画廊", "Agent Avatar Model Gallery");
+  document.title = title;
+  // 与设置窗口同理：`document.title` 不会改原生标题栏；同样要裹 try，
+  // `getCurrentWindow()` 在非 Tauri 环境下是同步抛错的。
+  try { void getCurrentWindow().setTitle(title).catch(console.error); }
+  catch (error) { console.error("setTitle unavailable", error); }
+  document.querySelector("#framing")!.textContent = t9n("半身构图", "Bust framing");
+}
 const entries = await galleryEntries();
 if (!entries.length) {
-  status.textContent = "没有可用模型";
+  status.textContent = t9n("没有可用模型", "No models available");
 } else {
   const cells: Cell[] = [];
   for (const entry of entries) {
@@ -162,12 +178,12 @@ if (!entries.length) {
       app.stage.addChild(cell.model);
       cells.push(cell);
     } catch (error) {
-      status.textContent = `${entry.dir} 加载失败：${String(error).slice(0, 120)}`;
+      status.textContent = t9n(`${entry.dir} 加载失败：${String(error).slice(0, 120)}`, `${entry.dir} failed to load: ${String(error).slice(0, 120)}`);
       console.error(entry.dir, error);
     }
   }
   layout(cells);
-  status.textContent = `${cells.length} / ${entries.length} 个模型`;
+  status.textContent = t9n(`${cells.length} / ${entries.length} 个模型`, `${cells.length} / ${entries.length} models`);
   // 用 ResizeObserver 而非 window.resize —— 容器尺寸就绪时会补发，隐藏标签页恢复后也能自愈
   new ResizeObserver(() => layout(cells)).observe(grid);
   framingButton.addEventListener("click", () => {

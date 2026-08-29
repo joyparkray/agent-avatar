@@ -1,0 +1,299 @@
+import "./connectors.css";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { errorMessage } from "./errors";
+import type { Language } from "./prefs";
+
+/**
+ * Agent connector 接入界面。首次运行的接入向导与设置页的「接入」区块**共用这一份** ——
+ * 两处要显示的东西完全一样（五家 + 状态 + 安装/卸载 + 装完的手动步骤），
+ * 各写一套必然会漂，而漂了之后表现是「设置里说已装、向导里说没装」。
+ *
+ * 下载/解压/执行都在 Rust 侧（见 src-tauri/src/connectors.rs），这里只负责显示与回显。
+ */
+export const CONNECTOR_HARNESSES = ["claude-code", "codex", "dsh", "hermes", "workbuddy"] as const;
+export type Harness = typeof CONNECTOR_HARNESSES[number];
+
+/** 各家自己的写法，不翻译 —— 用户要在自己的工具里找到同一个名字。 */
+export const HARNESS_LABELS: Record<Harness, string> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  dsh: "DeepSeek (dsh)",
+  hermes: "Hermes",
+  workbuddy: "WorkBuddy",
+};
+
+export interface ConnectorState {
+  harness: string;
+  installed: boolean;
+  path?: string | null;
+  /** 这家的 hook 最后一次写状态文件是多久以前（秒）。从没写过 = null，见 Rust 侧注释。 */
+  lastSignalSeconds?: number | null;
+}
+
+/**
+ * 接入的三档状态。**「装了」和「通了」是两回事**：插件目录在，只说明文件拷过去了；
+ * 没 enable（Hermes）、没授信（Codex）、没重启（WorkBuddy）时目录照样在，
+ * 而用户看到的是「已安装但形象一直不动」，没有任何线索。中间这档就是为它设的。
+ */
+export type LinkState = "missing" | "unconfigured" | "connected";
+
+export function linkState(entry: Pick<ConnectorState, "installed" | "lastSignalSeconds">): LinkState {
+  if (!entry.installed) return "missing";
+  // 判据是「有没有写过」而不是「最近有没有写过」—— 一周没用那家 agent 的用户
+  // 不该被告知需要重新配置。新旧程度只作为附注显示。
+  return typeof entry.lastSignalSeconds === "number" ? "connected" : "unconfigured";
+}
+
+/**
+ * 中间档的说法要看这家**到底有没有人工步骤**。
+ * Claude Code 与 dsh 装完即用，对它们说「需人工配置」是把用户支去做一件不存在的事 ——
+ * 真正的原因是还没开过新会话。标签因此分成两句，其余两档共用。
+ */
+export function statusLabel(state: LinkState, harness: string, locale: Language): string {
+  if (state === "unconfigured" && postInstallSteps(harness, locale).length === 0) {
+    return locale === "en" ? "Installed · waiting for the first session" : "插件已安装，等待首次会话";
+  }
+  return CONNECTOR_TEXT[locale][`link.${state}`];
+}
+
+/** 最后一次收到信号有多久。粗粒度即可 —— 用户要的是「刚才还在动」而不是精确秒数。 */
+export function freshness(seconds: number, locale: Language): string {
+  const en = locale === "en";
+  if (seconds < 120) return en ? "just now" : "刚刚";
+  if (seconds < 3600) return en ? `${Math.round(seconds / 60)} min ago` : `${Math.round(seconds / 60)} 分钟前`;
+  if (seconds < 86400) return en ? `${Math.round(seconds / 3600)} hr ago` : `${Math.round(seconds / 3600)} 小时前`;
+  return en ? `${Math.round(seconds / 86400)} days ago` : `${Math.round(seconds / 86400)} 天前`;
+}
+
+export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
+  "zh-CN": {
+    title: "接入你的 Agent",
+    hint: "选一个你在用的 agent，Agent Avatar 会自动下载并安装对应的 connector —— 不需要打开终端。",
+    "link.missing": "插件未安装，需安装插件",
+    "link.unconfigured": "插件已安装，需人工配置",
+    "link.connected": "插件正常，已连通",
+    "details.show": "安装说明", "details.steps": "还需要你做这几步：",
+    "details.none": "装完即用，没有额外步骤。新开一个会话就会生效。",
+    "details.stale": "如果它之前一直是好的，多半是系统清理了临时目录；新开一次会话就会恢复。",
+    install: "安装", reinstall: "重装", uninstall: "卸载", done: "完成",
+    "stage.download": "正在下载 connector…",
+    "stage.extract": "正在解压…",
+    "stage.install": "正在安装…",
+    "stage.ok": "安装完成",
+    "stage.removed": "已卸载",
+    uninstallConfirm: "再点一次「确认卸载」就会删除插件目录：",
+    uninstallAgain: "确认卸载",
+    listFailed: "读不到接入状态：",
+    failed: "安装失败：",
+    loading: "读取中…",
+    skip: "以后再说",
+  },
+  en: {
+    title: "Connect your agent",
+    hint: "Pick the agent you use. Agent Avatar downloads and installs its connector for you — no terminal needed.",
+    "link.missing": "Plugin not installed — install it",
+    "link.unconfigured": "Installed — needs manual setup",
+    "link.connected": "Connected and working",
+    "details.show": "Setup guide", "details.steps": "You still need to:",
+    "details.none": "Nothing else to do. It takes effect in your next session.",
+    "details.stale": "If it used to work, the temp directory was probably cleaned — start a new session to restore it.",
+    install: "Install", reinstall: "Reinstall", uninstall: "Uninstall", done: "Done",
+    "stage.download": "Downloading connector…",
+    "stage.extract": "Extracting…",
+    "stage.install": "Installing…",
+    "stage.ok": "Installed",
+    "stage.removed": "Uninstalled",
+    uninstallConfirm: "Click Confirm again to remove the plugin directory for",
+    uninstallAgain: "Confirm",
+    listFailed: "Could not read connector status: ",
+    failed: "Installation failed: ",
+    loading: "Loading…",
+    skip: "Not now",
+  },
+};
+
+/**
+ * 装完之后**应用替用户做不了**的那几步。
+ *
+ * 这些步骤要么需要在对方的会话里操作（Codex 的 `/hooks` 授信），要么需要重启对方的进程 ——
+ * 替用户跑既做不到也不该做。不说的话表现是「装完了没反应」，而用户没有办法知道为什么。
+ */
+export function postInstallSteps(harness: string, locale: Language): string[] {
+  const zh = locale !== "en";
+  switch (harness) {
+    case "hermes":
+      return zh
+        ? ["在终端里运行：hermes plugins enable agent-avatar", "已经在跑的 Hermes 会话不会加载新插件，需要重启对应进程。"]
+        : ["Run in a terminal: hermes plugins enable agent-avatar", "Sessions already running will not pick up the plugin — restart them."];
+    case "workbuddy":
+      return zh
+        ? ["重启 WorkBuddy app —— 插件在启动时才被加载。"]
+        : ["Restart the WorkBuddy app — plugins are loaded at startup."];
+    case "codex":
+      return zh
+        ? ["在 Codex 会话里运行 /hooks，逐条授信 Agent Avatar 的 hook。未授信的 hook 会被一直跳过，这是安全设计，不是故障。",
+           "connector 升级后需要重新授信：Codex 按 hook 的内容哈希记忆信任。"]
+        : ["Run /hooks inside a Codex session and trust each Agent Avatar hook. Untrusted hooks are silently skipped by design.",
+           "Re-trust after a connector upgrade: Codex keys trust to the hook's content hash."];
+    default:
+      // claude-code / dsh：装完即用，没有额外步骤。
+      return [];
+  }
+}
+
+const tr = (locale: Language, key: string): string => CONNECTOR_TEXT[locale][key] ?? key;
+
+/** Rust 侧的三段进度。未知阶段照原样显示，不吞掉。 */
+export const progressText = (stage: string, locale: Language): string =>
+  CONNECTOR_TEXT[locale][`stage.${stage}`] ?? stage;
+
+/**
+ * **失败不能当成「一家都没装」**：`list_connectors` 被拒（命令没登记进
+ * `permissions/skin.toml` 就会这样）或出错时，原来的 `.catch(() => [])` 让界面把五家
+ * 全显示成「未安装」—— 一个坏掉的通道长得和一台干净的机器一模一样，
+ * 而用户照着它去点安装只会把已经装好的东西再装一遍。出错就说出错。
+ */
+const listConnectors = (): Promise<ConnectorState[]> => invoke<ConnectorState[]>("list_connectors");
+
+/** 装/卸完成后要显示的一条提示。重画会把整棵 DOM 换掉，提示得跟着搬过去。 */
+interface Pending { harness: string; message: string; kind: "ok" | "error" }
+
+/** 进度事件是全局的：每个宿主只保留**最后一次**渲染的接收者，否则重画一次就叠一层。 */
+let subscribed = false;
+const sinks = new Map<HTMLElement, (payload: { harness: string; stage: string }) => void>();
+
+/**
+ * 把五家渲染进 `host`。重复调用会重画（安装完刷新状态走的就是同一条路径）。
+ *
+ * `onChange` 在装/卸成功后回调 —— 首次向导据此知道用户已经接上了一家。
+ */
+export function renderConnectors(host: HTMLElement, locale: Language, onChange?: () => void, pending?: Pending): void {
+  const text = (key: string) => tr(locale, key);
+  host.textContent = text("loading");
+  const rows = new Map<string, HTMLElement>();
+  const say = (harness: string, message: string, kind: "" | "ok" | "error" = "") => {
+    const status = rows.get(harness);
+    if (!status) return;
+    status.textContent = message;
+    status.className = `connector-status ${kind}`;
+  };
+  if (!subscribed) {
+    subscribed = true;
+    void listen<{ harness: string; stage: string }>("connector-progress",
+      ({ payload }) => sinks.forEach(sink => sink(payload))).catch(console.error);
+  }
+  sinks.set(host, payload => say(payload.harness, progressText(payload.stage, locale)));
+
+  void listConnectors().catch(error => {
+    host.textContent = "";
+    const failed = document.createElement("p");
+    failed.className = "connector-status error";
+    failed.textContent = `${text("listFailed")}${errorMessage(error, locale)}`;
+    host.append(failed);
+    return undefined;
+  }).then(states => {
+    if (!states) return;
+    const known = new Map(states.map(state => [state.harness, state]));
+    host.textContent = "";
+    for (const harness of CONNECTOR_HARNESSES) {
+      const entry = known.get(harness) ?? { harness, installed: false };
+      const state = linkState(entry);
+      const installed = state !== "missing";
+      const steps = postInstallSteps(harness, locale);
+
+      const row = document.createElement("div");
+      row.className = "connector-row";
+      row.dataset.link = state;
+      const name = document.createElement("span");
+      name.className = "connector-name"; name.textContent = HARNESS_LABELS[harness];
+      const actions = document.createElement("span");
+      actions.className = "connector-actions";
+
+      // 三档状态一行说清。颜色只是辅助，文字本身必须能独立读懂 ——
+      // 「已安装」和「已连通」差的正是用户卡住的那一步。
+      const link = document.createElement("p");
+      link.className = "connector-link";
+      const dot = document.createElement("i"); dot.className = "dot";
+      const linkText = document.createElement("span");
+      linkText.textContent = statusLabel(state, harness, locale);
+      if (state === "connected" && typeof entry.lastSignalSeconds === "number") {
+        linkText.textContent += ` · ${freshness(entry.lastSignalSeconds, locale)}`;
+      }
+      link.append(dot, linkText);
+
+      const status = document.createElement("p");
+      status.className = "connector-status";
+      rows.set(harness, status);
+
+      // 安装说明：默认收起，点开看这家要做什么。**装之前也能看**——
+      // 用户有权在动手前知道这一家会要求他做什么（Codex 的 /hooks 授信不是小事）。
+      const details = document.createElement("div");
+      details.className = "connector-details"; details.hidden = true;
+      details.textContent = steps.length ? `${text("details.steps")}\n${steps.map(step => `· ${step}`).join("\n")}` : text("details.none");
+      // 「之前通过、现在没信号」是临时目录被清了，不是配置坏了。不说的话用户会去重装。
+      if (state === "unconfigured" && steps.length === 0) details.textContent += `\n${text("details.stale")}`;
+      const toggle = document.createElement("button");
+      toggle.type = "button"; toggle.className = "ghost"; toggle.textContent = text("details.show");
+      toggle.setAttribute("aria-expanded", "false");
+      const showDetails = (on: boolean) => { details.hidden = !on; toggle.setAttribute("aria-expanded", String(on)); };
+      toggle.addEventListener("click", () => showDetails(details.hidden));
+      // 需人工配置时直接摊开：这一档的用户正卡在这里，还要他多点一次才看得到步骤没有道理。
+      if (state === "unconfigured" && steps.length > 0) showDetails(true);
+      actions.append(toggle);
+
+      const busy = (on: boolean) => actions.querySelectorAll("button").forEach(button => { button.disabled = on; });
+      const redraw = (next: Pending) => { renderConnectors(host, locale, onChange, next); onChange?.(); };
+
+      const install = document.createElement("button");
+      install.type = "button";
+      // 只有「安装」是主行动。已经装好的那一行把「重装」涂成主色，等于把最显眼的位置
+      // 让给一个多数人不该点的按钮。
+      if (!installed) install.className = "primary";
+      install.textContent = text(installed ? "reinstall" : "install");
+      install.addEventListener("click", () => {
+        busy(true);
+        say(harness, progressText("download", locale));
+        void invoke<{ log?: string }>("install_connector", { harness }).then(result => {
+          const detail = String(result?.log ?? "").trim();
+          if (detail) console.info(`connector:${harness}`, detail);
+          // 装完的手动步骤跟着重画一起显示：这时候不说，用户就再也不会主动去点开说明。
+          redraw({ harness, kind: "ok", message: [text("stage.ok"), ...steps.map(step => `· ${step}`)].join("\n") });
+        }).catch(error => { busy(false); say(harness, text("failed") + errorMessage(error, locale), "error"); });
+      });
+      actions.append(install);
+
+      if (installed) {
+        // 两步确认，**不用 `confirm()`**：Tauri 的 webview 不实现 JS 的 alert/confirm/prompt
+        // （官方要用 dialog 插件），`confirm()` 直接返回 false —— 表现是「点卸载没有任何反应」，
+        // 用户既看不到弹窗也看不到错误（实机撞到）。两步确认不依赖任何弹窗，两个窗口里都一样。
+        const remove = document.createElement("button");
+        remove.type = "button"; remove.className = "danger";
+        remove.textContent = text("uninstall");
+        let armed: number | undefined;
+        const disarm = () => {
+          if (armed !== undefined) clearTimeout(armed);
+          armed = undefined; remove.textContent = text("uninstall"); say(harness, "");
+        };
+        remove.addEventListener("click", () => {
+          if (armed === undefined) {
+            remove.textContent = text("uninstallAgain");
+            say(harness, `${text("uninstallConfirm")} ${HARNESS_LABELS[harness]}`);
+            // 自动解除：误点之后不该让这一行一直端着一个危险动作等你
+            armed = window.setTimeout(disarm, 6000);
+            return;
+          }
+          disarm();
+          busy(true);
+          void invoke("uninstall_connector", { harness })
+            .then(() => redraw({ harness, kind: "ok", message: text("stage.removed") }))
+            .catch(error => { busy(false); say(harness, errorMessage(error, locale), "error"); });
+        });
+        actions.append(remove);
+      }
+      row.append(name, actions, link, status, details);
+      host.append(row);
+    }
+    if (pending) say(pending.harness, pending.message, pending.kind);
+  });
+}
