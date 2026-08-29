@@ -3,5 +3,5 @@
   "productName": "Agent Avatar", "version": "1.0.0", "identifier": "io.github.joyparkray.agentavatar",
   "build": { "beforeDevCommand": "npm run dev", "devUrl": "http://localhost:1420", "beforeBuildCommand": "npm run build", "frontendDist": "../dist" },
   "app": { "macOSPrivateApi": true, "windows": [] },
-  "bundle": { "active": true, "targets": ["app"], "icon": [], "macOS": { "minimumSystemVersion": "14.2", "infoPlist": "Info.plist" } }
+  "bundle": { "active": true, "targets": ["app", "dmg"], "icon": [], "macOS": { "minimumSystemVersion": "14.2", "infoPlist": "Info.plist" } }
 }

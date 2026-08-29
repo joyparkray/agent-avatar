@@ -117,6 +117,7 @@ are assembled from it by `connectors/assemble.sh`, never copied by hand.
 - [Connectors — per-harness setup and gotchas](docs/CONNECTORS.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Bridge Protocol — the contract, if you want to add a harness](bridge/README.md)
+- [Architecture — how the three parts fit together](ARCHITECTURE.md)
 - [Contributing — build and test](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
 

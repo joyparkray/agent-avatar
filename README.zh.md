@@ -104,6 +104,7 @@ docs/         模型安装、接入、排查
 - [接入 —— 各家的设置与坑](docs/CONNECTORS.md)
 - [排查](docs/TROUBLESHOOTING.md)
 - [Bridge Protocol —— 想接新 harness 就看这份契约](bridge/README.md)
+- [架构 —— 三层怎么拼起来的](ARCHITECTURE.md)
 - [参与开发 —— 构建与测试](CONTRIBUTING.md)
 - [变更记录](CHANGELOG.md)
 
