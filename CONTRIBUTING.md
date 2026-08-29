@@ -23,14 +23,22 @@ npx tsc --noEmit                                  # types
 npx vitest run                                    # front-end unit tests
 cargo test --manifest-path src-tauri/Cargo.toml   # Rust
 
-cd ../connectors                                  # connector tests (stdlib only)
-for h in claude-code codex dsh hermes workbuddy; do
-  python3 -m unittest discover -s "$h" -p "test_*.py"
-done
+cd ../connectors                                  # connector tests, all five harnesses
+python3 -m pytest -q                              # needs pytest; see below
 ```
 
-Connectors are written against the Python standard library only, so they run under
-whatever `python3` the user's harness happens to provide.
+**The connector tests need pytest.** They use `tmp_path` and bare `assert`, which
+`unittest discover` cannot collect — it reports `Ran 0 tests ... OK`, a green result for
+zero tests. This README used to document exactly that command, so if you followed it, you
+were not running the 56 connector tests at all.
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install pytest
+.venv/bin/python -m pytest -q          # from connectors/
+```
+
+The connectors *themselves* are standard library only — pytest is a development
+dependency, never something a user's harness has to provide.
 
 ## Layout
 

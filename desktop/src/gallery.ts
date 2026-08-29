@@ -30,6 +30,8 @@ addEventListener("unhandledrejection", event => showFatal(t9n("画廊出错了",
 
 /** 画廊与右键菜单同一套写法：一处给中英两句，不另建文案表（这里的词条不多）。 */
 let locale: Language = "zh-CN";
+const escapeHtml = (value: string): string =>
+  value.replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 const t9n = (zh: string, en: string): string => (locale === "en" ? en : zh);
 
 interface Cell { dir: string; label: string; model: Live2DModel; manifest: AvatarManifest; inventory: ModelInventory; base: [number, number]; issues: string[] }
@@ -149,7 +151,10 @@ function layout(cells: Cell[]): boolean {
     card.style.top = `${cellTop + CELL_PADDING}px`;
     card.style.width = `${CARD_WIDTH}px`;
     card.innerHTML =
-      `<b>${cell.label}<span style="color:#8b95a5;font-weight:400"> · ${cell.dir}</span></b>` +
+      // 模型名进 innerHTML 前先转义。后端 `is_safe_dir_name` 已经把目录名限死在
+      // ASCII 字母数字/-/_，正常路径塞不进 HTML 特殊字符 —— 这是纵深防御：
+      // 万一以后放宽了命名规则，别让这里成为第二处要记得改的地方。
+      `<b>${escapeHtml(cell.label)}<span style="color:#8b95a5;font-weight:400"> · ${escapeHtml(cell.dir)}</span></b>` +
       `<dl><dt>${t9n("尺寸", "Size")}</dt><dd>${Math.round(baseWidth)}×${Math.round(baseHeight)}</dd>` +
       `<dt>${t9n("宽高比", "Aspect")}</dt><dd>${aspect.toFixed(2)}</dd>` +
       `<dt>${t9n("聚焦判定", "Focus")}</dt><dd class="${zoom === 1 ? "focus" : "full"}">${zoom === 1 ? t9n("已是胸像·不裁", "Already a bust · no crop") : t9n(`全身·放大 ${zoom}×`, `Full body · zoom ${zoom}×`)}</dd>` +

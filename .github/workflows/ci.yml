@@ -1,0 +1,52 @@
+# 公开的质量记录：四套测试全在这里跑一遍。
+#
+# 用 macOS runner 而不是 Linux：Rust 侧有 macOS 专属的原生代码（Core Audio process tap 的
+# Objective-C shim 由 build.rs 用 cc 编出来），在 Linux 上根本编不过。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    name: Desktop app (types, vitest, cargo)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+      - name: Types
+        run: npx tsc --noEmit
+      - name: Front-end unit tests
+        run: npx vitest run
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  connectors:
+    name: Connectors (all five harnesses)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # pytest 是开发依赖：connector 本身只用标准库，用户的 harness 不需要装它。
+      # 测试用 tmp_path / 裸 assert，`unittest discover` 收集不到（会报 Ran 0 tests ... OK）。
+      - run: python -m pip install --upgrade pip pytest
+      - name: Connector tests
+        working-directory: connectors
+        run: python -m pytest -q
+      - name: Assembled plugin trees smoke-test
+        # assemble.sh 每组装一家就喂一条事件跑一次，验证「组装后的目录能独立跑起来」——
+        # 漏拷 core 时的失败在真实注册里是静默的（hook 被跳过 / 一直 idle）
+        run: sh connectors/assemble.sh all "${{ runner.temp }}/connectors"
