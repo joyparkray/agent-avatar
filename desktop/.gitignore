@@ -1,0 +1,16 @@
+# Echo Skin build artifacts
+# 不带斜杠：本机这份是指向 backup/ 的**符号链接**，`node_modules/` 只匹配目录。
+node_modules
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# logs / os
+*.log
+.DS_Store
+
+# python
+__pycache__/
+.pytest_cache/
+models/
+build/

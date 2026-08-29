@@ -1,0 +1,17 @@
+/* 状态框视觉层。
+   - 状态框（.status）：默认白色/半透明描边；说话时外围变绿（data-speaking）。
+   - 人物背后不做大椭圆/大光晕（已移除 emotion halo 的 shell::before）。
+   - reaction：状态框一次短脉冲（瞬时，一闪即回）。 */
+:root{--reaction-ms:700ms}
+.shell{position:relative}
+
+/* 状态角标：默认半透明白描边（同底色轻框），说话时外围绿色描边（绿框即说话标识） */
+.status{border:2px solid rgba(255,255,255,.30); border-radius:8px; padding:2px 8px}
+
+/* 说话：状态框外围绿色描边（文字不加 speaking，绿框即说话标识） */
+.shell[data-speaking="true"] .status{border-color:#70ffbd; box-shadow:0 0 10px rgba(112,255,189,.55)}
+
+/* reaction：状态框一次短脉冲（瞬时，一闪即回） */
+.shell[data-reaction="blocked"] .status{border-color:#ffb84d; animation:reaction-pulse var(--reaction-ms) ease-out}
+.shell[data-reaction="interrupted"] .status{border-color:#e66bff; animation:reaction-pulse var(--reaction-ms) ease-out}
+@keyframes reaction-pulse{0%{box-shadow:0 0 16px currentColor}100%{box-shadow:0 0 0 rgba(0,0,0,0)}}

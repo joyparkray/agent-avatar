@@ -1,0 +1,645 @@
+import "./style.css"; import "./state.css"; import { invoke } from "@tauri-apps/api/core"; import { getCurrentWindow } from "@tauri-apps/api/window";
+import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleExpressionPoolKey, idleMotionPoolKey, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, readStateSource, writeStateSource, type Language, type StateSource, type SettingsChange } from "./prefs";
+import type { ModelChoice } from "./native-menu";
+import type { ModelSource } from "./prefs";
+import type { AvatarSource } from "./types";
+import { Live2DAvatarModel } from "./live2d";
+import { FPS_CHOICES, RENDER_SCALE, type RenderQuality } from "./render-quality"; import { AvatarDirector } from "./director"; import { SemanticDriver } from "./semantic"; import { VoiceDriver, voiceWebSocketUrl } from "./voice";
+import { installGlobalDiagnostics } from "./diagnostics";
+import { installWindowDragging } from "./drag";
+import { buildFallbackMenu, buildNativeMenu, type NativeMenuHandlers } from "./native-menu";
+import { IdleAutonomy } from "./idle";
+
+/** 用户装的皮肤（Rust 侧扫数据目录得来）。 */
+type InstalledModel = { dir: string; label: string; model3: string; adapted: boolean };
+
+/**
+ * 菜单里的皮肤清单 = 随包的 + 用户装的。
+ *
+ * **每次打开菜单都重新扫一遍**：用户可能直接往皮肤文件夹里拖了新皮肤，没有经过安装流程。
+ * 菜单本来就是每次重建的（勾选态要反映当前值），顺带 readdir 一次几乎没有开销 ——
+ * 这样就不需要额外做一个「刷新」按钮。
+ */
+async function listModels(): Promise<ModelChoice[]> {
+  const [bundled, installed] = await Promise.all([
+    loadModelIndex().catch(() => []),
+    invoke<InstalledModel[]>("list_installed_models").catch(() => [] as InstalledModel[]),
+  ]);
+  return [
+    ...bundled.map(entry => ({ ...entry, source: "bundled" as const })),
+    ...installed.map(item => ({ dir: item.dir, label: item.label, source: "installed" as const, model3: item.model3, adapted: item.adapted })),
+  ];
+}
+const menuModels = (models: ModelChoice[], hidden = readHiddenModels()): ModelChoice[] =>
+  models.filter(model => model.source !== "installed" || !hidden.includes(model.dir));
+
+/** 当前皮肤从哪加载：随包走内嵌资源，用户装的走数据目录，且可能没有 avatar.json。 */
+async function resolveAvatarSource(): Promise<AvatarSource> {
+  const dir = currentModelDir();
+  if (currentModelSource() === "installed") {
+    const installed = await invoke<InstalledModel[]>("list_installed_models").catch(() => [] as InstalledModel[]);
+    const found = installed.find(item => item.dir === dir);
+    // 没有 avatar.json 时交出 model3 文件名，由 loadManifest 按官方信息合成清单
+    if (found) return { baseUrl: modelBaseUrl(dir, "installed"), manifest: found.adapted ? "avatar.json" : undefined, model3: found.model3 };
+  }
+  return { baseUrl: modelBaseUrl(dir, "bundled"), manifest: "avatar.json" };
+}
+import { motionKey, motionRefs } from "./inventory";
+import { bottomSnapY } from "./dock";
+import { defaultEnabledExpressions, defaultEnabledMotions, loadInventory, loadModelIndex, motionLabel, pickEnabledExpression, pickEnabledMotion } from "./inventory";
+import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
+import { listen } from "@tauri-apps/api/event";
+import { currentMonitor } from "@tauri-apps/api/window";
+import { AudioSourceController, type AudioSource } from "./audio-source";
+import type { AvatarState } from "./types";
+function log(event: object): void { void invoke("log_event", { event: JSON.stringify(event) }).catch(() => {}); }
+installGlobalDiagnostics(log);
+const root = document.querySelector<HTMLDivElement>("#app")!; root.innerHTML = `<main class="shell idle"><div class="drag" data-tauri-drag-region></div><div class="model" data-tauri-drag-region></div><div class="status" data-no-drag>idle</div></main>`;
+const shell = root.querySelector<HTMLElement>(".shell")!, status = root.querySelector<HTMLElement>(".status")!;
+installWindowDragging(shell, getCurrentWindow(), log, async (dx, dy) => {
+  // 补上阈值前被丢弃的位移，否则人物会一直落后光标 DRAG_THRESHOLD_PX。
+  const window = getCurrentWindow(), scale = await window.scaleFactor();
+  const origin = (await window.outerPosition()).toLogical(scale);
+  await window.setPosition(new LogicalPosition(origin.x + dx, origin.y + dy));
+});
+// 启动自检：只探 Cubism Core —— 它是**唯一**随包的运行期资产（官方可再分发清单内）。
+// 原来还探一张 `models/haru/...` 的贴图，皮肤外置之后那条路径在 .app 里必然 404，
+// 探针只会稳定地报一个假故障。皮肤能不能取到由 model:loaded / model:failed 回答。
+async function probeAssets(): Promise<void> {
+  const script = await fetch("/vendor/live2d-core/live2dcubismcore.min.js")
+    .then(response => ({ ok: response.ok, status: response.status, type: response.headers.get("content-type") }))
+    .catch(error => ({ ok: false, error: String(error) }));
+  log({ event: "assets:probe", script });
+}
+let currentState = "", clickThroughHint = false, manualActivityTimer: number | undefined;
+let manual: { kind: "expression" | "motion"; name: string } | undefined;
+let notice: "unsupported-cubism" | undefined, noticeTimer: number | undefined;
+const ONBOARDING_TEXT = {
+  "zh-CN": {
+    title: "需要安装 Live2D 模型",
+    description: "发布版本不内置模型。如果你已有模型，可以直接使用自己的模型；否则可下载免费模型。请先完成解压，再把",
+    emphasis: "解压后的模型文件夹",
+    suffix: "放入安装目录。",
+    download: "下载免费模型", open: "打开安装目录", reload: "装好了，重新加载",
+  },
+  en: {
+    title: "A Live2D model is required",
+    description: "No model is bundled with this release. Use your own model if you already have one, or download a free model. Extract it first, then place the ",
+    emphasis: "extracted model folder",
+    suffix: " in the installation directory.",
+    download: "Download Free Model", open: "Open Installation Folder", reload: "Reload After Installation",
+  },
+} as const;
+
+function applyOnboardingLanguage(locale: Language): void {
+  const copy = ONBOARDING_TEXT[locale];
+  root.querySelector<HTMLElement>('[data-onboarding="title"]')!.textContent = copy.title;
+  root.querySelector<HTMLElement>('[data-onboarding="description"]')!.textContent = copy.description;
+  root.querySelector<HTMLElement>('[data-onboarding="emphasis"]')!.textContent = copy.emphasis;
+  root.querySelector<HTMLElement>('[data-onboarding="suffix"]')!.textContent = copy.suffix;
+  root.querySelector<HTMLElement>('[data-act="download-model"]')!.textContent = copy.download;
+  root.querySelector<HTMLElement>('[data-act="open-models"]')!.textContent = copy.open;
+  root.querySelector<HTMLElement>('[data-act="reload"]')!.textContent = copy.reload;
+  document.documentElement.lang = locale;
+}
+// 对外展示标签：writing/researching 对用户都是「助手在思考」，统一成 thinking，避免工具一闪造成
+// writing→researching→writing 的文案跳动。内部语义与表情仍保留区分。
+// 原来挤在 syncing 里的三件事现在标签也分开了：等另一个 agent / 后台更新记忆技能 / 同步外部服务。
+// 状态栏是这个应用唯一常驻可见的文字，跟界面语言走 —— 日志里记的仍是内部语义，不受影响。
+const STATE_LABELS: Record<Language, Record<string, string>> = {
+  "zh-CN": {
+    idle: "空闲", writing: "思考中", researching: "思考中",
+    executing: "执行中", awaiting: "等待中", reviewing: "审阅中",
+    syncing: "同步中", error: "出错",
+  },
+  en: {
+    idle: "idle", writing: "thinking", researching: "thinking",
+    executing: "executing", awaiting: "awaiting", reviewing: "reviewing",
+    syncing: "syncing", error: "error",
+  },
+};
+const REACTION_LABELS: Record<Language, Record<string, string>> = {
+  "zh-CN": { blocked: "受阻", interrupted: "被打断" },
+  en: { blocked: "blocked", interrupted: "interrupted" },
+};
+const CLICK_THROUGH_HINT: Record<Language, string> = {
+  "zh-CN": "穿透中，悬停 3 秒可操作",
+  en: "Click-through · hover 3s to interact",
+};
+const ACTIVITY_LABELS: Record<Language, { expression: string; motion: string }> = {
+  "zh-CN": { expression: "表情", motion: "动作" },
+  en: { expression: "Expression", motion: "Motion" },
+};
+/** 状态栏用的语言。设置窗口改了语言就地更新，故状态文字**渲染时**才拼，不在收到状态时定死。 */
+let uiLanguage: Language = "zh-CN";
+let lastSnapshot: Readonly<AvatarState> | undefined;
+
+function stateText(): string {
+  if (!lastSnapshot) return "";
+  const label = STATE_LABELS[uiLanguage][lastSnapshot.semantic] ?? lastSnapshot.semantic;
+  const reaction = lastSnapshot.reaction ? REACTION_LABELS[uiLanguage][lastSnapshot.reaction] ?? lastSnapshot.reaction : "";
+  return [label, reaction].filter(Boolean).join(" · ");
+}
+function renderStatus(): void {
+  currentState = stateText();
+  const warning = notice ? UNSUPPORTED_CUBISM_TEXT[uiLanguage] : "";
+  status.textContent = [currentState, manualActivity(), warning, clickThroughHint ? CLICK_THROUGH_HINT[uiLanguage] : ""].filter(Boolean).join(" · ");
+  void getCurrentWindow().setTitle(`Agent Avatar${currentState ? ` · ${currentState}` : ""}`).catch(console.error);
+}
+/** 与手动触发同一行显示的一次性提示。同样只存「哪条」，语言在渲染时才解析。 */
+function showUnsupportedNotice(durationMs = 20000): void {
+  notice = "unsupported-cubism"; renderStatus();
+  if (noticeTimer !== undefined) clearTimeout(noticeTimer);
+  noticeTimer = window.setTimeout(() => { notice = undefined; noticeTimer = undefined; renderStatus(); }, durationMs);
+}
+
+/** 手动触发的表情/动作也跟着语言走，故存的是「种类 + 名字」而不是拼好的字符串。 */
+function manualActivity(): string {
+  return manual ? `${ACTIVITY_LABELS[uiLanguage][manual.kind]} ${manual.name}` : "";
+}
+function showManualActivity(kind: "expression" | "motion", name: string, durationMs = 4000): void {
+  manual = { kind, name }; renderStatus();
+  if (manualActivityTimer !== undefined) clearTimeout(manualActivityTimer);
+  manualActivityTimer = window.setTimeout(() => { manual = undefined; manualActivityTimer = undefined; renderStatus(); }, durationMs);
+}
+function show(snapshot: Readonly<AvatarState>) { lastSnapshot = snapshot; shell.className = `shell ${snapshot.semantic}`; shell.dataset.speaking = String(snapshot.speaking); shell.dataset.reaction = snapshot.reaction ?? ""; renderStatus(); const event = { event: "visual-state", ...snapshot, at: Date.now() }; console.info(JSON.stringify(event)); log(event); }
+const BASE_SIZE = [340, 440] as const, HIT_REPORT_MS = 400;
+/** 双击会先触发一次单击，故单击延后这么久执行，期间收到双击就取消。 */
+const CLICK_EXPRESSION_DELAY_MS = 260;
+/** 窗口停止移动多久后归位。拖动期间 onMoved 会连续触发，须等落定。 */
+const DOCK_SETTLE_MS = 140;
+async function applyScale(percent: number): Promise<void> {
+  prefs.write("scale", percent);
+  await getCurrentWindow().setSize(new LogicalSize(Math.round(BASE_SIZE[0] * percent / 100), Math.round(BASE_SIZE[1] * percent / 100)));
+}
+
+
+/**
+ * 吸附底边：开启后窗口下缘对齐**显示器下缘**，移动后自动归位。
+ * 不用工作区下缘 —— 那会排除 Dock 与菜单栏，在人物下方留出一条可见空隙。
+ * 构图（全身/聚焦）是另一个独立开关，两者互不牵连。
+ */
+function installBottomSnap(enabled: () => boolean): { snap: () => Promise<void> } {
+  const appWindow = getCurrentWindow();
+  let settle: number | undefined;
+
+  const snap = async (): Promise<void> => {
+    if (!enabled()) return;
+    try {
+      const monitor = await currentMonitor();
+      if (!monitor) return;
+      const scale = await appWindow.scaleFactor();
+      const origin = (await appWindow.outerPosition()).toLogical(scale);
+      const screenTop = monitor.position.y / monitor.scaleFactor;
+      const screenBottom = screenTop + monitor.size.height / monitor.scaleFactor;
+      const workBottom = monitor.workArea.position.y / monitor.scaleFactor + monitor.workArea.size.height / monitor.scaleFactor;
+      const target = bottomSnapY(screenTop, monitor.size.height / monitor.scaleFactor, innerHeight);
+      if (Math.abs(target - origin.y) < 0.5) return;
+      await appWindow.setPosition(new LogicalPosition(origin.x, target));
+      // 同时记录工作区下缘，便于核对「空隙 = Dock 高度」这类问题。
+      log({ event: "dock:snapped", from: Math.round(origin.y), to: Math.round(target),
+            screenBottom: Math.round(screenBottom), workBottom: Math.round(workBottom), innerHeight });
+    } catch (error) { log({ event: "dock:error", error: String(error).slice(0, 200) }); }
+  };
+
+  // 拖动期间 onMoved 连续触发，等落定再归位，否则会和系统拖拽打架。
+  void appWindow.onMoved(() => {
+    if (!enabled()) return;
+    if (settle !== undefined) clearTimeout(settle);
+    settle = window.setTimeout(() => { settle = undefined; void snap(); }, DOCK_SETTLE_MS);
+  });
+  return { snap };
+}
+
+/**
+ * 右键的唯一入口，**在模块加载时就注册**。
+ *
+ * 之前它在 `installMenu` 末尾才注册，而 installMenu 开头要 await 加载 inventory、扫描皮肤目录。
+ * 切换皮肤会重载页面，这段几十毫秒的窗口期里右键，漏出来的就是 WKWebView 的默认菜单
+ * （Back / Reload / Inspect Element）—— 实机撞到过。
+ * 现在无论菜单装配到哪一步，默认菜单都不会出现；菜单没就绪时右键只是没反应。
+ */
+let openContextMenu: ((event: MouseEvent) => void) | null = null;
+/**
+ * 通知闲置自治「现在有正事」。
+ *
+ * 自治在 installMenu 里才创建（要等 inventory 与随机名单就绪），而说话/语义的接线在那之前，
+ * 所以留一个可替换的引用，装配好之前调用是空操作。
+ */
+let notifyIdleBusy: () => void = () => {};
+document.addEventListener("contextmenu", event => {
+  event.preventDefault();
+  openContextMenu?.(event);
+});
+
+/** 任何时候都要有退路的那三项。皮肤没就绪、或加载失败时都用它。 */
+const survivalHandlers = {
+  onSettings: () => void invoke("open_tool_window", { name: "settings" }).catch(error => log({ event: "menu:settings:error", error: String(error).slice(0, 200) })),
+  onResetPosition: () => void getCurrentWindow().center().catch(console.error),
+  onQuit: () => void getCurrentWindow().close(),
+};
+
+/**
+ * 皮肤加载失败后自动退回上一个能用的皮肤。
+ *
+ * 选中的皮肤记在配置里，坏皮肤会**每次启动都被重新加载** —— reload 也救不回来，
+ * 用户就永远回不到能用的状态了（实机撞到过，最后只能强杀进程）。
+ * 一次会话只自动回退一次，避免「回退目标也坏了」时无限重载。
+ */
+async function recoverFromBadModel(): Promise<boolean> {
+  const RETRIED = "echo.modelRecoveryTried";
+  if (sessionStorage.getItem(RETRIED)) return false;
+  const current = { dir: currentModelDir(), source: currentModelSource() };
+  // 回退目标必须是**实际存在**的皮肤，不能是硬编码的随包保底 —— 皮肤外置之后
+  // 随包皮肤一个都没有，老用户配置里却还指着它（升级即开机卡在「加载失败」，
+  // 而失败分支的右键菜单是精简版，换不了皮肤 = 自己救不了自己）。
+  const available = menuModels(await listModels().catch(() => [] as ModelChoice[]));
+  const exists = (choice: { dir: string; source: ModelSource }) =>
+    available.some(item => item.dir === choice.dir && item.source === choice.source);
+  const good = lastGoodModel();
+  const target = [...(good ? [good] : []), ...available]
+    .find(choice => exists(choice) && !(choice.dir === current.dir && choice.source === current.source));
+  // 一个能用的都没有：交给 boot 的 catch 去显示「还没有形象」，别在这里空转重载
+  if (!target) { log({ event: "model:recover:none", from: current.dir }); return false; }
+  try { sessionStorage.setItem(RETRIED, "1"); } catch { /* 隐私模式：不重试也好过循环 */ }
+  log({ event: "model:recover", from: current.dir, to: target.dir, via: good && exists(good) ? "last-good" : "first-installed" });
+  // 必须等落盘 —— 下一行就把页面换掉了（见 prefs.rememberModel）
+  await rememberModel(target.dir, target.source);
+  // URL 参数会盖过配置里的值，必须一起换掉
+  const url = new URL(location.href);
+  url.searchParams.set("model", target.dir);
+  location.replace(url.toString());
+  return true;
+}
+
+async function boot() { log({ event: "boot:start" });
+  // 配置必须在任何读取之前就位：它是同步 API + 内存缓存，只有这一次是异步的
+  log({ event: "prefs:loaded", ...await loadPrefs() });
+  uiLanguage = language();   // 模块级默认值只是占位，真正的值要等配置读完
+  // 设置窗口在「还没有模型」时也能安装/选择模型，因此切换监听必须早于模型加载。
+  void listen<SettingsChange>(SETTINGS_EVENT, ({ payload }) => {
+    if (payload.modelDeleted === currentModelDir()) location.reload();
+  }).catch(console.error);
+  // 皮肤加载要几秒，这期间右键必须有东西可用；皮肤坏掉时它更是唯一的退路。
+  openContextMenu = () => void buildFallbackMenu(survivalHandlers, log, "loading", [], language()).then(menu => menu.popup()).catch(console.error); void probeAssets(); try { const model = new Live2DAvatarModel(root.querySelector(".model")!, log); const avatarSource = await resolveAvatarSource(); await model.load(avatarSource); log({ event: "model:loaded", manifestId: model.manifestId });
+    // 这个皮肤确实能加载 —— 记下来，将来某个坏皮肤把应用卡住时退回到它
+    rememberGoodModel(currentModelDir(), currentModelSource());
+    // 画不对就直说。静默地少画几个部件，用户只会以为是模型坏了或应用坏了（实机上正是如此：
+    // ren 加载「成功」，脸上没有眉毛鼻子嘴）。
+    if (model.offscreenCount > 0) {
+      log({ event: "model:offscreen-unsupported", count: model.offscreenCount });
+      showUnsupportedNotice();
+    }
+    // 成功加载后的 URL 参数才是最终真值。同步回 config，设置窗口没有主窗口的 query 参数，
+    // 若不写回，嵌套模型会在设置页错误回落到旧的 `haru`，动作/表情 inventory 全空。
+    await rememberModel(currentModelDir(), currentModelSource());
+    try { sessionStorage.removeItem("echo.modelRecoveryTried"); } catch { /* 忽略 */ } const director = new AvatarDirector(model, snapshot => show(snapshot)); const applySpeaking = (speaking: boolean) => { director.setTalking(speaking); if (speaking) { model.lookAhead(); notifyIdleBusy(); } }; const voice = new VoiceDriver(log); voice.onVocalLevel(v => model.setVocalLevel(v)); voice.onSpeaking(applySpeaking); const params = new URLSearchParams(location.search), override = params.get("endpoint"); const discovered = override ? { url: override, token: params.get("token") ?? "" } : await invoke<{ url: string; token?: string; auth_required?: boolean } | null>("discover_audio_endpoint"); // 只记 url 与「有没有 token」：token 是 Hermes 的会话凭据，日志默认落在 /tmp（全局可读），
+// 整条 WS URL 里也带着它，写进去等于把 Hermes 的完整 API 访问权泄在磁盘上。
+log({ event: "endpoint:discovered", url: discovered?.url ?? null, hasToken: Boolean(discovered?.token), authRequired: discovered?.auth_required ?? null }); const path = params.get("audioPath") ?? "/api/audio/observe"; if (discovered) log({ event: "voice:ready", path }); else log({ event: "endpoint:skipped" }); const audio = new AudioSourceController(voice, discovered ? { ...discovered, path } : null, command => invoke(command), v => model.setVocalLevel(v), applySpeaking, log); // 默认 `global`（系统音频）而不是 `hermes`：Hermes 的 /api/audio/observe 只在装了
+    // Hermes desktop 且走 speak-stream 时才有流，对其他 harness 的用户默认根本不存在 ——
+    // 那正是「打开就嘴一动不动」的原因（ROADMAP D1）。系统音频对所有会出声的 agent
+    // 都有效（Codex Voice、Claude Desktop voice mode、本地 TTS 都从系统音频出）。
+    // 用户选过就记住，不必每次开机重选。
+    await audio.start(readAudioSource());
+    // 语义轮询顺带盯着 token：desktop 每次启动重新生成 token（且换端口），由 hook 写进同一个
+    // 状态文件。复用这条已有的轮询，不另起定时器。
+    // 「状态来源」读哪个 harness 的语义状态。声明必须在轮询器之前 —— 它被闭包捕获，
+    // 菜单改了之后下一拍轮询就生效，不用重建 driver。
+    let stateSource = readStateSource();
+    let currentToken = discovered?.token ?? "";
+    // 状态文件找不到时只表现为「一直 idle」，没有任何提示：hook 没注册、或 hook 与本进程的
+    // TMPDIR 不一致，看起来都像「接上了但 Echo 不变脸」。只在有无之间翻转时记一条，不刷屏。
+    let stateFileSeen: boolean | undefined;
+    new SemanticDriver(async () => {
+      const snapshot = await invoke<{ state?: string; sequence?: number; token?: string; reaction?: { kind?: string; sequence?: number; at?: number } | null } | null>("read_semantic_state", { source: stateSource });
+      if (stateFileSeen !== Boolean(snapshot)) { stateFileSeen = Boolean(snapshot); log({ event: "semantic:state-file", found: stateFileSeen }); }
+      const token = snapshot?.token ?? "";
+      if (token && token !== currentToken) {
+        currentToken = token;
+        // token 换了基本等于 desktop 重启过，端口（`--port 0`）也跟着变了，所以要重新发现而不是
+        // 沿用开机那次的 url。discover 内部同样会读到这个新 token。
+        const found = await invoke<{ url: string; token?: string } | null>("discover_audio_endpoint");
+        if (found) await audio.retarget({ ...found, path });
+      }
+      return snapshot;
+    }, s => { director.setSemantic(s); if (s !== "idle") notifyIdleBusy(); }, 200, 2000, reaction => director.setReaction(reaction)).start(); log({ event: "semantic:started" });
+    await installMenu(model, audio, avatarSource, source => { stateSource = source; });
+(window as any).echoSkin = { voice, director, model, audio }; } catch (error) {
+    log({ event: "model:failed", error: String(error).slice(0, 300) });
+    console.error(error);
+    // 先尝试自动退回上一个能用的皮肤；成功的话页面会重载，下面的收尾不必再跑。
+    if (await recoverFromBadModel()) return;
+    // 回退也救不了：菜单换成「加载失败」版，但**带上皮肤清单** ——
+    // 这时换一个皮肤是用户唯一的自救办法，只给「重新加载」等于让他一直重试同一个坏皮肤。
+    const available = menuModels(await listModels().catch(() => [] as ModelChoice[]));
+    const rescueHandlers = {
+      ...survivalHandlers,
+      onModel: (choice: ModelChoice) => void (async () => {
+        log({ event: "menu:model:rescue", dir: choice.dir, source: choice.source });
+        // 用户明确挑了一个 —— 把「本会话已自动回退过」的标记清掉，
+        // 这一次值得重新给一次自动回退的额度（新目标要是也坏了，还能再退一步）。
+        try { sessionStorage.removeItem("echo.modelRecoveryTried"); } catch { /* 忽略 */ }
+        await rememberModel(choice.dir, choice.source);   // 落盘完再重载
+        const params = new URLSearchParams(location.search);
+        params.set("model", choice.dir);
+        location.search = params.toString();
+      })(),
+      onGallery: () => void invoke("open_tool_window", { name: "gallery" }).catch(console.error),
+      onOpenModelsDir: () => void invoke("open_models_dir").catch(console.error),
+    };
+    openContextMenu = () => void buildFallbackMenu(rescueHandlers, log, "failed", available, language())
+      .then(menu => menu.popup()).catch(console.error);
+    // 「一个皮肤都没装」和「这个皮肤加载失败」是两回事。不随包分发皮肤之后，
+    // 前者是**新用户的正常首启状态**，用报错界面迎接他等于告诉他应用坏了。
+    const installed = await invoke<InstalledModel[]>("list_installed_models").catch(() => [] as InstalledModel[]);
+    root.innerHTML = installed.length === 0
+      ? `<div class="fallback onboarding">`
+        + `<label class="onboarding-language"><span>Language</span><select data-act="onboarding-language"><option value="zh-CN">中文</option><option value="en">English</option></select></label>`
+        + `<b data-onboarding="title"></b><p><span data-onboarding="description"></span><strong data-onboarding="emphasis"></strong><span data-onboarding="suffix"></span></p>`
+        + `<div class="fallback-actions"><button data-act="download-model">下载免费模型</button>`
+        + `<button data-act="open-models">打开安装目录</button>`
+        + `<button data-act="reload">装好了，重新加载</button></div></div>`
+      : `<div class="fallback"><b>模型加载失败</b><p>${String(error)}</p>`
+        + `<p>已退回上一个能用的模型仍然失败。换一个模型，或直接退出。</p>`
+        // 按钮而不是只写「去右键菜单里换」：这张卡片盖住了整个窗口，
+        // 而右键菜单在这种处境下正是用户最想不起来的东西。
+        + `<button data-act="pick-model">换一个模型…</button>`
+        + `<button data-act="reload">重新加载</button></div>`;
+    // 没有模型时没有人物包围盒，默认命中策略会把整窗穿透；引导页必须临时整窗可交互。
+    void invoke("set_hit_region", { x: 0, y: 0, width: innerWidth, height: innerHeight, mode: "normal", trackCursor: false })
+      .catch(error => log({ event: "onboarding:hit-region:error", error: String(error).slice(0, 200) }));
+    const locale = language();
+    const languageSelect = root.querySelector<HTMLSelectElement>('[data-act="onboarding-language"]');
+    if (languageSelect) {
+      languageSelect.value = locale; applyOnboardingLanguage(locale);
+      languageSelect.addEventListener("change", () => {
+        const next = languageSelect.value === "en" ? "en" : "zh-CN";
+        rememberLanguage(next); applyOnboardingLanguage(next);
+      });
+    }
+    root.querySelector('[data-act="download-model"]')?.addEventListener("click", () => void invoke("open_in_browser", {
+      url: "https://www.live2d.com/en/learn/sample/momose-hiyori/",
+    }).catch(console.error));
+    root.querySelector('[data-act="open-models"]')?.addEventListener("click",
+      () => void invoke("open_models_dir").catch(console.error));
+    root.querySelector('[data-act="reload"]')?.addEventListener("click", () => location.reload());
+    // 复用同一个菜单：卡片上的按钮和右键是同一条路，不必再写一套选择界面
+    root.querySelector('[data-act="pick-model"]')?.addEventListener("click",
+      event => openContextMenu?.(event as MouseEvent));
+    // 菜单在 boot 开头就装了最小版（设置/回中央/退出），这里不用再补 —— 那才是唯一的退路。
+  } }
+async function installMenu(model: Live2DAvatarModel, audio: AudioSourceController, avatarSource: AvatarSource,
+                          applyStateSource: (source: StateSource) => void): Promise<void> {
+  const dir = currentModelDir();
+  const [inventory, initialModels] = await Promise.all([
+    loadInventory(avatarSource.baseUrl, model.modelFile ?? "").catch(error => { log({ event: "menu:inventory:error", error: String(error) }); return { motions: [], expressions: [] }; }),
+    listModels().catch(() => [] as ModelChoice[]),
+  ]);
+  let hiddenModels = readHiddenModels();
+  let models = menuModels(initialModels, hiddenModels);
+  let alwaysOnTop = prefs.read("alwaysOnTop", 1) === 1, clickThrough = prefs.read("clickThrough", 0) === 1;
+  let focus = prefs.read("focus", 0) === 1, snapBottom = prefs.read("snapBottom", 0) === 1;
+  const qualities = Object.keys(RENDER_SCALE) as RenderQuality[];
+  const storedQuality = quality() as RenderQuality | null;
+  let qualityChoice: RenderQuality = storedQuality && qualities.includes(storedQuality) ? storedQuality : "高";
+  let fps = prefs.read("fps", 30) === 60 ? 60 : 30, eyeTracking = prefs.read("eyeTracking", 0) === 1;
+  if (qualityChoice !== "高") model.setQuality(qualityChoice);
+  model.setMaxFPS(fps);
+  let audioSource: AudioSource = audio.current;
+  // 菜单打勾用的副本；真正驱动轮询的是 boot 里那个，两边都以 prefs 为准，不会漂。
+  let stateSource = readStateSource();
+  const bottomSnap = installBottomSnap(() => snapBottom);
+  model.setFocusZoom(focusZoomFromPercent(focusPercent()), hasFocusPercent());
+  status.dataset.pos = statusPosition();
+  if (focus) model.setFraming("focus");
+  if (snapBottom) void bottomSnap.snap();
+  const poolKey = motionPoolKey(dir), expressionKey = expressionPoolKey(dir);
+  let enabledMotions: string[] = readPool(poolKey) ?? defaultEnabledMotions(inventory);
+  const savePool = () => writePool(poolKey, enabledMotions);
+  let enabledExpressions: string[] = readPool(expressionKey) ?? defaultEnabledExpressions(inventory);
+  const saveExpressionPool = () => writePool(expressionKey, enabledExpressions);
+  clickThroughHint = clickThrough;
+  shell.dataset.clickThrough = String(clickThrough);
+  const scalePercent = prefs.read("scale", 100), opacityPercent = prefs.read("opacity", 100);
+  if (scalePercent !== 100) await applyScale(scalePercent).catch(error => log({ event: "menu:scale:error", error: String(error) }));
+  if (opacityPercent !== 100) model.setOpacity(opacityPercent / 100);
+  model.setSemanticMotions(readStateMotions(dir));
+
+  const buildState = () => ({
+    models, currentDir: dir, inventory, audioSource, stateSource,
+    alwaysOnTop, clickThrough, focus, snapBottom, eyeTracking, language: uiLanguage,
+  });
+
+  // 画质与帧率不再进右键菜单（不是会经常改的东西），只由设置窗口驱动
+  const applyQuality = (next: string) => {
+    if (!qualities.includes(next as RenderQuality)) return;
+    qualityChoice = next as RenderQuality;
+    rememberQuality(next);
+    model.setQuality(qualityChoice);
+  };
+  const applyFps = (value: number) => {
+    if (!FPS_CHOICES.includes(value as 30 | 60)) return;
+    fps = value; prefs.write("fps", value);
+    model.setMaxFPS(value);
+  };
+
+  // 设置窗口改了什么就即时应用：两个窗口读写同一份 config.json（负责持久化），
+  // 这条事件只负责「立刻生效」，省得用户改完还要重启。
+  void listen<SettingsChange>(SETTINGS_EVENT, ({ payload }) => {
+    if (payload.scalePercent !== undefined) void applyScale(payload.scalePercent).catch(error => log({ event: "settings:scale:error", error: String(error) }));
+    if (payload.opacityPercent !== undefined) { prefs.write("opacity", payload.opacityPercent); model.setOpacity(payload.opacityPercent / 100); }
+    if (payload.focusPercent !== undefined) { prefs.write("focusPercent", payload.focusPercent); model.setFocusZoom(focusZoomFromPercent(payload.focusPercent), true); }
+    if (payload.statusPosition) { rememberStatusPosition(payload.statusPosition); status.dataset.pos = payload.statusPosition; }
+    if (payload.idleDelaySeconds !== undefined) { rememberIdleDelay(payload.idleDelaySeconds); applyIdleDelay(payload.idleDelaySeconds); }
+    if (payload.quality) applyQuality(payload.quality);
+    if (payload.fps) applyFps(payload.fps);
+    if (payload.enabledMotions) enabledMotions = payload.enabledMotions;
+    if (payload.enabledExpressions) enabledExpressions = payload.enabledExpressions;
+    if (payload.stateMotions) model.setSemanticMotions(payload.stateMotions);
+    if (payload.language) { uiLanguage = payload.language; renderStatus(); }
+    if (payload.hiddenModels) hiddenModels = payload.hiddenModels;
+    log({ event: "settings:applied", keys: Object.keys(payload) });
+  }).catch(console.error);
+
+  const handlers: NativeMenuHandlers = {
+    onExpression: name => model.playExpression(name),
+    onMotion: (group, index) => model.playMotion(group, index),
+    onGallery: () => {
+      // 改走应用自己的窗口而不是系统浏览器：浏览器里没有 Tauri 命令，画廊也就列不出用户装的皮肤。
+      void invoke("open_tool_window", { name: "gallery" })
+        .then(() => log({ event: "menu:gallery" }))
+        .catch(error => log({ event: "menu:gallery:error", error: String(error).slice(0, 200) }));
+    },
+    onModel: choice => void (async () => {
+      // 这一步会重载页面，日志必须先落盘，否则切皮肤在日志里完全没有痕迹。
+      log({ event: "menu:model", dir: choice.dir, source: choice.source });
+      await rememberModel(choice.dir, choice.source);   // 落盘完再重载，否则 modelSource 会丢
+      const params = new URLSearchParams(location.search);
+      params.set("model", choice.dir);
+      location.search = params.toString();
+    })(),
+    onOpenModelsDir: () => void invoke("open_models_dir")
+      .catch(error => log({ event: "menu:open-models-dir:error", error: String(error).slice(0, 200) })),
+    onAlwaysOnTop: on => { alwaysOnTop = on; prefs.write("alwaysOnTop", on); void getCurrentWindow().setAlwaysOnTop(on).catch(error => log({ event: "menu:always-on-top:error", error: String(error) })); },
+    onSettings: () => void invoke("open_tool_window", { name: "settings" })
+      .catch(error => log({ event: "menu:settings:error", error: String(error).slice(0, 200) })),
+    onEyeTracking: on => {
+      eyeTracking = on; prefs.write("eyeTracking", on);
+      if (!on) model.lookAhead();   // 关掉时收回视线，否则僵在最后位置
+      log({ event: "menu:eye-tracking", on });
+      reportHitRegion();            // 立即让 Rust 侧开始/停止上报光标
+    },
+    onFocus: on => {
+      focus = on; prefs.write("focus", on);
+      model.setFraming(on ? "focus" : "full");
+      log({ event: "menu:focus", on });
+    },
+    onSnapBottom: on => {
+      snapBottom = on; prefs.write("snapBottom", on);
+      log({ event: "menu:snap-bottom", on });
+      if (on) void bottomSnap.snap();
+    },
+    onStateSource: source => {
+      stateSource = source;
+      writeStateSource(source);
+      applyStateSource(source);
+      log({ event: "semantic:source", source });
+    },
+    onAudioSource: source => {
+      const selected = source === "file" ? new Promise<File | null>(resolve => {
+        const input = document.createElement("input"); input.type = "file"; input.accept = "audio/*";
+        input.hidden = true; document.body.append(input);
+        const finish = (file: File | null) => { input.remove(); resolve(file); };
+        input.addEventListener("change", () => finish(input.files?.[0] ?? null), { once: true });
+        input.addEventListener("cancel", () => finish(null), { once: true });
+        input.click();
+      }) : Promise.resolve(null);
+      void selected.then(file => {
+        if (source !== "file") return audio.start(source);
+        if (!file) return;
+        log({ event: "menu:audio-file:selected", name: file.name, size: file.size, type: file.type });
+        return audio.playFile(file);
+      }).then(() => {
+        audioSource = source;
+        // `file` 指向一次性挑的文件，重启后那个选择没有意义，不持久化。
+        if (source !== "file") writeAudioSource(source);
+        log({ event: "menu:audio-source", source });
+      }).catch(error => log({ event: "menu:audio-source:error", source, error: String(error).slice(0, 200) }));
+    },
+    onClickThrough: on => {
+      clickThrough = on; clickThroughHint = on; shell.dataset.clickThrough = String(on); prefs.write("clickThrough", on);
+      log({ event: "menu:click-through", on });
+      renderStatus();
+    },
+    onResetPosition: () => void getCurrentWindow().center().catch(error => log({ event: "menu:center:error", error: String(error) })),
+    onQuit: () => void getCurrentWindow().close(),
+  };
+
+  const reportHitRegion = startHitReporting(model, () => (clickThrough ? "through" : "normal"), () => eyeTracking);
+  void listen<[number, number]>("cursor-position", event => { if (eyeTracking) model.lookAt(event.payload[0], event.payload[1]); });
+
+  // 单击换表情、双击播动作。拖动已改为超过阈值才触发，否则这里收不到 click / dblclick。
+  let pendingClick: number | undefined, lastExpression: string | null = null;
+  const cancelPendingClick = () => { if (pendingClick !== undefined) { clearTimeout(pendingClick); pendingClick = undefined; } };
+
+  // 菜单内的点击由菜单自己 stopPropagation 截停，这里不再判断来源
+  // （就地重绘会让 target 脱离 DOM，closest 判断不可靠）。
+  shell.addEventListener("click", () => {
+    cancelPendingClick();
+    pendingClick = window.setTimeout(() => {
+      pendingClick = undefined;
+      const name = pickEnabledExpression(inventory, enabledExpressions, lastExpression);
+      if (!name) return;  // 名单被全部关闭 = 单击不做任何事
+      model.lookAhead();
+      showManualActivity("expression", name);
+      lastExpression = name;
+      model.playExpression(name);
+      log({ event: "click:expression", name });
+    }, CLICK_EXPRESSION_DELAY_MS);
+  });
+
+  shell.addEventListener("dblclick", () => {
+    cancelPendingClick();
+    const choice = pickEnabledMotion(inventory, enabledMotions);
+    if (!choice) return;  // 名单被全部关闭 = 双击不做任何事
+    model.lookAhead();
+    showManualActivity("motion", motionLabel(inventory, choice));
+    model.playMotion(choice[0], choice[1]);
+    log({ event: "dblclick:motion", group: choice[0], index: choice[1], pool: enabledMotions.length });
+  });
+
+  openContextMenu = () => void (async () => {
+    try {
+      // 每次右键重建：勾选态要反映当前值，而菜单项的 checked 是建的时候定死的。
+      // 顺带重扫皮肤目录 —— 用户可能直接把皮肤拖进了文件夹，不需要额外的「刷新」入口。
+      // 弹出位置、超出窗口、点任何地方收起，全部由系统负责 —— 这正是换原生菜单的目的。
+      models = menuModels(await listModels().catch(() => models), hiddenModels);
+      const menu = await buildNativeMenu(buildState(), handlers, log);
+      await menu.popup();
+    } catch (error) {
+      log({ event: "menu:popup:error", error: String(error).slice(0, 200) });
+    }
+  })();
+  log({ event: "menu:ready", models: models.length });
+
+  /**
+   * 闲置自治：没人说话、Hermes 也没在忙时，自己动一动。
+   *
+   * 动作只从**随机名单**里挑 —— 用户在设置里关掉的动作，这里不该偷偷播。
+   * 视线只在「眼睛跟随鼠标」关着时才动：开着时鼠标是主人，自治插一脚会互相打架。
+   */
+  const idle = new IdleAutonomy((action, gaze) => {
+    if (action === "gaze") {
+      // 跳过也要留痕：不然排查时看不出是「调度器没跑」还是「跑了但让位给鼠标」
+      if (shell.dataset.speaking === "true" || eyeTracking) { log({ event: "idle:gaze", skipped: shell.dataset.speaking === "true" ? "speaking" : "eye-tracking" }); return; }
+      model.lookToward(gaze.x, gaze.y);
+      log({ event: "idle:gaze", x: Number(gaze.x.toFixed(2)), y: Number(gaze.y.toFixed(2)) });
+      return;
+    }
+    const choice = pickEnabledMotion(inventory, enabledMotions);
+    if (!choice) return;  // 名单被全部关掉 = 不自作主张
+    model.playMotion(choice[0], choice[1]);
+    log({ event: "idle:motion", group: choice[0], index: choice[1] });
+  });
+  notifyIdleBusy = () => idle.notifyBusy();
+
+  /** 0 秒 = 关闭。秒数本身兼任开关，不再另设一个会互相矛盾的开关。 */
+  const applyIdleDelay = (seconds: number) => {
+    if (seconds <= 0) { idle.stop(); log({ event: "idle:disabled" }); return; }
+    idle.setGrace(seconds * 1000);
+    idle.start();
+    log({ event: "idle:started", graceSeconds: seconds });
+  };
+  applyIdleDelay(idleDelaySeconds());
+
+  // 用户正在跟她互动时别插嘴。pointerdown 一条覆盖单击 / 双击 / 拖动 / 右键；
+  // **不监听 pointermove** —— 鼠标只是路过也算打扰的话，把它停在窗口上她就再也不动了。
+  shell.addEventListener("pointerdown", () => {
+    notifyIdleBusy();
+    // 自治可能把视线歪在一边；人来了还盯着别处很怪，收回正前方。
+    // 开着眼睛跟随时不用管 —— 鼠标一动就接管了。
+    // 自治的内部视线状态也要一起归零，否则下一次它会从那个旧位置继续算"该挪多远"。
+    if (!eyeTracking) { model.lookAhead(); idle.syncGaze({ x: 0, y: 0 }); }
+  });
+}
+
+/**
+ * 人物包围盒随动作变化，定时上报给 Rust；Rust 轮询全局光标位置决定窗口是否穿透。
+ * 默认模式人物可点、其余穿透；穿透模式全部穿透，光标在人物上停留 3 秒才临时恢复交互（秒数须与 lib.rs 的 DWELL_MS 同步）
+ * （穿透期间网页收不到任何事件，故判定只能放在 Rust 侧）。
+ */
+function startHitReporting(model: Live2DAvatarModel, mode: () => "normal" | "through", trackCursor: () => boolean): () => void {
+  const report = () => {
+    // HTML 菜单时代这里有一条「菜单打开时整窗可交互」的特例。原生菜单不需要：
+    // 它由系统绘制并自行抓取事件，实机日志确认各项回调照常触发，与窗口穿透状态无关。
+    const box = model.bounds();
+    if (!box) return;
+    void invoke("set_hit_region", { x: box.x, y: box.y, width: box.width, height: box.height, mode: mode(), trackCursor: trackCursor() })
+      .catch(error => log({ event: "hit-region:error", error: String(error).slice(0, 200) }));
+  };
+  report();
+  setInterval(report, HIT_REPORT_MS);
+  return report;
+}
+
+void boot();

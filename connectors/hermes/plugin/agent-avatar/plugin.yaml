@@ -1,0 +1,16 @@
+name: agent-avatar
+version: "1.0.0"
+description: "把 Hermes 的会话/工具/子代理事件聚合成语义状态，供 Agent Avatar 形象读取。纯观察者：不改变 Hermes 任何行为。"
+author: "Agent Avatar"
+
+hooks:
+  - on_session_start
+  - on_session_reset
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - subagent_start
+  - subagent_stop
+  - on_session_end
+  - on_session_finalize

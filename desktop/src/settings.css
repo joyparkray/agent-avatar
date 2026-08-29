@@ -1,0 +1,82 @@
+/* 设置窗口是普通的不透明窗口，与主窗口那套透明/穿透样式无关，故独立一份。 */
+:root { color-scheme: light dark; }
+body {
+  margin: 0 auto; padding: 0 18px 28px; max-width: 560px;  /* 窗口放大后内容不跟着拉宽，读起来更稳 */
+  font: 13px/1.5 -apple-system, "PingFang SC", system-ui, sans-serif;
+  background: Canvas; color: CanvasText;
+}
+.tabs {
+  position: sticky; top: 0; z-index: 2; display: flex; gap: 3px; overflow-x: auto;
+  margin: 0 -18px 14px; padding: 10px 12px 8px;
+  background: color-mix(in srgb, Canvas 92%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+  backdrop-filter: blur(16px);
+}
+.tabs button { flex: 0 0 auto; border-color: transparent; background: transparent; padding: 5px 10px; }
+.tabs button[aria-selected="true"] { color: AccentColor; background: color-mix(in srgb, AccentColor 14%, transparent); }
+.tab-panel[hidden] { display: none; }
+h2 { font-size: 13px; margin: 22px 0 8px; opacity: .55; font-weight: 600; letter-spacing: .04em; }
+section:first-child h2 { margin-top: 0; }
+h3 { font-size: 13px; margin: 0; font-weight: 600; }
+.hint { margin: 0 0 10px; opacity: .55; }
+.row { display: grid; grid-template-columns: 1fr; gap: 4px; margin-bottom: 12px; }
+.row span { display: flex; justify-content: space-between; }
+.row b { font-variant-numeric: tabular-nums; font-weight: 600; }
+input[type="range"] { width: 100%; margin: 0; }
+.group-head { display: flex; align-items: center; justify-content: space-between; margin: 14px 0 6px; }
+.checklist { display: flex; flex-direction: column; gap: 2px; max-height: 168px; overflow-y: auto; }
+/* 两列勾选：名字占满，两个复选框右对齐成一列一列，与表头按钮同宽同位 */
+.check-row { display: grid; grid-template-columns: 1fr 52px 52px; align-items: center; padding: 2px 4px; border-radius: 5px; }
+.check-row:hover { background: color-mix(in srgb, CanvasText 8%, transparent); }
+.check-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.check-row .cell { display: flex; justify-content: center; margin: 0; }
+.cols { display: grid; grid-template-columns: 52px 52px; }
+.cols button { padding: 3px 0; border-radius: 5px; font-size: 12px; }
+.cols button[data-on="true"] { background: color-mix(in srgb, AccentColor 22%, transparent); border-color: AccentColor; }
+.checklist .empty { opacity: .5; padding: 4px; }
+button {
+  font: inherit; padding: 5px 11px; border-radius: 6px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
+  background: color-mix(in srgb, CanvasText 6%, transparent); color: inherit;
+}
+button:hover { background: color-mix(in srgb, CanvasText 12%, transparent); }
+.dropzone {
+  border: 1.5px dashed color-mix(in srgb, CanvasText 30%, transparent);
+  border-radius: 9px; padding: 22px; text-align: center; opacity: .7; margin-bottom: 8px;
+}
+.dropzone.over { border-color: AccentColor; color: AccentColor; opacity: 1; }
+.status { margin: 0 0 10px; min-height: 1.5em; }
+.status.error { color: color-mix(in srgb, #e5484d 80%, CanvasText); }
+.status.ok { color: color-mix(in srgb, #30a46c 80%, CanvasText); }
+
+/* 模型文件夹里没能变成模型的东西：静默失败最难查，宁可占点地方也要说清楚 */
+.issues { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.issues .issue {
+  padding: 7px 9px; border-radius: 7px; font-size: 12px;
+  background: color-mix(in srgb, #f5a524 14%, transparent);
+  border: 1px solid color-mix(in srgb, #f5a524 32%, transparent);
+}
+.issues .issue b { font-weight: 600; }
+.model-list { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; }
+.model-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 7px 9px; border-radius: 7px; background: color-mix(in srgb, CanvasText 6%, transparent); }
+.model-row .model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-row label { display: flex; gap: 5px; align-items: center; }
+.model-row .delete { color: color-mix(in srgb, #e5484d 82%, CanvasText); }
+
+select {
+  font: inherit; padding: 4px 8px; border-radius: 6px; color: inherit;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
+  background: color-mix(in srgb, CanvasText 6%, transparent);
+}
+.row:has(select) { grid-template-columns: 1fr auto; align-items: center; }
+
+input[type="number"] {
+  font: inherit; width: 84px; padding: 4px 8px; border-radius: 6px; color: inherit;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
+  background: color-mix(in srgb, CanvasText 6%, transparent);
+}
+.row:has(input[type="number"]) { grid-template-columns: 1fr auto; align-items: center; }
+
+.state-motions { display: flex; flex-direction: column; gap: 8px; }
+.state-motion-row { display: grid; grid-template-columns: minmax(92px, .8fr) minmax(150px, 1.2fr); align-items: center; gap: 10px; }
+.state-motion-row label { font-weight: 600; }

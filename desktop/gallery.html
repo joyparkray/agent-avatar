@@ -1,0 +1,30 @@
+<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width">
+<title>Agent Avatar · 模型画廊</title>
+<style>
+  html,body{margin:0;background:#161a24;color:#e8f1ff;font:13px/1.5 system-ui}
+  /* 皮肤多了就纵向滚动，而不是把格子越挤越小 */
+  #grid{position:relative}
+  #stage{position:absolute;inset:0}
+  #cards{position:absolute;inset:0;pointer-events:none}
+  .card{position:absolute;box-sizing:border-box;padding:10px 12px;border-radius:10px;background:#0d1622d9;border:1px solid #ffffff1f;backdrop-filter:blur(6px)}
+  .card b{display:block;font-size:14px;margin-bottom:4px}
+  .card dl{display:grid;grid-template-columns:auto auto;gap:1px 10px;margin:0;font-size:11px;color:#a9b8cd}
+  .card dd{margin:0;color:#e8f1ff;justify-self:end}
+  .bust{color:#7ad6a1}.full{color:#77d8ff}.bad{color:#ff7d95}
+  #bar{position:fixed;left:12px;bottom:12px;z-index:3;display:flex;gap:8px;align-items:center}
+  #bar button{padding:5px 11px;border:1px solid #ffffff2e;border-radius:8px;background:#ffffff10;color:#e8f1ff;font:inherit;cursor:pointer}
+  #bar button.on{background:#0f6fd8;border-color:#0f6fd8}
+  #err{position:absolute;inset:20px;pointer-events:none;white-space:pre-wrap;color:#ff9db0}
+</style></head>
+<body>
+<div id="grid"><div id="stage"></div><div id="cards"></div></div>
+<div id="bar"><button id="framing">半身构图</button><span id="status">加载中…</span></div>
+<div id="err"></div>
+<script>
+  const core = document.createElement("script");
+  core.src = "/vendor/live2d-core/live2dcubismcore.min.js";
+  core.onload = () => void import("/src/gallery.ts");
+  core.onerror = () => document.getElementById("err").textContent = "Cubism Core 加载失败";
+  document.head.append(core);
+</script>
+</body></html>

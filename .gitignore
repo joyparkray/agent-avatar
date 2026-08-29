@@ -1,0 +1,22 @@
+# 合仓前的本地 skin/ 仓库；desktop/ 已通过 subtree 纳入主仓库。
+skin/
+
+# 发布清扫时暂存的旧资料，只作本地备份，不进版本控制或发布物。
+backup/
+
+# 组装与打包生成物。
+release/
+
+# Python 本地测试缓存。
+__pycache__/
+.pytest_cache/
+
+# os / 编辑器
+.DS_Store
+*.log
+
+# Claude Code 的本地设置（按约定不入库）
+.claude/settings.local.json
+
+# 内部文档与历史备份，不随公开仓库分发。
+private/
