@@ -8,6 +8,12 @@
   <b>English</b> · <a href="README.zh.md">简体中文</a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/joyparkray/agent-avatar/actions/workflows/ci.yml"><img src="https://github.com/joyparkray/agent-avatar/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/macOS-14.2%2B-lightgrey" alt="macOS 14.2+">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT licence">
+</p>
+
 **Stop watching a terminal to find out whether your agent is working or waiting for you.**
 
 Agent Avatar puts a Live2D character on your desktop that acts out what your AI coding

@@ -8,6 +8,12 @@
   <a href="README.md">English</a> · <b>简体中文</b>
 </p>
 
+<p align="center">
+  <a href="https://github.com/joyparkray/agent-avatar/actions/workflows/ci.yml"><img src="https://github.com/joyparkray/agent-avatar/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/macOS-14.2%2B-lightgrey" alt="macOS 14.2+">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT licence">
+</p>
+
 **不用盯着终端，也知道 agent 是在干活还是在等你。**
 
 Agent Avatar 在桌面上放一个 Live2D 形象，把你的 AI 编程 agent 正在做的事演出来 ——
