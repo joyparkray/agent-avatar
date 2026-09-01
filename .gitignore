@@ -24,3 +24,6 @@ __pycache__/
 
 # 内部文档与历史备份，不随公开仓库分发。
 private/
+
+# Windows 移植计划：内部规划文档（含签名与商业方向），不随公开仓库分发。
+docs/WINDOWS-PORT.md
