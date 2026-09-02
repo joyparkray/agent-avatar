@@ -1,6 +1,7 @@
 import "./settings.css";
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+import { openRawLevelFor } from "./audio-source";
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { droppedPath } from "./drop";
@@ -32,6 +33,7 @@ const TEXT: Record<Language, Record<string, string>> = {
     "general.language": "语言", "general.interfaceLanguage": "界面语言", "general.languageHint": "语言切换会立即应用到设置窗口。", "general.statusBar": "状态栏", "general.statusHint": "显示 Agent 当前在做什么，并可调整到不遮挡模型的位置。", "general.position": "位置",
     "video.display": "显示", "video.scale": "缩放", "video.opacity": "透明度", "video.focus": "聚焦范围：显示顶部", "video.focusHint": "仅在右键菜单启用聚焦模式时生效。", "video.rendering": "渲染", "video.renderHint": "降低画质通常比降低帧率更省 GPU。", "video.quality": "画质", "video.fps": "帧率",
     "agent.connectors": "接入", "agent.connectorsHint": "选择你在用的 agent，自动下载并安装对应的 connector；安装后如需手动步骤会显示在下面。", "agent.mapping": "状态与动作", "agent.mappingHint": "为当前模型的每个 Agent 状态选择动作。选择“模型默认”会使用 avatar.json 的映射。", "agent.default": "模型默认",
+    "behavior.lipSync": "口型", "behavior.lipHint": "灵敏度决定多小的声音算「在说话」；张嘴幅度决定嘴张多大。对系统音频、音频文件与 Hermes 三种音源都生效。", "behavior.meterHint": "上面是当前听到的口型强度，竖线是张嘴的门槛。放点声音，把灵敏度拉到柱子能稳定越过竖线为止。", "behavior.sensitivity": "灵敏度", "behavior.amplitude": "张嘴幅度",
     "behavior.idle": "闲置自治", "behavior.idleHint": "无人交互且 Agent 空闲时，让形象自己看四周、播放动作或表情。", "behavior.delay": "静置多少秒后开始", "behavior.zero": "填 0 即关闭。", "behavior.random": "随机名单", "behavior.randomHint": "「单击 / 双击」列是你亲自触发的，「闲置」列是没人理它时自己播的。点列标题可全开或全关。", "behavior.motions": "动作", "behavior.expressions": "表情", "behavior.expressionClick": "单击", "behavior.motionDoubleClick": "双击", "behavior.idleActions": "闲置",
     "models.title": "模型", "models.hint": "拖入包含 *.model3.json 的 Cubism 模型文件夹。", "models.drop": "拖模型文件夹到此处", "models.open": "打开模型文件夹",
     "common.empty": "这个模型没有可用项", "models.empty": "尚未安装模型", "models.hide": "隐藏", "models.delete": "删除", "models.deleteConfirm": "再点一次「确认删除」就会删除模型：", "models.deleteAgain": "确认删除", "models.installing": "安装中…", "models.installed": "已安装", "models.switchHint": "", "models.tauriOnly": "拖放安装需要在 Agent Avatar 应用内使用", "models.unrecognized": "无法识别。",
@@ -42,6 +44,7 @@ const TEXT: Record<Language, Record<string, string>> = {
     "general.language": "Language", "general.interfaceLanguage": "Interface language", "general.languageHint": "Language changes apply to this settings window immediately.", "general.statusBar": "Status bar", "general.statusHint": "Show what the agent is doing and place the label where it does not cover the avatar.", "general.position": "Position",
     "video.display": "Display", "video.scale": "Scale", "video.opacity": "Opacity", "video.focus": "Focus crop: show top", "video.focusHint": "Only applies when Focus Mode is enabled from the context menu.", "video.rendering": "Rendering", "video.renderHint": "Lowering quality usually saves more GPU power than lowering frame rate.", "video.quality": "Quality", "video.fps": "Frame rate",
     "agent.connectors": "Connectors", "agent.connectorsHint": "Pick the agent you use and install its connector. Any remaining manual step is shown below.", "agent.mapping": "Agent state and motion", "agent.mappingHint": "Choose a motion for each agent state on the current model. Model default uses the avatar.json mapping.", "agent.default": "Model default",
+    "behavior.lipSync": "Lip sync", "behavior.lipHint": "Sensitivity sets how quiet a sound still counts as speech; mouth range sets how wide it opens. Both apply to system audio, audio files and Hermes alike.", "behavior.meterHint": "The bar is how strongly the app hears speech right now; the line is the threshold to open the mouth. Play something and raise sensitivity until the bar clears the line consistently.", "behavior.sensitivity": "Sensitivity", "behavior.amplitude": "Mouth range",
     "behavior.idle": "Idle autonomy", "behavior.idleHint": "Let the avatar look around or play motions and expressions while the agent is idle.", "behavior.delay": "Start after this many idle seconds", "behavior.zero": "Set to 0 to disable.", "behavior.random": "Random pools", "behavior.randomHint": "The Click / Double-click columns are what you trigger yourself; Idle is what it plays on its own. Click a column heading to toggle all.", "behavior.motions": "Motions", "behavior.expressions": "Expressions", "behavior.expressionClick": "Click", "behavior.motionDoubleClick": "Double-click", "behavior.idleActions": "Idle",
     "models.title": "Models", "models.hint": "Drop a Cubism model folder containing a *.model3.json file.", "models.drop": "Drop a model folder here", "models.open": "Open Models Folder",
     "common.empty": "No available items for this model", "models.empty": "No models installed", "models.hide": "Hide", "models.delete": "Delete", "models.deleteConfirm": "Click Confirm again to delete the model:", "models.deleteAgain": "Confirm", "models.installing": "Installing…", "models.installed": "Installed", "models.switchHint": "", "models.tauriOnly": "Drag-and-drop installation is only available inside Agent Avatar", "models.unrecognized": "could not be recognized.",
@@ -74,7 +77,7 @@ function bindTabs(): void {
   show("general");
 }
 
-function bindSlider(act: "scale" | "opacity" | "focus", key: string, fallback: number, toChange: (percent: number) => SettingsChange): void {
+function bindSlider(act: "scale" | "opacity" | "focus" | "lip-sensitivity" | "mouth-amplitude", key: string, fallback: number, toChange: (percent: number) => SettingsChange): void {
   const input = $<HTMLInputElement>(`[data-act="${act}"]`);
   const percent = prefs.read(key, fallback);
   input.value = String(percent);
@@ -249,6 +252,48 @@ async function showModels(): Promise<void> {
   }
 }
 
+
+/**
+ * 口型电平条。柱子 = 主窗口实时送来的口型强度，竖线 = 张嘴门槛（`OPEN_AT`）。
+ *
+ * 为什么要它：调灵敏度之前，用户只能「放音乐 → 盯着人物 → 猜」，而「嘴不动」至少有
+ * 五个互不相同的原因（音量太低、选错音源、DRM 内容抓不到、灵敏度不够、模型没声明口型参数）。
+ * 有了柱子和线，前四个当场就能排掉。
+ *
+ * 只在本页开着时让主窗口发数据 —— 见 main.ts 的 forwardLipLevel。
+ */
+function bindLipMeter(): void {
+  const meter = document.querySelector<HTMLElement>('[data-act="lip-meter"]');
+  if (!meter) return;
+  const fill = meter.querySelector<HTMLElement>(".lip-fill")!;
+  const mark = meter.querySelector<HTMLElement>(".lip-mark")!;
+  // 原始音量跨三个数量级（静音约 0.0001，响的音频到 0.24），线性刻度下全挤在最左边，
+  // 什么也看不出来。按分贝铺开，-70dB 到 0dB。
+  const MIN_DB = -70;
+  const place = (raw: number): number => {
+    const db = 20 * Math.log10(Math.max(1e-6, raw));
+    return Math.max(0, Math.min(1, (db - MIN_DB) / -MIN_DB));
+  };
+  const moveMark = () => {
+    const percent = Number($<HTMLInputElement>('[data-act="lip-sensitivity"]').value);
+    mark.style.left = `${place(openRawLevelFor(percent)) * 100}%`;
+  };
+  moveMark();
+  $<HTMLInputElement>('[data-act="lip-sensitivity"]').addEventListener("input", moveMark);
+  try {
+    void emit("lip-meter:watch", true);
+    void listen<{ raw: number; open: boolean }>("lip-meter:level", event => {
+      const { raw = 0, open = false } = event.payload ?? {};
+      fill.style.width = `${place(raw) * 100}%`;
+      meter.classList.toggle("open", open);
+    });
+    // 关窗时收手，别让主窗口白发事件
+    addEventListener("beforeunload", () => { void emit("lip-meter:watch", false); });
+  } catch (error) {
+    console.error("lip meter unavailable", error);
+  }
+}
+
 function bindInstall(): void {
   const zone = $<HTMLElement>("#drop");
   const say = (text: string, kind: "" | "ok" | "error" = "") => {
@@ -319,6 +364,9 @@ async function boot(): Promise<void> {
     value => { rememberLanguage(value); applyLanguage(value); updateLocalizedSelects(); void showIssues(); void showModels(); showConnectors(); redraws.forEach(redraw => redraw()); announce({ language: value }); }));
   guard("scale", () => bindSlider("scale", "scale", 100, scalePercent => ({ scalePercent })));
   guard("opacity", () => bindSlider("opacity", "opacity", 100, opacityPercent => ({ opacityPercent })));
+  guard("lip-meter", () => bindLipMeter());
+  guard("lip-sensitivity", () => bindSlider("lip-sensitivity", "lipSensitivity", 50, lipSensitivityPercent => ({ lipSensitivityPercent })));
+  guard("mouth-amplitude", () => bindSlider("mouth-amplitude", "mouthAmplitude", 100, mouthAmplitudePercent => ({ mouthAmplitudePercent })));
   guard("focus", () => bindSlider("focus", "focusPercent", DEFAULT_FOCUS_PERCENT, focusPercent => ({ focusPercent })));
   guard("idle-delay", () => {
     const input = $<HTMLInputElement>('[data-act="idle-delay"]');

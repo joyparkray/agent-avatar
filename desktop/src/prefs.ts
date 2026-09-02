@@ -25,6 +25,8 @@ export interface SettingsChange {
   hiddenModels?: string[];
   scalePercent?: number;
   opacityPercent?: number;
+  lipSensitivityPercent?: number;
+  mouthAmplitudePercent?: number;
   focusPercent?: number;
   statusPosition?: StatusPosition;
   idleDelaySeconds?: number;
@@ -336,3 +338,10 @@ export function quality(): string | null {
 }
 
 export function rememberQuality(value: string): void { writeRaw("quality", value); }
+
+/** 口型：灵敏度与张嘴幅度。两个都是**全局**设置 —— 与「缩放」「透明度」同一类，
+ *  换模型不该重调。默认值即这两个设置出现之前的固定行为。 */
+export const DEFAULT_LIP_SENSITIVITY = 50;
+export const DEFAULT_MOUTH_AMPLITUDE = 100;
+export const lipSensitivityPercent = (): number => prefs.read("lipSensitivity", DEFAULT_LIP_SENSITIVITY);
+export const mouthAmplitudePercent = (): number => prefs.read("mouthAmplitude", DEFAULT_MOUTH_AMPLITUDE);

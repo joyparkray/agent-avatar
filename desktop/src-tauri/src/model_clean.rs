@@ -20,7 +20,7 @@ use std::fs;
 use std::path::Path;
 
 /// 清洗规则的版本。规则变了就加一，扫描时据此判断已装的模型要不要重洗。
-pub const CLEANER_VERSION: u32 = 2;
+pub const CLEANER_VERSION: u32 = 3;
 
 /// 清洗留下的标记文件。点开头 —— `list_model_issues` 会跳过点开头的条目，不会把它当成坏模型报出来。
 pub const MARKER: &str = ".agent-avatar-clean.json";
@@ -31,6 +31,8 @@ pub struct CleanReport {
     pub registered_expressions: usize,
     /// 这次补登记了几个动作（作者已经分过组时恒为 0）。
     pub registered_motions: usize,
+    /// 这次补上了几个空着的参数组（LipSync / EyeBlink）。
+    pub filled_groups: usize,
 }
 
 /// 把任意文件夹名规整成 `is_safe_dir_name` 认可的形状。
@@ -97,12 +99,67 @@ fn motion_files(dir: &Path) -> Vec<String> {
     out
 }
 
+/// 模型里**实际存在**的参数 ID，取自 `*.cdi3.json`（Cubism 导出的显示信息）。
+/// 没有这个文件时返回 None —— 调用方据此决定是照标准补还是不动。
+fn parameter_ids(dir: &Path) -> Option<Vec<String>> {
+    let cdi = fs::read_dir(dir).ok()?.flatten().map(|e| e.path())
+        .find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".cdi3.json")))?;
+    let value: Value = serde_json::from_str(&fs::read_to_string(cdi).ok()?).ok()?;
+    Some(value.get("Parameters")?.as_array()?.iter()
+        .filter_map(|item| item.get("Id")?.as_str().map(str::to_owned))
+        .collect())
+}
+
+/// 补上空着的 `Groups` 条目（`LipSync` / `EyeBlink`），返回补了几组。
+///
+/// **为什么需要**：面捕向的模型普遍把这两组留空 —— VTube Studio 自己管口型与眨眼的映射，
+/// 不写 Cubism 的这一栏。而 Cubism 运行时只认这里：组是空的，它就不知道该驱动哪个参数，
+/// 于是**嘴一动不动、眼也不眨**，而且没有任何报错。实测四个模型里三个 LipSync 是空的，
+/// 其中一个连 EyeBlink 也是空的。
+///
+/// 只在**该组不存在或为空**时补；作者写了什么就一个字不动。
+/// 参数名用 Cubism 的标准 ID，并且只补模型里确实有的那些（有 cdi3 时逐个核对）。
+fn register_groups(value: &mut Value, dir: &Path) -> usize {
+    const LIP_SYNC: [&str; 1] = ["ParamMouthOpenY"];
+    const EYE_BLINK: [&str; 2] = ["ParamEyeLOpen", "ParamEyeROpen"];
+    let existing = parameter_ids(dir);
+    let mut filled = 0;
+
+    for (name, wanted) in [("LipSync", &LIP_SYNC[..]), ("EyeBlink", &EYE_BLINK[..])] {
+        // 模型里没有的参数不补 —— 硬塞一个不存在的 ID 只会让人以为已经修好了。
+        // 拿不到 cdi3 时按标准补：Cubism 运行时会忽略不认识的 ID，代价只是白写一条。
+        let ids: Vec<String> = wanted.iter()
+            .filter(|id| existing.as_ref().is_none_or(|have| have.iter().any(|p| p == *id)))
+            .map(|id| (*id).to_owned())
+            .collect();
+        if ids.is_empty() { continue; }
+
+        let groups = value.get_mut("Groups").and_then(Value::as_array_mut);
+        let Some(groups) = groups else {
+            value["Groups"] = json!([{ "Target": "Parameter", "Name": name, "Ids": ids }]);
+            filled += 1;
+            continue;
+        };
+        match groups.iter_mut().find(|g| g.get("Name").and_then(Value::as_str) == Some(name)) {
+            Some(group) => {
+                let empty = group.get("Ids").and_then(Value::as_array).is_none_or(|list| list.is_empty());
+                if empty { group["Ids"] = json!(ids); filled += 1; }
+            }
+            None => {
+                groups.push(json!({ "Target": "Parameter", "Name": name, "Ids": ids }));
+                filled += 1;
+            }
+        }
+    }
+    filled
+}
+
 /// 把目录里没被 `model3.json` 声明的表情与动作补登记进去。返回（表情数, 动作数）。
 ///
 /// 表情与动作**必须在同一次读写里做完**：两者都从 `.orig` 重建，分两次写的话
 /// 后一次会把前一次的成果冲掉。
-fn register_assets(dir: &Path) -> Result<(usize, usize), String> {
-    let Some(model3) = model3_in(dir) else { return Ok((0, 0)) };
+fn register_assets(dir: &Path) -> Result<(usize, usize, usize), String> {
+    let Some(model3) = model3_in(dir) else { return Ok((0, 0, 0)) };
     let backup = model3.with_extension("json.orig");
 
     // 永远从原始文件重建：重洗时不叠加上一次的结果
@@ -159,7 +216,10 @@ fn register_assets(dir: &Path) -> Result<(usize, usize), String> {
         }
     }
 
-    if expressions == 0 && motions == 0 { return Ok((0, 0)); }
+    // 参数组要在表情/动作之后补：三者共用同一次读写。
+    let groups = register_groups(&mut value, dir);
+
+    if expressions == 0 && motions == 0 && groups == 0 { return Ok((0, 0, 0)); }
 
     // 先备份再写。备份只在第一次建 —— 它记的是「作者原始的样子」。
     if !backup.is_file() {
@@ -167,7 +227,7 @@ fn register_assets(dir: &Path) -> Result<(usize, usize), String> {
     }
     fs::write(&model3, serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())?;
-    Ok((expressions, motions))
+    Ok((expressions, motions, groups))
 }
 
 /// 已经按当前规则清洗过了吗。
@@ -180,12 +240,13 @@ pub fn is_clean(dir: &Path) -> bool {
 
 /// 清洗一个**模型目录**（它自己就含 `model3.json`）。
 pub fn clean_model(dir: &Path) -> Result<CleanReport, String> {
-    let (registered_expressions, registered_motions) = register_assets(dir)?;
+    let (registered_expressions, registered_motions, filled_groups) = register_assets(dir)?;
     let marker = json!({ "cleanerVersion": CLEANER_VERSION,
-        "registeredExpressions": registered_expressions, "registeredMotions": registered_motions });
+        "registeredExpressions": registered_expressions, "registeredMotions": registered_motions,
+        "filledGroups": filled_groups });
     fs::write(dir.join(MARKER), serde_json::to_string_pretty(&marker).map_err(|e| e.to_string())?)
         .map_err(|error| error.to_string())?;
-    Ok(CleanReport { registered_expressions, registered_motions })
+    Ok(CleanReport { registered_expressions, registered_motions, filled_groups })
 }
 
 /// 把**通往模型目录的路径上**那些名字不合规的目录改名。
@@ -244,6 +305,7 @@ pub fn clean_tree(root: &Path, depth: usize) -> Result<CleanReport, String> {
         let one = clean_model(&dir)?;
         report.registered_expressions += one.registered_expressions;
         report.registered_motions += one.registered_motions;
+        report.filled_groups += one.filled_groups;
     }
     Ok(report)
 }
@@ -348,13 +410,81 @@ mod tests {
     }
 
     #[test]
-    fn a_model_without_expression_files_is_left_alone() {
+    fn a_model_without_expression_files_gets_no_expressions() {
         let dir = scratch("noexp");
         write_model(&dir, None);
         let report = clean_model(&dir).unwrap();
         assert_eq!(report.registered_expressions, 0);
-        assert!(!dir.join("m.model3.json.orig").exists(), "没东西可补就不该留备份");
-        assert!(is_clean(&dir), "没补东西也要打标记，否则每次扫描都会重洗一遍");
+        assert!(is_clean(&dir), "没补表情也要打标记，否则每次扫描都会重洗一遍");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn fills_the_empty_lip_sync_and_blink_groups_that_stop_the_mouth_moving() {
+        // 实测踩到的：面捕向的模型普遍把这两组留空（VTube Studio 自己管映射，不写 Cubism 这栏）。
+        // 组是空的，Cubism 运行时就不知道该驱动哪个参数 —— 嘴一动不动、眼也不眨，且毫无报错。
+        // 四个实测模型里三个 LipSync 是空的，其中一个连 EyeBlink 也是空的。
+        let dir = scratch("groups");
+        fs::write(dir.join("m.model3.json"), serde_json::to_string(&json!({
+            "Version": 3,
+            "FileReferences": { "Moc": "m.moc3", "Textures": ["t.png"] },
+            "Groups": [{ "Target": "Parameter", "Name": "LipSync", "Ids": [] },
+                       { "Target": "Parameter", "Name": "EyeBlink", "Ids": [] }],
+        })).unwrap()).unwrap();
+        // 参数确实存在于模型里，只是没登记
+        fs::write(dir.join("m.cdi3.json"), serde_json::to_string(&json!({
+            "Parameters": [{ "Id": "ParamMouthOpenY" }, { "Id": "ParamEyeLOpen" }, { "Id": "ParamEyeROpen" }],
+        })).unwrap()).unwrap();
+
+        assert_eq!(clean_model(&dir).unwrap().filled_groups, 2);
+        let value: Value = serde_json::from_str(&fs::read_to_string(dir.join("m.model3.json")).unwrap()).unwrap();
+        let groups: Vec<(&str, Vec<&str>)> = value["Groups"].as_array().unwrap().iter()
+            .map(|g| (g["Name"].as_str().unwrap(),
+                      g["Ids"].as_array().unwrap().iter().map(|i| i.as_str().unwrap()).collect()))
+            .collect();
+        assert!(groups.contains(&("LipSync", vec!["ParamMouthOpenY"])));
+        assert!(groups.contains(&("EyeBlink", vec!["ParamEyeLOpen", "ParamEyeROpen"])));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn never_rewrites_groups_the_author_already_filled_in() {
+        let dir = scratch("authorgroups");
+        fs::write(dir.join("m.model3.json"), serde_json::to_string(&json!({
+            "Version": 3,
+            "FileReferences": { "Moc": "m.moc3", "Textures": ["t.png"] },
+            "Groups": [{ "Target": "Parameter", "Name": "LipSync", "Ids": ["SomeCustomMouth"] }],
+        })).unwrap()).unwrap();
+        fs::write(dir.join("m.cdi3.json"), serde_json::to_string(&json!({
+            "Parameters": [{ "Id": "ParamMouthOpenY" }, { "Id": "SomeCustomMouth" }],
+        })).unwrap()).unwrap();
+
+        // LipSync 作者写了就不动；EyeBlink 缺失且模型没有眼参数，也不该硬塞
+        assert_eq!(clean_model(&dir).unwrap().filled_groups, 0);
+        let value: Value = serde_json::from_str(&fs::read_to_string(dir.join("m.model3.json")).unwrap()).unwrap();
+        assert_eq!(value["Groups"][0]["Ids"][0], "SomeCustomMouth");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_registers_parameters_the_model_actually_has() {
+        // 硬塞一个模型里没有的 ID 只会让人以为已经修好了
+        let dir = scratch("partial");
+        fs::write(dir.join("m.model3.json"), serde_json::to_string(&json!({
+            "Version": 3,
+            "FileReferences": { "Moc": "m.moc3", "Textures": ["t.png"] },
+            "Groups": [{ "Target": "Parameter", "Name": "EyeBlink", "Ids": [] }],
+        })).unwrap()).unwrap();
+        fs::write(dir.join("m.cdi3.json"), serde_json::to_string(&json!({
+            "Parameters": [{ "Id": "ParamEyeLOpen" }],   // 只有左眼，没有右眼、没有嘴
+        })).unwrap()).unwrap();
+
+        clean_model(&dir).unwrap();
+        let value: Value = serde_json::from_str(&fs::read_to_string(dir.join("m.model3.json")).unwrap()).unwrap();
+        let groups = value["Groups"].as_array().unwrap();
+        let blink = groups.iter().find(|g| g["Name"] == "EyeBlink").unwrap();
+        assert_eq!(blink["Ids"].as_array().unwrap().len(), 1, "只该补模型里真有的那个");
+        assert!(!groups.iter().any(|g| g["Name"] == "LipSync"), "模型没有嘴参数就不该凭空造出 LipSync 组");
         fs::remove_dir_all(&dir).unwrap();
     }
 

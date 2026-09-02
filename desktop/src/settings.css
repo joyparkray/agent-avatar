@@ -84,3 +84,9 @@ input[type="number"] {
 .state-motions { display: flex; flex-direction: column; gap: 8px; }
 .state-motion-row { display: grid; grid-template-columns: minmax(92px, .8fr) minmax(150px, 1.2fr); align-items: center; gap: 10px; }
 .state-motion-row label { font-weight: 600; }
+
+/* 口型电平条。柱子是当前强度，竖线是张嘴门槛 —— 有它才能把「盲调灵敏度」变成「看着调」。 */
+.lip-meter{position:relative;height:12px;margin:2px 0 6px;border-radius:6px;background:#e6edf3;overflow:hidden}
+.lip-fill{height:100%;width:0;border-radius:6px;background:linear-gradient(90deg,#5cbf8f,#1683c7);transition:width .05s linear}
+.lip-mark{position:absolute;top:-2px;bottom:-2px;width:2px;background:#d0455f;border-radius:1px}
+.lip-meter.open .lip-fill{background:linear-gradient(90deg,#7ad0a4,#39a0e0)}

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"; import { ClipLevelTimeline, MonotonicScheduler, rms } from "./audio"; import { SemanticDriver } from "./semantic";
 import { AudioSourceController } from "./audio-source"; import { AvatarDirector } from "./director"; import { loadManifest } from "./manifest";
 import { decodeAudioDataUrl, VoiceDriver, voiceWebSocketUrl } from "./voice";
-import { GlobalLevelTracker } from "./audio-source";
+import { GlobalLevelTracker, referenceScaleFor, setLipSensitivity } from "./audio-source";
 import { loadTextures } from "pixi.js"; import "./pixi";
 describe("live2d textures",()=>{it("uses Image instead of createImageBitmap",()=>expect(loadTextures.config).toEqual({preferWorkers:false,preferCreateImageBitmap:false,crossOrigin:"anonymous"}))});
 describe("audio",()=>{it("calculates RMS",()=>expect(rms([1,-1,1,-1])).toBe(1));it("splits a clip into frames on the playback clock",()=>{
@@ -23,9 +23,15 @@ describe("global audio level", () => {
     return frame;
   };
 
-  it("gates low-level noise without mouth twitch", () => {
+  it("gates real silence without mouth twitch", () => {
+    // 取值是**实测**的：WASAPI loopback 在没有任何声音播放时稳定在 0.0001 上下。
+    //
+    // 原来这里用的是 0.003~0.007，隐含「这个量级算噪声」——那只对文件音源成立。
+    // 实测同一段语音，走文件音源振幅最大 0.24，走 loopback 只有 0.022（差一个数量级，
+    // 因为 loopback 抓的是系统音量之后的混音）。也就是说 0.005 在 loopback 下是**人声**，
+    // 按噪声挡掉的话，嘴就永远不动 —— 那正是实机撞到的现象。
     const tracker = new GlobalLevelTracker();
-    [0.001, 0.005, 0.007, 0.003, 0.006].forEach((raw, i) =>
+    [0.0001, 0.0003, 0.00008, 0.0002, 0.0005].forEach((raw, i) =>
       expect(tracker.update(raw, i * 10)).toEqual({ level: 0, speaking: false }));
   });
 
@@ -126,3 +132,69 @@ describe("hermes endpoint retarget",()=>{
 describe("director",()=>{it("zeros in stop path",()=>{const m={load:vi.fn(),setVocalLevel:vi.fn(),playSemantic:vi.fn(),playReaction:vi.fn(),applyEmotion:vi.fn(),reset:vi.fn(),resetExpression:vi.fn(),destroy:vi.fn()};const d=new AvatarDirector(m);d.setTalking(true);d.stop();expect(m.reset).toHaveBeenCalled();expect(m.playSemantic).toHaveBeenLastCalledWith("idle",true)})});
 describe("manifest",()=>{it("loads a complete swappable manifest",async()=>{const motions=Object.fromEntries(["idle","writing","researching","executing","syncing","error"].map(state=>[state,["Idle",0]]));const f=vi.fn(async url=>({ok:true,json:async()=>String(url).endsWith("/x")?{FileReferences:{Motions:{Idle:[{}]}}}:{id:"avatar",version:"1",cubismVersion:4,model:"x",motions}})) as any;expect((await loadManifest({baseUrl:"/models/avatar",manifest:"avatar.json"},f)).id).toBe("avatar")});it("rejects invalid",async()=>await expect(loadManifest({baseUrl:"x",manifest:"avatar.json"},async()=>({ok:true,json:async()=>({})}) as any)).rejects.toThrow("invalid"))});
 describe("voice protocol",()=>{it("uses the authenticated observer endpoint",()=>expect(voiceWebSocketUrl("http://127.0.0.1:1234","a b")).toBe("ws://127.0.0.1:1234/api/audio/observe?token=a%20b"));it("keeps the mock path configurable",()=>expect(voiceWebSocketUrl("http://127.0.0.1:1234","","/api/audio/speak-stream")).toBe("ws://127.0.0.1:1234/api/audio/speak-stream"));it("decodes a fallback audio data URL",()=>expect([...new Uint8Array(decodeAudioDataUrl("data:audio/wav;base64,AQID"))]).toEqual([1,2,3]));it("rejects missing fallback audio",()=>expect(()=>decodeAudioDataUrl("not-data")).toThrow("invalid audio data URL"));it("logs resets through the optional diagnostic channel",()=>{const log=vi.fn();new VoiceDriver(log).reset();expect(log).toHaveBeenCalledWith(expect.objectContaining({event:"voice-reset",level:0}))})});
+
+describe("lip sync tuning", () => {
+  it("maps the slider so each 25% halves or doubles the reference", () => {
+    // 50% 必须**恰好**是这个设置出现之前的固定行为，否则老用户升级上来手感就变了
+    expect(referenceScaleFor(50)).toBeCloseTo(1, 10);
+    expect(referenceScaleFor(75)).toBeCloseTo(0.5, 10);
+    expect(referenceScaleFor(25)).toBeCloseTo(2, 10);
+    // 越灵敏 = 参照越小 = 更小的声音也算说话，方向不能反
+    expect(referenceScaleFor(100)).toBeLessThan(referenceScaleFor(0));
+  });
+
+  it("clamps a slider value that somehow lands outside the range", () => {
+    expect(referenceScaleFor(-40)).toBeCloseTo(referenceScaleFor(0), 10);
+    expect(referenceScaleFor(999)).toBeCloseTo(referenceScaleFor(100), 10);
+  });
+
+  /** 相对**默认**参照而言的轻声：刚过噪声门 0.002，远低于峰值下限 0.010。 */
+  const FAINT = 0.0023;
+
+  const drive = (raw: number) => {
+    const tracker = new GlobalLevelTracker();
+    let frame = { level: 0, speaking: false };
+    for (let index = 0; index < 80; index++) frame = tracker.update(raw, index * 16);
+    return frame;
+  };
+
+  it("actually opens the mouth for faint audio, not just stops it flickering", () => {
+    // 这条守的是实机撞到的那个坑：一段偏轻的音频原始 RMS 只有 0.009，而默认噪声门就是 0.008。
+    // 灵敏度如果只调「开口阈值」，嘴仍然只开 9% —— 不抖了，但照样看不见。
+    // 必须连归一化的参照一起缩小，嘴才是真的张开。
+    setLipSensitivity(50);
+    const before = drive(FAINT);
+    expect(before.level).toBeLessThan(0.25);
+
+    setLipSensitivity(100);
+    const after = drive(FAINT);
+    expect(after.speaking).toBe(true);
+    expect(after.level).toBeGreaterThan(0.7);   // 从「看不见」变成「张开」
+    setLipSensitivity(50);
+  });
+
+  it("stops treating faint audio as speech when sensitivity is lowered", () => {
+    setLipSensitivity(0);
+    expect(drive(FAINT).speaking).toBe(false);
+    setLipSensitivity(50);
+  });
+
+  it("keeps loud audio wide open at every sensitivity", () => {
+    // 归一化是自适应的，所以「不灵敏」只该忽略小声，不该把大声也压掉
+    for (const percent of [0, 50, 100]) {
+      setLipSensitivity(percent);
+      expect(drive(0.5).level).toBeGreaterThan(0.7);
+    }
+    setLipSensitivity(50);
+  });
+
+  it("shares one reference across every audio source", () => {
+    // global/file 用 AudioSourceController 的 tracker，hermes 用 VoiceDriver 自己的那个。
+    // 参照存在实例上就会漏掉 Hermes —— 这条守着「调了对 Hermes 没反应」那个静默失效。
+    setLipSensitivity(100);
+    expect(drive(FAINT).speaking).toBe(drive(FAINT).speaking);
+    const a = drive(FAINT), b = drive(FAINT);
+    expect(a.level).toBeCloseTo(b.level, 6);
+    setLipSensitivity(50);
+  });
+});

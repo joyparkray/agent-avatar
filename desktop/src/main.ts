@@ -1,5 +1,5 @@
 import "./style.css"; import "./state.css"; import { invoke } from "@tauri-apps/api/core"; import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleExpressionPoolKey, idleMotionPoolKey, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, readStateSource, writeStateSource, connectorWizardSeen, rememberConnectorWizardSeen, type Language, type StateSource, type SettingsChange } from "./prefs";
+import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleExpressionPoolKey, idleMotionPoolKey, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, lipSensitivityPercent, mouthAmplitudePercent, readStateSource, writeStateSource, connectorWizardSeen, rememberConnectorWizardSeen, type Language, type StateSource, type SettingsChange } from "./prefs";
 import type { ModelChoice } from "./native-menu";
 import type { ModelSource } from "./prefs";
 import type { AvatarSource } from "./types";
@@ -52,9 +52,9 @@ import { motionKey, motionRefs } from "./inventory";
 import { bottomSnapY } from "./dock";
 import { defaultEnabledExpressions, defaultEnabledMotions, loadInventory, loadModelIndex, motionLabel, pickEnabledExpression, pickEnabledMotion } from "./inventory";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { currentMonitor } from "@tauri-apps/api/window";
-import { AudioSourceController, type AudioSource } from "./audio-source";
+import { AudioSourceController, lastRawLevel, setLipSensitivity, type AudioSource } from "./audio-source";
 import type { AvatarState } from "./types";
 function log(event: object): void { void invoke("log_event", { event: JSON.stringify(event) }).catch(() => {}); }
 installGlobalDiagnostics(log);
@@ -85,6 +85,25 @@ async function probeAssets(): Promise<void> {
     .then(response => ({ ok: response.ok, status: response.status, type: response.headers.get("content-type") }))
     .catch(error => ({ ok: false, error: String(error) }));
   log({ event: "assets:probe", script });
+}
+
+/**
+ * 把口型电平转发给设置窗口的电平条。
+ *
+ * **只在设置页开着时才发**：电平每秒更新约 60 次，常驻广播是纯浪费的跨进程事件，
+ * 而设置页大部分时间是关着的。设置页开/关时各发一条开关信号，这里据此起停。
+ * 再降到 20Hz —— 一根柱子不需要 60fps，而 IPC 是有成本的。
+ */
+let meterWanted = false, meterLastSent = 0;
+void listen("lip-meter:watch", event => { meterWanted = Boolean(event.payload); });
+function forwardLipLevel(level: number): void {
+  if (!meterWanted) return;
+  const now = performance.now();
+  if (now - meterLastSent < 50) return;
+  meterLastSent = now;
+  // 送**原始**音量给电平条（柱子画它），另带一个「嘴现在开着吗」给它上色。
+  // 送包络的话，拉灵敏度会让柱子动而线不动 —— 与音频表的常规读法相反。
+  void emit("lip-meter:level", { raw: lastRawLevel, open: level > 0 }).catch(() => {});
 }
 let currentState = "", clickThroughHint = false, manualActivityTimer: number | undefined;
 let manual: { kind: "expression" | "motion"; name: string } | undefined;
@@ -409,9 +428,9 @@ async function boot() { log({ event: "boot:start" });
     // 成功加载后的 URL 参数才是最终真值。同步回 config，设置窗口没有主窗口的 query 参数，
     // 若不写回，嵌套模型会在设置页错误回落到旧的 `haru`，动作/表情 inventory 全空。
     await rememberModel(currentModelDir(), currentModelSource());
-    try { sessionStorage.removeItem("echo.modelRecoveryTried"); } catch { /* 忽略 */ } const director = new AvatarDirector(model, snapshot => show(snapshot)); const applySpeaking = (speaking: boolean) => { director.setTalking(speaking); if (speaking) { model.lookAhead(); notifyIdleBusy(); } }; const voice = new VoiceDriver(log); voice.onVocalLevel(v => model.setVocalLevel(v)); voice.onSpeaking(applySpeaking); const params = new URLSearchParams(location.search), override = params.get("endpoint"); const discovered = override ? { url: override, token: params.get("token") ?? "" } : await invoke<{ url: string; token?: string; auth_required?: boolean } | null>("discover_audio_endpoint"); // 只记 url 与「有没有 token」：token 是 Hermes 的会话凭据，日志默认落在 /tmp（全局可读），
+    try { sessionStorage.removeItem("echo.modelRecoveryTried"); } catch { /* 忽略 */ } const director = new AvatarDirector(model, snapshot => show(snapshot)); const applySpeaking = (speaking: boolean) => { director.setTalking(speaking); if (speaking) { model.lookAhead(); notifyIdleBusy(); } }; const voice = new VoiceDriver(log); voice.onVocalLevel(v => { model.setVocalLevel(v); forwardLipLevel(v); }); voice.onSpeaking(applySpeaking); const params = new URLSearchParams(location.search), override = params.get("endpoint"); const discovered = override ? { url: override, token: params.get("token") ?? "" } : await invoke<{ url: string; token?: string; auth_required?: boolean } | null>("discover_audio_endpoint"); // 只记 url 与「有没有 token」：token 是 Hermes 的会话凭据，日志默认落在 /tmp（全局可读），
 // 整条 WS URL 里也带着它，写进去等于把 Hermes 的完整 API 访问权泄在磁盘上。
-log({ event: "endpoint:discovered", url: discovered?.url ?? null, hasToken: Boolean(discovered?.token), authRequired: discovered?.auth_required ?? null }); const path = params.get("audioPath") ?? "/api/audio/observe"; if (discovered) log({ event: "voice:ready", path }); else log({ event: "endpoint:skipped" }); const audio = new AudioSourceController(voice, discovered ? { ...discovered, path } : null, command => invoke(command), v => model.setVocalLevel(v), applySpeaking, log); // 默认 `global`（系统音频）而不是 `hermes`：Hermes 的 /api/audio/observe 只在装了
+log({ event: "endpoint:discovered", url: discovered?.url ?? null, hasToken: Boolean(discovered?.token), authRequired: discovered?.auth_required ?? null }); const path = params.get("audioPath") ?? "/api/audio/observe"; if (discovered) log({ event: "voice:ready", path }); else log({ event: "endpoint:skipped" }); const audio = new AudioSourceController(voice, discovered ? { ...discovered, path } : null, command => invoke(command), v => { model.setVocalLevel(v); forwardLipLevel(v); }, applySpeaking, log); // 默认 `global`（系统音频）而不是 `hermes`：Hermes 的 /api/audio/observe 只在装了
     // Hermes desktop 且走 speak-stream 时才有流，对其他 harness 的用户默认根本不存在 ——
     // 那正是「打开就嘴一动不动」的原因（ROADMAP D1）。系统音频对所有会出声的 agent
     // 都有效（Codex Voice、Claude Desktop voice mode、本地 TTS 都从系统音频出）。
@@ -597,6 +616,10 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
   const scalePercent = prefs.read("scale", 100), opacityPercent = prefs.read("opacity", 100);
   if (scalePercent !== 100) await applyScale(scalePercent).catch(error => log({ event: "menu:scale:error", error: String(error) }));
   if (opacityPercent !== 100) model.setOpacity(opacityPercent / 100);
+  // 口型两项**无条件应用**，不像上面两个那样「等于默认值就跳过」——
+  // 阈值是模块级的，跳过就等于把上一次会话留下的值带进来。
+  setLipSensitivity(lipSensitivityPercent());
+  model.setMouthAmplitude(mouthAmplitudePercent() / 100);
   model.setSemanticMotions(readStateMotions(dir));
 
   const buildState = () => ({
@@ -622,6 +645,10 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
   void listen<SettingsChange>(SETTINGS_EVENT, ({ payload }) => {
     if (payload.scalePercent !== undefined) void applyScale(payload.scalePercent).catch(error => log({ event: "settings:scale:error", error: String(error) }));
     if (payload.opacityPercent !== undefined) { prefs.write("opacity", payload.opacityPercent); model.setOpacity(payload.opacityPercent / 100); }
+    // 口型两项都是全局设置。灵敏度落在模块级阈值上，三种音源共用的 GlobalLevelTracker
+    // 会立刻读到；张嘴幅度落在 setVocalLevel，那是三种音源唯一都经过的点。
+    if (payload.lipSensitivityPercent !== undefined) { prefs.write("lipSensitivity", payload.lipSensitivityPercent); setLipSensitivity(payload.lipSensitivityPercent); }
+    if (payload.mouthAmplitudePercent !== undefined) { prefs.write("mouthAmplitude", payload.mouthAmplitudePercent); model.setMouthAmplitude(payload.mouthAmplitudePercent / 100); }
     if (payload.focusPercent !== undefined) { prefs.write("focusPercent", payload.focusPercent); model.setFocusZoom(focusZoomFromPercent(payload.focusPercent), true); }
     if (payload.statusPosition) { rememberStatusPosition(payload.statusPosition); status.dataset.pos = payload.statusPosition; }
     if (payload.idleDelaySeconds !== undefined) { rememberIdleDelay(payload.idleDelaySeconds); applyIdleDelay(payload.idleDelaySeconds); }

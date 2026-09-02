@@ -94,8 +94,24 @@ export class Live2DAvatarModel implements AvatarModel {
     this.lastGlowAt = now;
     document.documentElement.style.setProperty("--vocal", String(quantized));
   }
+  /**
+   * 张嘴幅度倍率。1 = 原样。
+   *
+   * 放在这里是因为 `setVocalLevel` 是**三种音源唯一都经过的那个点**
+   * （global/file 经 AudioSourceController，hermes 经 VoiceDriver，最后都落到这儿）——
+   * 挂在别处就得挂三份，而漏一份的表现是「换个音源幅度就不对了」。
+   *
+   * 各家模型的 `ParamMouthOpenY` 幅度差别很大，有的模型天生张得很小；
+   * 这个倍率就是给用户把它拉到看得出来的程度。
+   */
+  private mouthAmplitude = 1;
+
+  setMouthAmplitude(multiplier: number): void {
+    this.mouthAmplitude = Math.max(0, multiplier);
+  }
+
   setVocalLevel(level: number): void {
-    const clamped = Math.max(0, Math.min(1, level));
+    const clamped = Math.max(0, Math.min(1, level * this.mouthAmplitude));
     const internal = this.model?.internalModel as unknown as { setLipSyncValue?(value: number): void } | undefined;
     internal?.setLipSyncValue?.(clamped);
     this.updateGlow(clamped);
