@@ -24,6 +24,17 @@ Electron 壳里没有 hook 系统，真正跑 agent 的是随 app 分发的 CLI�
 ./install-plugin.sh
 ```
 
+> **Windows** 用 `install-plugin.ps1`（PowerShell，与 `.sh` 同义）：
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File connectors\workbuddy\install-plugin.ps1
+> ```
+> 它比 `.sh` 版多做一件事：**把解释器换成本机实测可用的绝对路径**。
+> Windows 上 `python3` 解析到一个 0 字节的应用商店存根 —— 能启动、打印
+> 「Python was not found」、以 9009 退出，而 9009 不是 2，所以**不会被拦下，
+> 只会安静地什么都不发生**。详见 `private/WINDOWS-PORT.md` 的「WP4」几节。
+> Windows 上没有 app 自带 CLI 的固定路径，脚本按 `CODEBUDDY_CLI` → PATH 找；
+> 都没有时明确报错停下，并给出 `npm install -g @tencent-ai/codebuddy-code`。
+
 🔴 **装进哪个 home 是关键。** 同一个 CLI 有两个配置目录：独立跑 CLI 时默认 `~/.codebuddy`，
 而 **WorkBuddy app 读 `~/.workbuddy`**（app 侧 `WORKBUDDY_CONFIG_DIR`，CLI 侧
 `CODEBUDDY_CONFIG_DIR`）。装错 home 的表现最迷惑人：**命令行怎么测都正常、app 里新会话

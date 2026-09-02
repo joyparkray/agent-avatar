@@ -9,6 +9,7 @@
 |:--|:--|
 | `plugin/agent-avatar/` | **默认接入方式**：Hermes 插件（`plugin.yaml` + `__init__.py`），事件翻译 + token 带出 |
 | `install-plugin.sh` | 把插件三个文件拷进 `~/.hermes/plugins/agent-avatar/`，**不碰用户的 config.yaml** |
+| `install-plugin.ps1` | 同上，Windows 侧（PowerShell）。Hermes 是五家里**唯一不需要改解释器**的一家：插件是 in-process 的 Python 包，跑在 Hermes 自己的解释器里、不 spawn 进程，所以「`python3` 在 Windows 上是应用商店存根」那颗雷碰不到它 —— 也因此它是 Windows 接线的**基线** |
 | `agent-avatar-hook.py` | 备用的 shell hook 入口，行为与插件一致 |
 | `test_agent_avatar_hook.py` / `test_agent_avatar_plugin.py` | 两条入口的单测，不依赖皮肤、不依赖任何第三方项目 |
 | `../../src-tauri/src/hermes.rs` | `read_semantic_state` / `discover_audio_endpoint` 两个 Tauri 命令 |

@@ -26,6 +26,23 @@ M3 设计稿写的是「dsh 自带 CC hook bridge，零改动复用 Claude Code 
 ./install-plugin.sh
 ```
 
+> **Windows** 用 `install-plugin.ps1`（PowerShell，与 `.sh` 同义）：
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File connectors\dsh\install-plugin.ps1
+> ```
+> 它比 `.sh` 版多做一件事：**把解释器换成本机实测可用的绝对路径**。
+> Windows 上 `python3` 解析到一个 0 字节的应用商店存根 —— 能启动、打印
+> 「Python was not found」、以 9009 退出，而 9009 不是 2，所以**不会被拦下，
+> 只会安静地什么都不发生**。详见 `private/WINDOWS-PORT.md` 的「WP4」几节。
+> dsh 有两处 Windows 特有的坑，都已在 `.ps1` 里处理：
+> 1. `index.mjs` 里那次 `spawn("python3")` —— 这条链路 stderr 被 `ignore`、
+>    `error` 事件又只在 spawn 失败时触发，而存根**是能成功启动的**，
+>    所以是五家里最静默的一种坏法。安装时把绝对路径写进 `index.mjs`
+>    （`AGENT_AVATAR_PYTHON` 环境变量仍然优先）。
+> 2. patch 里的 entry `name` **必须是 `file:///` URL**：dsh 拿它当 ESM specifier
+>    直接 `import()`，而 Node 会把 `C:/...` 当成 scheme 为 `c:` 的 URL，
+>    报 `ERR_UNSUPPORTED_ESM_URL_SCHEME`（2026-09-02 实测）。
+
 装法是 dsh 的**用户 patch 层**：`$DSH_HOME/cordis.patch.yml`（home 级，对所有 profile
 生效）里 insert 一条指向插件目录的 entry。这个文件被 dsh 的 HMR 监视着
 （`watchUserPatches`）—— **正在跑的 dsh 会热加载，不用重启**。

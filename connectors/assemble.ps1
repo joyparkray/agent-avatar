@@ -15,9 +15,17 @@
   官方安装包只产出 `python.exe` 和 `pythonw.exe`，**从不产出 python3.exe**。
 
   写进去的那一行有严格的形状要求，见 Set-HookCommand 的注释。
+
+  **故意没有 assemble.sh 那个 `all` 模式。** `all` 是发布路径，而这里写进树里的是
+  **本机**的解释器绝对路径 —— 拿它打包分发，用户装到的就是「指向别人机器上某个
+  python.exe」的插件，正好是本轮要消灭的那种静默失效。发布树保持机器无关
+  （由 assemble.sh 产出，里面仍写着 `python3`），Windows 的改写发生在**安装时**，
+  也就是用户在自己机器上跑 install-plugin.ps1 的那一刻。
 #>
 param(
-  [Parameter(Mandatory = $true)][ValidateSet("claude-code", "codex")][string]$Harness,
+  [Parameter(Mandatory = $true)]
+  [ValidateSet("claude-code", "codex", "workbuddy", "dsh", "hermes")]
+  [string]$Harness,
   [Parameter(Mandatory = $true)][string]$Target
 )
 
@@ -102,6 +110,38 @@ function Assemble-Codex([string]$target) {
     (Join-Path $bridge "pascal_events.py"))
 }
 
+# WorkBuddy 的 agent core 是随 app 分发的 CodeBuddy Code CLI，插件布局与 CC 同形，
+# 只是清单目录叫 `.codebuddy-plugin/`，hook 里的占位符是 ${CODEBUDDY_PLUGIN_ROOT}。
+function Assemble-WorkBuddy([string]$target) {
+  $src = Join-Path $here "workbuddy"
+  Copy-Into (Join-Path $target ".codebuddy-plugin") @((Join-Path $src "plugin/agent-avatar/.codebuddy-plugin/plugin.json"))
+  Copy-Into (Join-Path $target "hooks") @(
+    (Join-Path $src "plugin/agent-avatar/hooks/hooks.json"),
+    (Join-Path $src "agent-avatar-hook.py"),
+    (Join-Path $bridge "state_machine.py"),
+    (Join-Path $bridge "pascal_events.py"))
+}
+
+# dsh 插件是 in-process 的 cordis（JS）插件：事件翻译在 index.mjs 里，
+# 它再把内部词表的 payload 喂给同级的 python 入口 —— 状态机仍然只有一份。
+# 事件名就是内部词表，不需要 pascal_events。
+function Assemble-Dsh([string]$target) {
+  Copy-Into $target @(
+    (Join-Path $here "dsh/plugin/agent-avatar/index.mjs"),
+    (Join-Path $here "dsh/agent-avatar-hook.py"),
+    (Join-Path $bridge "state_machine.py"))
+}
+
+# Hermes 插件是 in-process 的 Python 包，`from .state_machine import update` 在包内解析，
+# 所以 core 拷在包根。它跑在 Hermes 自己的解释器里、不 spawn 进程，
+# 因此**是五家里唯一不需要改解释器的一家**。
+function Assemble-Hermes([string]$target) {
+  Copy-Into $target @(
+    (Join-Path $here "hermes/plugin/agent-avatar/plugin.yaml"),
+    (Join-Path $here "hermes/plugin/agent-avatar/__init__.py"),
+    (Join-Path $bridge "state_machine.py"))
+}
+
 <#
 把 hooks.json 里每一条 command 换成本机的解释器。
 
@@ -118,7 +158,9 @@ Codex 走 `commandWindows`（它自己的 Windows 专用覆盖字段），POSIX 
 Claude Code 没有等价字段，直接改 `command`（这份是装到用户目录里的副本，不是仓库文件）。
 #>
 function Set-HookCommand([string]$file, [string]$python, [string]$harness) {
-  $text = Get-Content -LiteralPath $file -Raw
+  # 不用 Get-Content -Raw：PowerShell 5.1 没有 BOM 时按系统 ANSI 代码页解码，
+  # 中文注释会变成乱码、多字节字符还会吃掉后面的换行。ReadAllText 默认按 UTF-8 读。
+  $text = [System.IO.File]::ReadAllText($file)
   $json = $text | ConvertFrom-Json
   $rewritten = 0
 
@@ -148,6 +190,27 @@ function Set-HookCommand([string]$file, [string]$python, [string]$harness) {
   return $rewritten
 }
 
+<#
+把 dsh 插件 index.mjs 里的解释器默认值换成本机绝对路径。
+
+dsh 不是 shell hook：它是 in-process 的 JS 插件，自己 `spawn` 一个 python 子进程。
+这条链路在 Windows 上是五家里**最静默**的一种坏法 —— stderr 被 `ignore`，
+而 `error` 事件只在 spawn 失败时触发，商店存根却是能成功启动的（打印错误、9009 退出），
+于是没有任何一处会察觉。所以这里必须把路径钉死，不能指望 PATH。
+
+改的是那一行的**默认值**，`AGENT_AVATAR_PYTHON` 环境变量仍然优先。
+路径里用正斜杠并按 JS 字符串转义，Windows API 两种分隔符都收。
+#>
+function Set-NodeHookPython([string]$file, [string]$python) {
+  $text = [System.IO.File]::ReadAllText($file)   # 按 UTF-8 读，理由同 Set-HookCommand
+  $literal = '"' + ($python -replace "\\", "/") + '"'
+  $pattern = 'process\.env\.AGENT_AVATAR_PYTHON \|\| "[^"]*"'
+  if ($text -notmatch $pattern) { throw "index.mjs 里找不到解释器那一行，布局可能变了：$file" }
+  $text = [regex]::Replace($text, $pattern, 'process.env.AGENT_AVATAR_PYTHON || ' + $literal)
+  [System.IO.File]::WriteAllText($file, $text, (New-Object System.Text.UTF8Encoding($false)))
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # 冒烟自检 —— 验到「hook 真的跑通并写出了状态文件」
 # ---------------------------------------------------------------------------
@@ -159,18 +222,72 @@ function Set-HookCommand([string]$file, [string]$python, [string]$harness) {
 （退出码 2 会 block），所以退出码根本反映不出它有没有干活。core 漏拷一个模块的表现
 正是「安静地什么都没发生」—— 本轮所有坑都是这个形状。
 #>
-function Invoke-SmokeTest([string]$python, [string]$script, [string]$stateName) {
+function Invoke-SmokeTest([string]$python, [string]$script, [string]$stateName,
+                          [string]$event = '{"hook_event_name":"UserPromptSubmit","session_id":"smoke"}') {
   $scratch = Join-Path ([System.IO.Path]::GetTempPath()) ("agent-avatar-smoke-" + [guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Force -Path $scratch | Out-Null
   try {
-    $event = '{"hook_event_name":"UserPromptSubmit","session_id":"smoke"}'
     $previous = $env:TMPDIR
     $env:TMPDIR = $scratch
-    try { $event | & $python $script | Out-Null } finally { $env:TMPDIR = $previous }
+    # $OutputEncoding 决定往子进程 stdin 写什么字节。用户 profile 里常见的
+    # `$OutputEncoding = [Text.Encoding]::UTF8` 带 BOM 前导符，会在 JSON 开头塞三个字节，
+    # 于是 hook 拿到的第一行不是 `{` —— 自检就不再是在喂「harness 会喂的东西」了。
+    # 这里强制成不带 BOM 的 UTF-8，只在自检期间生效。
+    $previousEncoding = $OutputEncoding
+    # 别在插件目录里留下 __pycache__：这棵树是要分发的，字节码是本机 Python 版本专属的垃圾
+    $previousBytecode = $env:PYTHONDONTWRITEBYTECODE
+    $env:PYTHONDONTWRITEBYTECODE = "1"
+    $global:OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+    try { $event | & $python $script | Out-Null }
+    finally {
+      $env:TMPDIR = $previous
+      $env:PYTHONDONTWRITEBYTECODE = $previousBytecode
+      $global:OutputEncoding = $previousEncoding
+    }
     if ($LASTEXITCODE -ne 0) { throw "hook 非零退出（$LASTEXITCODE）—— core 可能没拷全" }
     if (-not (Test-Path -LiteralPath (Join-Path $scratch $stateName))) {
       throw "没写出状态文件 $stateName —— core 可能没拷全"
     }
+  } finally { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+<#
+dsh 多验一件事：cordis 会 import 那个 JS 插件，所以它得**真的导得进来**且导出 apply。
+python 入口的落盘由上面那个通用自检负责（dsh 的回合起点是 pre_llm_call）。
+#>
+function Invoke-NodeImportCheck([string]$file) {
+  if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    throw "PATH 里没有 node —— dsh 是 Node 程序，它的插件自检需要 node"
+  }
+  $url = ([uri](Resolve-Path -LiteralPath $file).ProviderPath).AbsoluteUri
+  & node --input-type=module -e "import('$url').then(m => { if (typeof m.apply !== 'function') process.exit(1) }, () => process.exit(1))"
+  if ($LASTEXITCODE -ne 0) { throw "dsh 的 index.mjs 导不进来或没有 apply" }
+}
+
+<#
+Hermes 是包形态，没有 stdin 入口，所以直接按包加载一次：漏拷 state_machine.py 就在这里炸。
+（Hermes 跑在自己的解释器里，这里用哪个 python 只是「能不能加载」的代理验证。）
+#>
+function Invoke-HermesLoadCheck([string]$python, [string]$target) {
+  $scratch = Join-Path ([System.IO.Path]::GetTempPath()) ("agent-avatar-smoke-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+  try {
+    $probe = Join-Path $scratch "probe.py"
+    $code = @'
+import importlib.util, sys
+target = sys.argv[1]
+spec = importlib.util.spec_from_file_location(
+    "agent_avatar_plugin", target + "/__init__.py", submodule_search_locations=[target])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+assert module.HOOKS, "plugin exposes no hooks"
+'@
+    [System.IO.File]::WriteAllText($probe, $code, (New-Object System.Text.UTF8Encoding($false)))
+    $previousBytecode = $env:PYTHONDONTWRITEBYTECODE
+    $env:PYTHONDONTWRITEBYTECODE = "1"
+    try { & $python $probe $target } finally { $env:PYTHONDONTWRITEBYTECODE = $previousBytecode }
+    if ($LASTEXITCODE -ne 0) { throw "hermes 插件包加载失败 —— core 可能没拷全" }
   } finally { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
@@ -208,6 +325,32 @@ switch ($Harness) {
     $count = Set-HookCommand (Join-Path $Target "hooks.json") $hookPython $Harness
     Invoke-SmokeTest $python (Join-Path $Target "scripts/agent-avatar-hook.py") "agent-avatar-state.codex.json"
   }
+  "workbuddy" {
+    Assemble-WorkBuddy $Target
+    $count = Set-HookCommand (Join-Path $Target "hooks/hooks.json") $hookPython $Harness
+    # WorkBuddy 的 SessionStart 不当重置（见 pascal_events 的注释），拿它自检永远写不出文件。
+    # 喂 UserPromptSubmit —— 那是它真实的回合起点，也正好是自检的默认事件。
+    Invoke-SmokeTest $python (Join-Path $Target "hooks/agent-avatar-hook.py") "agent-avatar-state.workbuddy.json"
+  }
+  "dsh" {
+    Assemble-Dsh $Target
+    # 这里给的是**原始绝对路径**，不是 8.3 短路径：dsh 用 spawn 直接起进程、不过 shell，
+    # 带空格的路径作为 argv[0] 本来就没问题。短路径只在「要写进命令行」时才需要。
+    $count = Set-NodeHookPython (Join-Path $Target "index.mjs") $python
+    Invoke-NodeImportCheck (Join-Path $Target "index.mjs")
+    Invoke-SmokeTest $python (Join-Path $Target "agent-avatar-hook.py") "agent-avatar-state.dsh.json" `
+      '{"hook_event_name":"pre_llm_call","session_id":"smoke","turn_id":"1"}'
+  }
+  "hermes" {
+    # 唯一不用改解释器的一家：纯 Python in-process，跑在 Hermes 自己的解释器里，不 spawn。
+    Assemble-Hermes $Target
+    $count = 0
+    Invoke-HermesLoadCheck $python $Target
+  }
 }
 
-Write-Host "已组装 $Harness → $Target（改写了 $count 条 hook 命令，冒烟自检通过）"
+if ($count -gt 0) {
+  Write-Host "已组装 $Harness → $Target（改写了 $count 条 hook 命令，冒烟自检通过）"
+} else {
+  Write-Host "已组装 $Harness → $Target（这家不需要改解释器，冒烟自检通过）"
+}

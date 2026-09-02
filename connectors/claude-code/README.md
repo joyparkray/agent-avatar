@@ -14,6 +14,15 @@
 connectors/claude-code/install-plugin.sh
 ```
 
+> **Windows** 用 `install-plugin.ps1`（PowerShell，与 `.sh` 同义）：
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File connectors\claude-code\install-plugin.ps1
+> ```
+> 它比 `.sh` 版多做一件事：**把解释器换成本机实测可用的绝对路径**。
+> Windows 上 `python3` 解析到一个 0 字节的应用商店存根 —— 能启动、打印
+> 「Python was not found」、以 9009 退出，而 9009 不是 2，所以**不会被拦下，
+> 只会安静地什么都不发生**。详见 `private/WINDOWS-PORT.md` 的「WP4」几节。
+
 脚本把插件组装到 `~/.claude/plugins/local/agent-avatar/`（**必须自包含**：hook 脚本 +
 Bridge 的两个模块；状态机的单一真相在 `../../bridge/`，不在 connector 里放副本）。然后：
 

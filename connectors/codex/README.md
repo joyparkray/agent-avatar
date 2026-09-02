@@ -32,6 +32,17 @@ Codex 已经并进 ChatGPT app（`codex app` 就是拉起它）。同一个 app 
 connectors/codex/install-plugin.sh
 ```
 
+> **Windows** 用 `install-plugin.ps1`（PowerShell，与 `.sh` 同义）：
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File connectors\codex\install-plugin.ps1
+> ```
+> 它比 `.sh` 版多做一件事：**把解释器换成本机实测可用的绝对路径**。
+> Windows 上 `python3` 解析到一个 0 字节的应用商店存根 —— 能启动、打印
+> 「Python was not found」、以 9009 退出，而 9009 不是 2，所以**不会被拦下，
+> 只会安静地什么都不发生**。详见 `private/WINDOWS-PORT.md` 的「WP4」几节。
+> Codex 有 `commandWindows` 这个 Windows 专用命令覆盖字段，所以 POSIX 那条
+> `/usr/bin/python3` **原样保留**，两个平台共用同一份 hooks.json。
+
 然后：**重启 ChatGPT app** → 在 **Plugins 标签页启用 Agent Avatar** → **审阅并信任它的 hooks**。
 
 > 🔴 **第 3 步的入口是 `/hooks`，不在 Plugins 页面上。**
