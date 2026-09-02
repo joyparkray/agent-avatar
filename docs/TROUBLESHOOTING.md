@@ -45,8 +45,13 @@ concluding the pipeline is broken.
 
 Right-click → Audio Source:
 
-- **System audio** works for any agent that speaks out loud, and is the default.
-  macOS will ask for audio-capture permission the first time.
+**Lip sync is off until you pick a source.** Nothing is captured before you do — the app
+should not be recording audio you never asked it to record, and security software is right
+to say so when it does.
+
+- **System audio** works for any agent that speaks out loud. macOS asks for audio-capture
+  permission the first time; on Windows, antivirus software may note that the app has
+  started listening, which is exactly what it is doing.
 - **Hermes** only carries audio when Hermes desktop is running with a speech stream.
 - **File** plays a local audio file, for testing.
 - **Off** disables lip sync.

@@ -111,7 +111,7 @@ Plus two reactions layered on top: `blocked` (permission denied) and `interrupte
 | **Where it sits** | Always on top, snap to the bottom edge, center on screen, scale and opacity. |
 | **Eyes follow the cursor** | Optional, and idle autonomy steps aside while it is on. |
 | **Click Through** | The whole window stops catching clicks; hover the character for 3 seconds when you need it back. |
-| **Audio Source** | System audio, an audio file, or a Hermes speech stream — whichever your setup actually produces. |
+| **Audio Source** | Off until you choose: system audio, an audio file, or a Hermes speech stream — whichever your setup actually produces. Nothing is captured before you pick one. |
 | **Agent State Source** | Follow whichever agent is most recently active, or pin the avatar to one harness. |
 
 <p align="center">
