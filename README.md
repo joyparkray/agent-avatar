@@ -141,8 +141,8 @@ Plus two reactions layered on top: `blocked` (permission denied) and `interrupte
    no right-click → Open needed.
 2. Launch it. With no model installed you get a short onboarding card with a link to
    Live2D's free sample models.
-3. Install a model — drag its folder into **Settings → Models**, or drop it in the
-   models folder the card opens for you. See [docs/MODELS.md](docs/MODELS.md).
+3. Install a model — drag its folder onto **Settings → Models**, or onto the card the app
+   shows when no model is installed yet. See [docs/MODELS.md](docs/MODELS.md).
 4. Connect your agent — see [docs/CONNECTORS.md](docs/CONNECTORS.md).
 
 Or [build from source](CONTRIBUTING.md).

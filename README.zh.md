@@ -129,7 +129,7 @@ connector 只告诉形象 **agent 正在做什么**，形象根据你的模型�
 
    已用 Apple Developer ID 签名并通过公证，**直接双击打开即可**，不需要右键。
 2. 启动。没装模型时会看到引导卡片，附 Live2D 官方免费模型的链接。
-3. 装模型 —— 把模型文件夹拖进**设置 → 模型**，或放进卡片给你打开的模型目录。
+3. 装模型 —— 把模型文件夹拖进**设置 → 模型**，或直接拖到引导卡片上。
    详见 [docs/MODELS.md](docs/MODELS.md)。
 4. 接上你的 agent —— 见 [docs/CONNECTORS.md](docs/CONNECTORS.md)。
 

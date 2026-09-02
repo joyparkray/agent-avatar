@@ -20,9 +20,10 @@ model's license is between you and its author; Agent Avatar does not redistribut
 shows when no model is installed yet. The folder is copied into the app's own model
 directory; your original is never moved or modified.
 
-Copying a folder into the model directory by hand still works and the menu re-scans every
-time you open it, but prefer the drop zone: imported models are tidied up on the way in
-(see below), and a hand-placed folder skips that.
+That drop zone is the only way in. Copying a folder into the model directory by hand
+appears to work, but it skips the import step that makes most published models usable at
+all (see below), so the app no longer offers a way to open that directory from the menu or
+from Settings. The path is below, for when you need to look while troubleshooting.
 
 ```
 macOS    ~/Library/Application Support/io.github.joyparkray.agentavatar/models/

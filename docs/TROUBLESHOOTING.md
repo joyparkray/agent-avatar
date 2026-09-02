@@ -61,6 +61,20 @@ model that reloads on every launch.
 Common causes are covered in [MODELS.md](MODELS.md): archives that were never unzipped,
 folders without a `*.model3.json`, and Cubism 5.1 offscreen models.
 
+## Where are my models kept?
+
+Installed models live here:
+
+```
+macOS    ~/Library/Application Support/io.github.joyparkray.agentavatar/models/
+Windows  %APPDATA%\io.github.joyparkray.agentavatar\models\
+```
+
+The app deliberately offers no button to open it. Dropping a folder onto Settings is the
+only supported way in, because import fixes up models that would otherwise not load at all
+(see [MODELS.md](MODELS.md)), and a hand-placed folder skips that. Open the path yourself
+when you need to look; to remove a model, use Settings, not the file manager.
+
 ## The character has missing parts, or coloured rectangles
 
 That model uses Cubism 5.1 offscreen compositing, which the current renderer cannot draw.

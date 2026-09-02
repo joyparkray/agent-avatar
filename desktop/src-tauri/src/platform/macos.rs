@@ -1,13 +1,6 @@
 //! macOS 侧的平台胶水。接口定义见 `platform/mod.rs`。
 
-use std::path::Path;
 use std::process::Command;
-
-/// 在访达里打开一个目录。
-pub fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
-    Command::new("open").arg(path).spawn().map_err(|error| error.to_string())?;
-    Ok(())
-}
 
 /// 用默认浏览器打开 URL。调用方负责先把 URL 限定到白名单内。
 pub fn open_in_default_browser(url: &str) -> Result<(), String> {

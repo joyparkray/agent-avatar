@@ -1,16 +1,6 @@
 //! Windows 侧的平台胶水。接口定义见 `platform/mod.rs`。
 
-use std::path::Path;
 use std::process::Command;
-
-/// 在资源管理器里打开一个目录。
-///
-/// `explorer.exe` 即使成功也常返回退出码 1，所以这里只 `spawn` 不 `wait` —— 判它的退出码
-/// 会把正常情况误报成失败。
-pub fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
-    Command::new("explorer").arg(path).spawn().map_err(|error| error.to_string())?;
-    Ok(())
-}
 
 /// 用默认浏览器打开 URL。调用方负责先把 URL 限定到白名单内。
 ///

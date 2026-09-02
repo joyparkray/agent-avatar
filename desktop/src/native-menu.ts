@@ -51,7 +51,6 @@ export interface NativeMenuHandlers {
   onEyeTracking(on: boolean): void;
   onResetPosition(): void;
   onGallery(): void;
-  onOpenModelsDir(): void;
   onSettings(): void;
   onQuit(): void;
 }
@@ -90,7 +89,6 @@ async function modelSubmenu(state: NativeMenuState, handlers: NativeMenuHandlers
       await separator(),
       // 放在这里而不是顶层：它们都是「管理模型」的动作，跟切换模型是一回事的两面。
       await MenuItem.new({ text: text(state.language, "模型画廊…", "Model Gallery…"), action: traced(log, "gallery", () => handlers.onGallery()) }),
-      await MenuItem.new({ text: text(state.language, "打开模型文件夹", "Open Models Folder"), action: traced(log, "open-models-dir", () => handlers.onOpenModelsDir()) }),
     ],
   });
 }
@@ -183,7 +181,7 @@ export async function buildNativeMenu(state: NativeMenuState, handlers: NativeMe
  */
 export async function buildFallbackMenu(
   handlers: Pick<NativeMenuHandlers, "onSettings" | "onResetPosition" | "onQuit">
-    & Partial<Pick<NativeMenuHandlers, "onModel" | "onGallery" | "onOpenModelsDir">>,
+    & Partial<Pick<NativeMenuHandlers, "onModel" | "onGallery">>,
   log: MenuLog = () => {},
   status: "loading" | "failed" = "loading",
   /** 加载失败时可切换的模型清单。给了就带上模型子菜单 —— 换一个模型是这时唯一的自救办法。 */

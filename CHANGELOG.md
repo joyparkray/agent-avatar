@@ -35,6 +35,11 @@ Windows support, and the model handling needed to make third-party models work t
   kept as `.orig`. See [docs/MODELS.md](docs/MODELS.md).
 - The first-run card is now itself a drop target: drag a model folder onto it and the app
   installs and loads it, instead of sending you to Settings and back.
+- **Removed: "Open Models Folder"**, from both the right-click menu and Settings. A model
+  copied in by hand skips the import step above, and most third-party models do not work
+  without it, so the entry was teaching a route that produces broken models. Installing is
+  now the drop zone only. The directory path is in
+  [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for when you need to look.
 
 ### Fixed
 

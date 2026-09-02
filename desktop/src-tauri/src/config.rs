@@ -122,13 +122,6 @@ pub fn write_config(app: tauri::AppHandle, config: Value) -> Result<(), String> 
     fs::rename(&temporary, &path).map_err(|error| error.to_string())
 }
 
-/// 在访达里打开用户模型目录。**不接受参数** —— 路径由应用决定，避免变成任意路径打开器。
-#[tauri::command(async)]
-pub fn open_models_dir(app: tauri::AppHandle) -> Result<(), String> {
-    let dir = models_dir(&app)?;
-    crate::platform::reveal_in_file_manager(&dir)
-}
-
 // ---------------------------------------------------------------------------
 // 安装：把用户拖进来的模型目录收进应用自己的模型目录
 // ---------------------------------------------------------------------------

@@ -19,8 +19,8 @@ from the app plus one small download.
 ## 2. Get a model
 
 No model ships with the app. Download a **free Live2D sample model**, extract the folder,
-then drag that folder in **Settings → Models** (or drop it into the installation folder
-the onboard card opens). Details: [MODELS.md](MODELS.md).
+then drag that folder onto **Settings → Models** (or onto the card the app shows when no
+model is installed yet). Details: [MODELS.md](MODELS.md).
 
 ## 3. Wire up your agent (the easy way)
 

@@ -495,7 +495,6 @@ log({ event: "endpoint:discovered", url: discovered?.url ?? null, hasToken: Bool
         location.search = params.toString();
       })(),
       onGallery: () => void invoke("open_tool_window", { name: "gallery" }).catch(console.error),
-      onOpenModelsDir: () => void invoke("open_models_dir").catch(console.error),
     };
     openContextMenu = () => void buildFallbackMenu(rescueHandlers, log, "failed", available, language())
       .then(menu => menu.popup()).catch(console.error);
@@ -679,8 +678,6 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
       params.set("model", choice.dir);
       location.search = params.toString();
     })(),
-    onOpenModelsDir: () => void invoke("open_models_dir")
-      .catch(error => log({ event: "menu:open-models-dir:error", error: String(error).slice(0, 200) })),
     onAlwaysOnTop: on => { alwaysOnTop = on; prefs.write("alwaysOnTop", on); void getCurrentWindow().setAlwaysOnTop(on).catch(error => log({ event: "menu:always-on-top:error", error: String(error) })); },
     onSettings: () => void invoke("open_tool_window", { name: "settings" })
       .catch(error => log({ event: "menu:settings:error", error: String(error).slice(0, 200) })),

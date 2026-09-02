@@ -1,12 +1,12 @@
 //! 平台胶水：同一件事在 macOS 与 Windows 上**做法不同**的，全收在这里。
 //!
-//! 规矩是「实现分文件，接口统一」：调用方只看见 `platform::reveal_in_file_manager` 这样的
+//! 规矩是「实现分文件，接口统一」：调用方只看见 `platform::open_in_default_browser` 这样的
 //! 函数名，看不出底下是 `open` 还是 `explorer`。好处有两个 ——
 //!
 //! 1. 共享逻辑（`config.rs`、`lib.rs`、`hermes.rs`）里不散落 `#[cfg]`，读起来还是一条直线；
 //! 2. 两个平台一起升级时，需要对照着改的只有这一个目录，不用满仓库找平台分支。
 //!
-//! 目前收在这里的：打开文件管理器、打开浏览器、枚举监听端口、**全局音频采集**。
+//! 目前收在这里的：打开浏览器、枚举监听端口、**全局音频采集**。
 //! 最后一项两边差得最远 —— macOS 是 Core Audio process tap（Objective-C，能排除自身音频），
 //! Windows 是 WASAPI loopback（纯 Rust）。但对外只吐 `global-audio-level` 与
 //! `global-audio-error` 两个事件，形状完全一致，所以前端 `audio-source.ts` 一行都不用改。
