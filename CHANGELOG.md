@@ -24,6 +24,25 @@ Windows support, and the model handling needed to make third-party models work t
 - Global audio capture is still macOS only; on Windows the app degrades to no lip sync
   instead of failing to start.
 
+### The avatar
+
+- **Expressions and motions are one table now**, with a trigger per entry: click,
+  double-click, or a **global shortcut**. The avatar is always on top and usually
+  click-through, so it almost never holds focus and in-app keys never reach it; shortcuts
+  are registered with the OS and work while you are in another window. Bind several
+  entries to the same trigger and it picks among them at random, exactly as click and
+  double-click already did. A shortcut must include Ctrl/Alt/Shift — a bare key would fire
+  while you type in any application — and one the system refuses is reported on that row,
+  never silently dropped.
+- **Aliases.** Third-party models name things `F1`, `Q` or `2222333`, which tells you
+  nothing about what they do. Most authors did name them, in `.cdi3.json` or
+  `.vtube.json`; those names are now read on import and filled in for you (boy8 gets all
+  20: 兽耳, 生气, 星星…). Rename any of them; the name is display only, so playback,
+  state mapping and the random pools are unaffected.
+- Fixed: the **Idle** column in Settings was written to the config but never read. Idle
+  autonomy was actually drawing from the double-click pool, so turning entries off for
+  idle did nothing. It now uses the column you set.
+
 ### Models
 
 - **Models without motions load.** Models made for face tracking commonly ship

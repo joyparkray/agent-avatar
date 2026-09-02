@@ -85,10 +85,11 @@ async function modelSubmenu(state: NativeMenuState, handlers: NativeMenuHandlers
   return Submenu.new({
     text: text(state.language, "模型", "Models"),
     items: [
-      ...items,
-      await separator(),
-      // 放在这里而不是顶层：它们都是「管理模型」的动作，跟切换模型是一回事的两面。
+      // 画廊放在列表**上面**：模型列表会随着用户装得越来越多而变长，放在下面就得一路滚到底。
+      // 它仍然属于「管理模型」，所以留在这个子菜单里，而不是提到顶层去。
       await MenuItem.new({ text: text(state.language, "模型画廊…", "Model Gallery…"), action: traced(log, "gallery", () => handlers.onGallery()) }),
+      await separator(),
+      ...items,
     ],
   });
 }

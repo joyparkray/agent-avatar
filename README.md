@@ -104,7 +104,8 @@ Plus two reactions layered on top: `blocked` (permission denied) and `interrupte
 | **Swap characters** | Every installed model is in the menu — switch mid-session, no restart. Hide the ones you are not using. |
 | **Model Gallery** | One screen comparing every installed model — size, motions, expressions, mapping validity — so you catch a problem before the model is on your desktop. |
 | **Focus Mode** | Show just the bust instead of the whole body, for a smaller footprint. The crop ratio is yours to set. |
-| **Expressions & Motions** | Play any from the menu; click for a random expression, double-click for a random motion — and you pick what is in each pool. |
+| **Expressions & Motions** | One table, one trigger per entry: click, double-click, or a **global shortcut** that works while the avatar has no focus. Bind several entries to the same trigger and it picks among them at random. |
+| **Aliases** | Third-party models name things `F1` or `2222333`. Whatever the author did name is filled in for you; rename anything you like. |
 | **Idle autonomy** | It comes alive on its own after a quiet stretch, from a pool kept separate from the click pool — a yawn suits idling, not a reply. Off with one field. |
 | **Quality and frame rate** | Three render tiers and 30/60 FPS, so an always-on character costs what you are willing to spend on it. |
 | **Where it sits** | Always on top, snap to the bottom edge, center on screen, scale and opacity. |
@@ -180,7 +181,7 @@ Then pick the matching **Agent State Source** in the avatar's right-click menu.
 
 Five tabs: **General** (language, status bar), **Video** (scale, opacity, focus crop,
 quality, frame rate), **Agent** (connectors, and a motion for each agent state),
-**Behavior** (idle autonomy and the random pools), **Models** (install, hide, delete).
+**Behavior** (idle autonomy, triggers and aliases for expressions and motions), **Models** (install, hide, delete).
 
 ---
 

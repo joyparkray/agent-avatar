@@ -1,5 +1,7 @@
+import { actionLabel, actionsFor, CLICK, DBLCLICK, listActions, migrateTriggers, pickAction, shortcutsIn, type ActionItem, type Trigger } from "./actions";
+import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 import "./style.css"; import "./state.css"; import { invoke } from "@tauri-apps/api/core"; import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleExpressionPoolKey, idleMotionPoolKey, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, lipSensitivityPercent, mouthAmplitudePercent, readStateSource, writeStateSource, connectorWizardSeen, rememberConnectorWizardSeen, type Language, type StateSource, type SettingsChange } from "./prefs";
+import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleActionPoolKey, aliasMapKey, hasStored, readStringMap, triggerMapKey, SHORTCUT_STATUS_EVENT, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, lipSensitivityPercent, mouthAmplitudePercent, readStateSource, writeStateSource, connectorWizardSeen, rememberConnectorWizardSeen, type Language, type StateSource, type SettingsChange } from "./prefs";
 import type { ModelChoice } from "./native-menu";
 import type { ModelSource } from "./prefs";
 import type { AvatarSource } from "./types";
@@ -15,7 +17,7 @@ import { IdleAutonomy } from "./idle";
 import { CONNECTOR_TEXT, renderConnectors, type ConnectorState } from "./connectors";
 
 /** 用户装的皮肤（Rust 侧扫数据目录得来）。 */
-type InstalledModel = { dir: string; label: string; model3: string; adapted: boolean };
+type InstalledModel = { dir: string; label: string; model3: string; adapted: boolean; displayNames?: Record<string, string> };
 
 /**
  * 菜单里的皮肤清单 = 随包的 + 用户装的。
@@ -50,7 +52,7 @@ async function resolveAvatarSource(): Promise<AvatarSource> {
 }
 import { motionKey, motionRefs } from "./inventory";
 import { bottomSnapY } from "./dock";
-import { defaultEnabledExpressions, defaultEnabledMotions, loadInventory, loadModelIndex, motionLabel, pickEnabledExpression, pickEnabledMotion } from "./inventory";
+import { loadInventory, loadModelIndex, motionLabel } from "./inventory";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
 import { currentMonitor } from "@tauri-apps/api/window";
@@ -583,10 +585,14 @@ log({ event: "endpoint:discovered", url: discovered?.url ?? null, hasToken: Bool
 async function installMenu(model: Live2DAvatarModel, audio: AudioSourceController, avatarSource: AvatarSource,
                           applyStateSource: (source: StateSource) => void): Promise<void> {
   const dir = currentModelDir();
-  const [inventory, initialModels] = await Promise.all([
+  const [inventory, initialModels, installed] = await Promise.all([
     loadInventory(avatarSource.baseUrl, model.modelFile ?? "").catch(error => { log({ event: "menu:inventory:error", error: String(error) }); return { motions: [], expressions: [] }; }),
     listModels().catch(() => [] as ModelChoice[]),
+    invoke<InstalledModel[]>("list_installed_models").catch(() => [] as InstalledModel[]),
   ]);
+  // 作者给零件起的名字（清洗时从 cdi3 / vtube.json 读好的）。状态条上显示的就是这个，
+  // 不然用户看到的是「播放 F1」这种自己也不知道是什么的东西。
+  const displayNames = installed.find(item => item.dir === dir)?.displayNames ?? {};
   let hiddenModels = readHiddenModels();
   let models = menuModels(initialModels, hiddenModels);
   let alwaysOnTop = prefs.read("alwaysOnTop", 1) === 1, clickThrough = prefs.read("clickThrough", 0) === 1;
@@ -605,11 +611,37 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
   status.dataset.pos = statusPosition();
   if (focus) model.setFraming("focus");
   if (snapBottom) void bottomSnap.snap();
-  const poolKey = motionPoolKey(dir), expressionKey = expressionPoolKey(dir);
-  let enabledMotions: string[] = readPool(poolKey) ?? defaultEnabledMotions(inventory);
-  const savePool = () => writePool(poolKey, enabledMotions);
-  let enabledExpressions: string[] = readPool(expressionKey) ?? defaultEnabledExpressions(inventory);
-  const saveExpressionPool = () => writePool(expressionKey, enabledExpressions);
+  // 表情与动作合成一张表：每一项绑一个触发方式（单击 / 双击 / 全局快捷键），
+  // 同一个触发绑多项就在它们之间随机。见 actions.ts。
+  const actions = listActions(inventory, displayNames);
+  let triggers: Record<string, Trigger> = readStringMap(triggerMapKey(dir));
+  if (!hasStored(triggerMapKey(dir))) {
+    // 1.0 的四个名单迁移一次；旧键留着不动，万一用户降级回去还在
+    triggers = migrateTriggers(actions, readPool(expressionPoolKey(dir)) ?? [], readPool(motionPoolKey(dir)) ?? []);
+  }
+  let aliases = readStringMap(aliasMapKey(dir));
+  let idleActions: string[] = readPool(idleActionPoolKey(dir)) ?? actions.map(item => item.key);
+  let lastActionKey: string | undefined;
+
+  /**
+   * 播一项，不管它是表情还是动作 —— 触发方式那一列不再区分两者。
+   *
+   * `manual` 决定要不要在状态条上报一句。状态条只报**用户亲自触发**的：
+   * 闲置自治每隔几十秒就自己动一下，一起报的话状态条会一直在跳，用户以为 agent 在干活。
+   */
+  const runAction = (item: ActionItem, source: string, manual = true) => {
+    lastActionKey = item.key;
+    model.lookAhead();
+    const label = actionLabel(item, aliases);
+    if (manual) showManualActivity(item.kind === "motion" ? "motion" : "expression", label);
+    if (item.motion) model.playMotion(item.motion[0], item.motion[1]);
+    else model.playExpression(item.origin);
+    log({ event: `${source}:action`, key: item.key, label });
+  };
+  const fire = (trigger: Trigger, source: string) => {
+    const item = pickAction(actionsFor(actions, triggers, trigger), lastActionKey);
+    if (item) runAction(item, source);   // 没绑任何项 = 用户把这个触发关掉了，什么都不做
+  };
   clickThroughHint = clickThrough;
   shell.dataset.clickThrough = String(clickThrough);
   const scalePercent = prefs.read("scale", 100), opacityPercent = prefs.read("opacity", 100);
@@ -653,8 +685,15 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
     if (payload.idleDelaySeconds !== undefined) { rememberIdleDelay(payload.idleDelaySeconds); applyIdleDelay(payload.idleDelaySeconds); }
     if (payload.quality) applyQuality(payload.quality);
     if (payload.fps) applyFps(payload.fps);
-    if (payload.enabledMotions) enabledMotions = payload.enabledMotions;
-    if (payload.enabledExpressions) enabledExpressions = payload.enabledExpressions;
+    // 录完一个组合键会在同一条里带上「不再暂停」和新的绑定；两样都收完再注册一次，
+    // 不然会先在「还暂停着」的状态下白跑一趟。
+    let refreshShortcuts = false;
+    if (payload.triggers) { triggers = payload.triggers; refreshShortcuts = true; }
+    if (payload.aliases) aliases = payload.aliases;
+    if (payload.idleActions) idleActions = payload.idleActions;
+    // 设置页正在录制组合键：让出已注册的热键，否则用户想录的那个会先被自己截走
+    if (payload.shortcutsSuspended !== undefined) { shortcutsSuspended = payload.shortcutsSuspended; refreshShortcuts = true; }
+    if (refreshShortcuts) void applyShortcuts();
     if (payload.stateMotions) model.setSemanticMotions(payload.stateMotions);
     if (payload.language) { uiLanguage = payload.language; renderStatus(); }
     if (payload.hiddenModels) hiddenModels = payload.hiddenModels;
@@ -736,35 +775,57 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
   const reportHitRegion = startHitReporting(model, () => (clickThrough ? "through" : "normal"), () => eyeTracking);
   void listen<[number, number]>("cursor-position", event => { if (eyeTracking) model.lookAt(event.payload[0], event.payload[1]); });
 
-  // 单击换表情、双击播动作。拖动已改为超过阈值才触发，否则这里收不到 click / dblclick。
-  let pendingClick: number | undefined, lastExpression: string | null = null;
+  // 单击、双击各自从绑在它上面的那些项里随机挑一个播。
+  // 拖动已改为超过阈值才触发，否则这里收不到 click / dblclick。
+  let pendingClick: number | undefined;
   const cancelPendingClick = () => { if (pendingClick !== undefined) { clearTimeout(pendingClick); pendingClick = undefined; } };
 
   // 菜单内的点击由菜单自己 stopPropagation 截停，这里不再判断来源
   // （就地重绘会让 target 脱离 DOM，closest 判断不可靠）。
   shell.addEventListener("click", () => {
     cancelPendingClick();
-    pendingClick = window.setTimeout(() => {
-      pendingClick = undefined;
-      const name = pickEnabledExpression(inventory, enabledExpressions, lastExpression);
-      if (!name) return;  // 名单被全部关闭 = 单击不做任何事
-      model.lookAhead();
-      showManualActivity("expression", name);
-      lastExpression = name;
-      model.playExpression(name);
-      log({ event: "click:expression", name });
-    }, CLICK_EXPRESSION_DELAY_MS);
+    pendingClick = window.setTimeout(() => { pendingClick = undefined; fire(CLICK, "click"); }, CLICK_EXPRESSION_DELAY_MS);
   });
 
-  shell.addEventListener("dblclick", () => {
-    cancelPendingClick();
-    const choice = pickEnabledMotion(inventory, enabledMotions);
-    if (!choice) return;  // 名单被全部关闭 = 双击不做任何事
-    model.lookAhead();
-    showManualActivity("motion", motionLabel(inventory, choice));
-    model.playMotion(choice[0], choice[1]);
-    log({ event: "dblclick:motion", group: choice[0], index: choice[1], pool: enabledMotions.length });
-  });
+  shell.addEventListener("dblclick", () => { cancelPendingClick(); fire(DBLCLICK, "dblclick"); });
+
+  /**
+   * 注册全局快捷键。桌宠常年置顶、大部分时间点击穿透，几乎从不持有焦点 ——
+   * 应用内 keydown 收不到任何东西，只能走系统级注册。
+   *
+   * **注册失败必须显式说**：被别的程序占了是常事，静默失效的表现是「设了没反应」，
+   * 用户无从判断是自己设错了还是程序坏了。失败的组合广播给设置页，由它标在那一行上。
+   */
+  let shortcutsSuspended = false;
+  /**
+   * 注册是异步的，而设置页一次操作会连着广播好几条（录完一个组合键会同时发「不再暂停」和
+   * 新的绑定）。两次注册叠在一起跑会互相踩：A 反注册、B 反注册、A 注册、B 注册 →
+   * B 报「HotKey already registered」，那一行会被误标成红的。所以串起来一个一个跑。
+   */
+  let shortcutWork: Promise<void> = Promise.resolve();
+  const applyShortcuts = () => {
+    shortcutWork = shortcutWork.then(registerShortcuts, registerShortcuts);
+    return shortcutWork;
+  };
+  const registerShortcuts = async () => {
+    await unregisterAll().catch(error => log({ event: "shortcut:unregister-all:error", error: String(error).slice(0, 200) }));
+    if (shortcutsSuspended) { log({ event: "shortcut:suspended" }); return; }
+    const failed: string[] = [];
+    for (const accelerator of shortcutsIn(triggers)) {
+      try {
+        await register(accelerator, event => {
+          // Pressed / Released 都会回调，不筛的话一次按键播两下
+          if (event.state === "Pressed") fire(accelerator, "shortcut");
+        });
+      } catch (error) {
+        failed.push(accelerator);
+        log({ event: "shortcut:register:failed", accelerator, error: String(error).slice(0, 200) });
+      }
+    }
+    void emit(SHORTCUT_STATUS_EVENT, { failed });
+    log({ event: "shortcut:registered", count: shortcutsIn(triggers).length - failed.length, failed: failed.length });
+  };
+  void applyShortcuts();
 
   openContextMenu = () => void (async () => {
     try {
@@ -794,10 +855,11 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
       log({ event: "idle:gaze", x: Number(gaze.x.toFixed(2)), y: Number(gaze.y.toFixed(2)) });
       return;
     }
-    const choice = pickEnabledMotion(inventory, enabledMotions);
-    if (!choice) return;  // 名单被全部关掉 = 不自作主张
-    model.playMotion(choice[0], choice[1]);
-    log({ event: "idle:motion", group: choice[0], index: choice[1] });
+    // 闲置有自己的名单：打哈欠适合自己没事时做，却不适合当「你点我一下」的回应。
+    // （1.0 里这一列写进了配置却没人读，闲置实际用的是双击那份名单。）
+    const item = pickAction(actions.filter(action => idleActions.includes(action.key)), lastActionKey);
+    if (!item) return;  // 名单被全部关掉 = 不自作主张
+    runAction(item, "idle", false);
   });
   notifyIdleBusy = () => idle.notifyBusy();
 

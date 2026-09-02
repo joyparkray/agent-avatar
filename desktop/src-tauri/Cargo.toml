@@ -16,6 +16,9 @@ tauri-build = { version = "2", features = [] }
 # 窗口透明，属于需要在 Mac 上实测的改动，不在本工作包内。这个 feature 在 Windows 上是空操作。
 tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-single-instance = "2"
+# 全局快捷键：桌宠常年置顶且大部分时间处于点击穿透状态，几乎从不持有焦点 ——
+# 应用内 keydown 收不到任何东西，只能走系统级注册（Windows 是 RegisterHotKey）。
+tauri-plugin-global-shortcut = "2"
 serde_json = "1"
 
 # macOS 专属：Core Audio 的 Objective-C shim 由 build.rs 用 cc 编出来，Windows 不需要它。

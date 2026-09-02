@@ -17,14 +17,17 @@ describe("settings information architecture", () => {
     expect(html.slice(html.indexOf('data-panel="agent"'))).toContain('data-list="state-motions"');
   });
 
-  it("orders Expressions before Motions and labels interaction columns explicitly", () => {
+  /**
+   * 表情与动作合成了一张表：单击 / 双击 / 快捷键都只是「触发方式」的取值，
+   * 拆成两张表、四个复选框等于把一个二维关系摊开让用户自己拼回去。
+   */
+  it("puts expressions and motions in one table with a trigger column", () => {
     const behavior = html.slice(html.indexOf('data-panel="behavior"'), html.indexOf('data-panel="models"'));
-    expect(behavior.indexOf('data-list="expressions"')).toBeLessThan(behavior.indexOf('data-list="motions"'));
-    // 标题短是有意的：52px 的格子塞不下「鼠标双击 / Mouse Double-click」，英文下两个按钮
-    // 会一高一低。含义改由上面那句 hint 承担，这里只保证三列各有自己的标题。
-    expect(behavior).toContain(">单击<");
-    expect(behavior).toContain(">双击<");
-    expect(behavior).toContain(">闲置<");
+    expect(behavior).toContain('data-list="actions"');
+    expect(behavior).not.toContain('data-list="expressions"');
+    expect(behavior).not.toContain('data-list="motions"');
+    // 标题短是有意的：格子窄，塞不下「鼠标双击 / Mouse Double-click」。
+    for (const heading of [">原名<", ">别名<", ">触发<", ">闲置<"]) expect(behavior).toContain(heading);
   });
 
   it("offers Chinese and English through the persisted language control", () => {
@@ -68,15 +71,16 @@ describe("model interaction behavior", () => {
     expect(main).toContain('shell.dataset.speaking === "true" || eyeTracking');
   });
 
-  it("looks at the user before click expressions and double-click motions", () => {
-    expect(main).toMatch(/pickEnabledExpression[\s\S]*model\.lookAhead\(\)[\s\S]*playExpression/);
-    expect(main).toMatch(/pickEnabledMotion[\s\S]*model\.lookAhead\(\)[\s\S]*playMotion/);
+  /** 被触发时先看向用户再动作 —— 三种触发（单击/双击/快捷键）都走 runAction，这里管住那一处。 */
+  it("looks at the user before playing whatever was triggered", () => {
+    expect(main).toMatch(/const runAction[\s\S]*model\.lookAhead\(\)[\s\S]*playMotion[\s\S]*playExpression/);
   });
   it("shows only user-triggered expressions and motions in the status bar", () => {
-    expect(main).toMatch(/shell\.addEventListener\("click"[\s\S]*showManualActivity\("expression", name\)/);
-    expect(main).toMatch(/shell\.addEventListener\("dblclick"[\s\S]*showManualActivity\("motion", motionLabel\(inventory, choice\)\)/);
-    const idle = main.slice(main.indexOf("const idle = new IdleAutonomy"));
-    expect(idle).not.toContain("showManualActivity");
+    // 单击/双击/快捷键都经 runAction，由它统一报；闲置那条调用必须显式关掉上报，
+    // 否则状态条每隔几十秒自己跳一下，用户会以为 agent 在干活。
+    expect(main).toMatch(/const runAction = \(item: ActionItem, source: string, manual = true\)/);
+    expect(main).toMatch(/if \(manual\) showManualActivity\(/);
+    expect(main).toContain('runAction(item, "idle", false)');
   });
   // 光标只归 CSS 管，别再往原生方向加东西。2026-08-28 为「光标不出手型」查了一晚上，
   // 试过 setCursorIcon、NSCursor 直压、disableCursorRects，全都无效 ——

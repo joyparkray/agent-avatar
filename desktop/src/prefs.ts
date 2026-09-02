@@ -18,6 +18,13 @@ import { SEMANTIC_STATES, type SemanticState } from "./types";
  * 需要**立即生效**的改动另发一条 Tauri 事件（见 `SETTINGS_EVENT`），config.json 只负责持久化。
  */
 export const SETTINGS_EVENT = "settings:changed";
+/**
+ * 主窗口 → 设置页：哪些全局快捷键**没注册上**（被别的程序占了）。
+ *
+ * 方向和 SETTINGS_EVENT 相反。注册只能由主窗口做（设置页不常开），但报错必须显示在设置页
+ * 那一行上 —— 静默失效的表现是「设了没反应」，用户无从判断是自己设错了还是程序坏了。
+ */
+export const SHORTCUT_STATUS_EVENT = "shortcuts:status";
 
 /** 设置窗口改了什么。主窗口据此就地生效，不用重启。 */
 export interface SettingsChange {
@@ -32,6 +39,14 @@ export interface SettingsChange {
   idleDelaySeconds?: number;
   idleMotions?: string[];
   idleExpressions?: string[];
+  /** 键 → 触发方式（`click` / `dblclick` / 快捷键）。见 actions.ts。 */
+  triggers?: Record<string, string>;
+  /** 键 → 用户改的显示名。只影响显示，不影响播放。 */
+  aliases?: Record<string, string>;
+  /** 闲置自治的候选（合并后的键）。 */
+  idleActions?: string[];
+  /** 设置页正在录制快捷键，主窗口要暂时让出已注册的全局热键。 */
+  shortcutsSuspended?: boolean;
   quality?: string;
   fps?: number;
   enabledMotions?: string[];
@@ -183,6 +198,31 @@ export const expressionPoolKey = (dir: string): string => `expressionPool:${dir}
  */
 export const idleMotionPoolKey = (dir: string): string => `idleMotionPool:${dir}`;
 export const idleExpressionPoolKey = (dir: string): string => `idleExpressionPool:${dir}`;
+
+export const triggerMapKey = (dir: string): string => `triggers:${dir}`;
+export const aliasMapKey = (dir: string): string => `aliases:${dir}`;
+/** 闲置名单。表情与动作合成一张表之后，这两份也合成一份。 */
+export const idleActionPoolKey = (dir: string): string => `idleActions:${dir}`;
+
+/**
+ * 存过没有 —— 迁移只该跑一次，而「存过一个空映射」和「从来没存过」必须分得开：
+ * 用户把所有触发都清空之后，不能下次打开设置又被旧名单迁移回来。
+ */
+export function hasStored(key: string): boolean { return readRaw(key) !== undefined; }
+
+/** 按模型存的「键 → 字符串」映射（触发绑定、别名）。存坏了就当没存过。 */
+export function readStringMap(key: string): Record<string, string> {
+  const raw = readRaw(key);
+  const value = typeof raw === "string" ? safeParse(raw) : raw;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1] !== ""));
+}
+
+/** 写映射；空值的项直接不存，免得配置里堆一堆 `""`。 */
+export function writeStringMap(key: string, value: Record<string, string>): void {
+  writeRaw(key, Object.fromEntries(Object.entries(value).filter(([, item]) => item)));
+}
 
 /** 读随机名单；没存过或存坏了都返回 null，由调用方决定默认值。 */
 export function readPool(key: string): string[] | null {

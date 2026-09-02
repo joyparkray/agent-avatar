@@ -20,7 +20,7 @@ use std::fs;
 use std::path::Path;
 
 /// 清洗规则的版本。规则变了就加一，扫描时据此判断已装的模型要不要重洗。
-pub const CLEANER_VERSION: u32 = 3;
+pub const CLEANER_VERSION: u32 = 4;
 
 /// 清洗留下的标记文件。点开头 —— `list_model_issues` 会跳过点开头的条目，不会把它当成坏模型报出来。
 pub const MARKER: &str = ".agent-avatar-clean.json";
@@ -108,6 +108,89 @@ fn parameter_ids(dir: &Path) -> Option<Vec<String>> {
     Some(value.get("Parameters")?.as_array()?.iter()
         .filter_map(|item| item.get("Id")?.as_str().map(str::to_owned))
         .collect())
+}
+
+/// 目录**本层**里以某后缀结尾的文件名，排序后返回。
+///
+/// 与 `register_assets` 里那段就地扫描的区别：那边读目录失败要当错误往上抛（模型都读不了），
+/// 这里只是取名字，读不到就当没有 —— 别名缺一个不影响任何功能。
+fn list_files(dir: &Path, suffix: &str) -> Vec<String> {
+    let mut out: Vec<String> = fs::read_dir(dir).into_iter().flatten().flatten()
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+        .filter(|name| name.ends_with(suffix))
+        .collect();
+    out.sort();
+    out
+}
+
+/// `*.cdi3.json` 里作者给参数起的显示名：`Param70` → `兽耳`。
+///
+/// 只收**和 Id 不同**的那些 —— Cubism 导出时会给没起名的参数把 Name 填成 Id 本身
+///（CandyBoy 有一半是 `Key13` → `Key13`），那种当别名等于没起。
+fn parameter_names(dir: &Path) -> std::collections::HashMap<String, String> {
+    let Some(cdi) = fs::read_dir(dir).ok().into_iter().flatten().flatten().map(|e| e.path())
+        .find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".cdi3.json"))) else {
+        return Default::default();
+    };
+    let Ok(value) = fs::read_to_string(cdi).map_err(|_| ()).and_then(|t| serde_json::from_str::<Value>(&t).map_err(|_| ())) else {
+        return Default::default();
+    };
+    value.get("Parameters").and_then(Value::as_array).map(|list| list.iter()
+        .filter_map(|item| {
+            let id = item.get("Id")?.as_str()?;
+            let name = item.get("Name")?.as_str()?;
+            (!name.is_empty() && name != id).then(|| (id.to_owned(), name.to_owned()))
+        }).collect()).unwrap_or_default()
+}
+
+/// `*.vtube.json` 里作者给热键起的名字：`hair.exp3.json` → `hair`。返回 文件名 → 名字。
+fn hotkey_names(dir: &Path) -> std::collections::HashMap<String, String> {
+    let Some(vtube) = fs::read_dir(dir).ok().into_iter().flatten().flatten().map(|e| e.path())
+        .find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".vtube.json"))) else {
+        return Default::default();
+    };
+    let Ok(value) = fs::read_to_string(vtube).map_err(|_| ()).and_then(|t| serde_json::from_str::<Value>(&t).map_err(|_| ())) else {
+        return Default::default();
+    };
+    value.get("Hotkeys").and_then(Value::as_array).map(|list| list.iter()
+        .filter_map(|hotkey| {
+            let file = hotkey.get("File")?.as_str()?;
+            let name = hotkey.get("Name")?.as_str()?;
+            (!name.is_empty()).then(|| (file.to_owned(), name.to_owned()))
+        }).collect()).unwrap_or_default()
+}
+
+/// 作者给每个表情/动作起的**人话名字**，供设置页当默认别名用。键是文件名主干。
+///
+/// 为什么值得在导入时算好：第三方模型的文件名基本不能看 —— boy8 的表情叫 `Q`/`F1`/`F7`，
+/// CandyBoy 的叫 `0`/`1111`/`2222333`。而作者其实起过名，只是散在两个地方：
+///
+/// 1. **`.cdi3.json` 的参数名** —— 最好的来源。boy8 的 `Q.exp3.json` 只改一个参数 `Param70`，
+///    而 cdi3 说 `Param70` 叫「兽耳」。20 个表情它起全了 20 个。
+/// 2. **`.vtube.json` 的热键名** —— 次选。CandyBoy 靠它拿到 `hair`/`bag1`/`frog`/`hello`。
+///
+/// 两个都取不到就不写，设置页那一格留空，由用户自己填（第三方模型里确实有一批作者没起名）。
+fn display_names(dir: &Path) -> Value {
+    let parameters = parameter_names(dir);
+    let hotkeys = hotkey_names(dir);
+    let mut out = serde_json::Map::new();
+    for file in list_files(dir, ".exp3.json").into_iter().chain(motion_files(dir)) {
+        let stem = file.rsplit('/').next().unwrap_or(&file)
+            .trim_end_matches(".exp3.json").trim_end_matches(".motion3.json").to_owned();
+        // 单参数表情：那个参数的名字就是这个零件的名字
+        let from_parameter = single_parameter_id(&dir.join(&file)).and_then(|id| parameters.get(&id).cloned());
+        if let Some(name) = from_parameter.or_else(|| hotkeys.get(&file).cloned()) {
+            if name != stem { out.insert(stem, Value::String(name)); }
+        }
+    }
+    Value::Object(out)
+}
+
+/// 表情只改一个参数时返回那个参数 ID。多参数的是「一张脸」，没有单一的名字可取。
+fn single_parameter_id(path: &Path) -> Option<String> {
+    let value: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    let list = value.get("Parameters")?.as_array()?;
+    (list.len() == 1).then(|| list[0].get("Id")?.as_str().map(str::to_owned)).flatten()
 }
 
 /// 补上空着的 `Groups` 条目（`LipSync` / `EyeBlink`），返回补了几组。
@@ -238,12 +321,21 @@ pub fn is_clean(dir: &Path) -> bool {
         .is_some_and(|version| version >= CLEANER_VERSION as u64)
 }
 
+/// 从标记文件里读回作者起的名字（清洗时算好的）。读不到就返回空对象。
+pub fn read_display_names(dir: &Path) -> Value {
+    fs::read_to_string(dir.join(MARKER)).ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|value| value.get("displayNames").cloned())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
+}
+
 /// 清洗一个**模型目录**（它自己就含 `model3.json`）。
 pub fn clean_model(dir: &Path) -> Result<CleanReport, String> {
     let (registered_expressions, registered_motions, filled_groups) = register_assets(dir)?;
     let marker = json!({ "cleanerVersion": CLEANER_VERSION,
         "registeredExpressions": registered_expressions, "registeredMotions": registered_motions,
-        "filledGroups": filled_groups });
+        "filledGroups": filled_groups, "displayNames": display_names(dir) });
     fs::write(dir.join(MARKER), serde_json::to_string_pretty(&marker).map_err(|e| e.to_string())?)
         .map_err(|error| error.to_string())?;
     Ok(CleanReport { registered_expressions, registered_motions, filled_groups })
@@ -320,6 +412,48 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("agent-avatar-clean-{tag}-{}-{nonce}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// 作者起的名字散在两个文件里，两个都得认，而且 cdi3 优先。
+    #[test]
+    fn display_names_prefer_the_parameter_name_then_the_hotkey_name() {
+        let dir = scratch("names");
+        write_model(&dir, None);
+        // 单参数表情 + cdi3 给了这个参数一个名字 → 用「兽耳」
+        fs::write(dir.join("Q.exp3.json"),
+            r#"{"Parameters":[{"Id":"Param70","Value":1.0,"Blend":"Add"}]}"#).unwrap();
+        // 单参数，但 cdi3 里这个参数的 Name 就等于 Id → 不算起过名，退到 vtube
+        fs::write(dir.join("hair.exp3.json"),
+            r#"{"Parameters":[{"Id":"Key13","Value":1.0,"Blend":"Add"}]}"#).unwrap();
+        // 多参数 = 一张脸，没有单一参数可取名，且 vtube 也没写 → 不收
+        fs::write(dir.join("face.exp3.json"),
+            r#"{"Parameters":[{"Id":"A","Value":1.0},{"Id":"B","Value":1.0}]}"#).unwrap();
+        fs::write(dir.join("m.cdi3.json"), serde_json::to_string(&json!({
+            "Parameters": [{ "Id": "Param70", "Name": "兽耳" }, { "Id": "Key13", "Name": "Key13" }]
+        })).unwrap()).unwrap();
+        fs::write(dir.join("m.vtube.json"), serde_json::to_string(&json!({
+            "Hotkeys": [{ "File": "hair.exp3.json", "Name": "换发型" },
+                        { "File": "Q.exp3.json", "Name": "别用这个" }]
+        })).unwrap()).unwrap();
+
+        let names = display_names(&dir);
+        assert_eq!(names["Q"], "兽耳", "cdi3 的参数名应当压过 vtube 的热键名");
+        assert_eq!(names["hair"], "换发型", "cdi3 把 Name 填成 Id 时不算起过名，该退到 vtube");
+        assert!(names.get("face").is_none(), "多参数表情没有单一参数可取名");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 名字和文件名一样时不写进去 —— 那是噪音，设置页会拿文件名兜底。
+    #[test]
+    fn display_names_skip_a_name_that_just_repeats_the_file_name() {
+        let dir = scratch("names-noop");
+        write_model(&dir, None);
+        fs::write(dir.join("hello.exp3.json"), r#"{"Parameters":[{"Id":"K1","Value":1.0}]}"#).unwrap();
+        fs::write(dir.join("m.cdi3.json"), serde_json::to_string(&json!({
+            "Parameters": [{ "Id": "K1", "Name": "hello" }]
+        })).unwrap()).unwrap();
+        assert!(display_names(&dir).as_object().unwrap().is_empty());
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

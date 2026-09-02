@@ -38,6 +38,30 @@ input[type="range"] { width: 100%; margin: 0; }
 .cols button { padding: 3px 0; border-radius: 5px; font-size: 11px; white-space: nowrap; }
 .cols button[data-on="true"] { background: color-mix(in srgb, AccentColor 22%, transparent); border-color: AccentColor; }
 .checklist .empty, .model-list .empty { opacity: .5; padding: 6px 2px; }
+/* 表情与动作合成的一张表：原名 | 别名 | 触发 | 闲置。
+   四列宽度在表头和数据行之间共用一个 grid 模板，改一处必须改两处，否则表头会和列错开。 */
+.action-head, .action-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) 118px 52px; gap: 6px; align-items: center; }
+.action-head { margin: 14px 0 6px; font-size: 11px; opacity: .65; }
+.action-head > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 「闲置」那一格既是列标题也是全开/全关按钮，所以它是 button 而不是 span */
+.action-head button { padding: 3px 0; border-radius: 5px; font-size: 11px; }
+.action-head button[data-on="true"] { background: color-mix(in srgb, AccentColor 22%, transparent); border-color: AccentColor; }
+.action-list { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; }
+.action-row { padding: 3px 4px; border-radius: 5px; }
+.action-row:hover { background: color-mix(in srgb, CanvasText 8%, transparent); }
+.action-row .origin { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .7; font-size: 12px; }
+/* 动作与表情混在一张表里，靠左边一道色条区分，比多加一列省地方 */
+.action-row[data-kind="motion"] .origin { border-left: 2px solid color-mix(in srgb, AccentColor 55%, transparent); padding-left: 5px; }
+.action-row[data-kind="expression"] .origin { border-left: 2px solid color-mix(in srgb, CanvasText 25%, transparent); padding-left: 5px; }
+.action-row .alias, .action-row .trigger { font: inherit; width: 100%; min-width: 0; padding: 2px 5px; border-radius: 5px; }
+.action-row .cell { display: flex; justify-content: center; margin: 0; }
+/* 录制中：把格子变成一个按钮，原地提示按什么，不弹窗 */
+.action-row .recording { text-align: center; cursor: default; background: color-mix(in srgb, AccentColor 20%, transparent); border-color: AccentColor; }
+/* 注册失败的原因贴在整行下面，占满四列 —— 静默失效是这个功能最容易骗人的地方 */
+.action-row .trigger-note { grid-column: 1 / -1; margin: 2px 0 0; font-size: 11px; color: color-mix(in srgb, red 65%, CanvasText); }
+.action-row[data-failed="true"] .trigger { border-color: color-mix(in srgb, red 65%, CanvasText); }
+.action-list .empty { opacity: .5; padding: 6px 2px; }
+
 button {
   font: inherit; padding: 5px 11px; border-radius: 6px; cursor: pointer;
   border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);

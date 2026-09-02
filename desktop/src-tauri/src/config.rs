@@ -280,6 +280,9 @@ pub fn list_installed_models(app: tauri::AppHandle) -> Vec<Value> {
             "label": model_label(&relative),
             "model3": model3,
             "adapted": root.join(&relative).join("avatar.json").is_file(),
+            // 作者给零件起的人话名字，设置页拿它当默认别名。清洗时算好写进标记文件，
+            // 这里只是转发 —— 前端不必自己去解析 cdi3 与 vtube.json 两种格式。
+            "displayNames": model_clean::read_display_names(&root.join(&relative)),
         }))
         .collect()
 }

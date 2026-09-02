@@ -1,3 +1,4 @@
+import { acceleratorFromEvent, actionLabel, isUsableShortcut, listActions, migrateTriggers, type ActionItem } from "./actions";
 import "./settings.css";
 import { invoke } from "@tauri-apps/api/core";
 import { openRawLevelFor } from "./audio-source";
@@ -7,15 +8,16 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { droppedPath } from "./drop";
 import { loadManifest } from "./manifest";
 import {
-  defaultEnabledExpressions, defaultEnabledMotions, loadInventory,
+  loadInventory,
   motionKey, motionLabel, motionRefs, type ModelInventory, type MotionRef,
 } from "./inventory";
 import { FPS_CHOICES, RENDER_SCALE, type RenderQuality } from "./render-quality";
 import {
   currentModelDir, DEFAULT_FOCUS_PERCENT, loadPrefs, quality, expressionPoolKey, motionPoolKey, prefs, readPool, writePool,
-  idleDelaySeconds, idleExpressionPoolKey, idleMotionPoolKey, rememberIdleDelay, rememberStatusPosition, statusPosition, STATUS_LABELS, STATUS_POSITIONS,
+  aliasMapKey, hasStored, idleActionPoolKey, readStringMap, triggerMapKey, writeStringMap,
+  idleDelaySeconds, rememberIdleDelay, rememberStatusPosition, statusPosition, STATUS_LABELS, STATUS_POSITIONS,
   currentModelSource, language, LANGUAGES, modelBaseUrl, readStateMotions, rememberLanguage, rememberStateMotions,
-  readHiddenModels, writeHiddenModels, SETTINGS_EVENT, type Language, type SettingsChange, type StatusPosition,
+  readHiddenModels, writeHiddenModels, SETTINGS_EVENT, SHORTCUT_STATUS_EVENT, type Language, type SettingsChange, type StatusPosition,
 } from "./prefs";
 import { SEMANTIC_STATES, type SemanticState } from "./types";
 import { renderConnectors } from "./connectors";
@@ -34,7 +36,7 @@ const TEXT: Record<Language, Record<string, string>> = {
     "video.display": "显示", "video.scale": "缩放", "video.opacity": "透明度", "video.focus": "聚焦范围：显示顶部", "video.focusHint": "仅在右键菜单启用聚焦模式时生效。", "video.rendering": "渲染", "video.renderHint": "降低画质通常比降低帧率更省 GPU。", "video.quality": "画质", "video.fps": "帧率",
     "agent.connectors": "接入", "agent.connectorsHint": "选择你在用的 agent，自动下载并安装对应的 connector；安装后如需手动步骤会显示在下面。", "agent.mapping": "状态与动作", "agent.mappingHint": "为当前模型的每个 Agent 状态选择动作。选择“模型默认”会使用 avatar.json 的映射。", "agent.default": "模型默认",
     "behavior.lipSync": "口型", "behavior.lipHint": "灵敏度决定多小的声音算「在说话」；张嘴幅度决定嘴张多大。对系统音频、音频文件与 Hermes 三种音源都生效。", "behavior.meterHint": "上面是当前听到的口型强度，竖线是张嘴的门槛。放点声音，把灵敏度拉到柱子能稳定越过竖线为止。", "behavior.sensitivity": "灵敏度", "behavior.amplitude": "张嘴幅度",
-    "behavior.idle": "闲置自治", "behavior.idleHint": "无人交互且 Agent 空闲时，让形象自己看四周、播放动作或表情。", "behavior.delay": "静置多少秒后开始", "behavior.zero": "填 0 即关闭。", "behavior.random": "随机名单", "behavior.randomHint": "「单击 / 双击」列是你亲自触发的，「闲置」列是没人理它时自己播的。点列标题可全开或全关。", "behavior.motions": "动作", "behavior.expressions": "表情", "behavior.expressionClick": "单击", "behavior.motionDoubleClick": "双击", "behavior.idleActions": "闲置",
+    "behavior.idle": "闲置自治", "behavior.idleHint": "无人交互且 Agent 空闲时，让形象自己看四周、播放动作或表情。", "behavior.delay": "静置多少秒后开始", "behavior.zero": "填 0 即关闭。", "behavior.random": "表情与动作", "behavior.randomHint": "「触发」是你亲自触发的方式：单击人物、双击人物，或一个全局快捷键（桌宠没有焦点时也管用）。同一个触发绑多项就在它们之间随机。「闲置」是没人理它时自己播的，点标题可全开或全关。", "behavior.origin": "原名", "behavior.alias": "别名", "behavior.trigger": "触发", "behavior.idleActions": "闲置", "behavior.kindExpression": "表情", "behavior.kindMotion": "动作", "trigger.none": "无", "trigger.click": "单击", "trigger.dblclick": "双击", "trigger.record": "录制快捷键…", "trigger.recording": "按下组合键…（Esc 取消）", "trigger.needModifier": "快捷键要带 Ctrl / Alt / Shift，否则你正常打字也会触发", "trigger.taken": "这个组合已被别的程序占用，换一个",
     "models.title": "模型", "models.hint": "拖入包含 *.model3.json 的 Cubism 模型文件夹。", "models.drop": "拖模型文件夹到此处",
     "common.empty": "这个模型没有可用项", "models.empty": "尚未安装模型", "models.hide": "隐藏", "models.delete": "删除", "models.deleteConfirm": "再点一次「确认删除」就会删除模型：", "models.deleteAgain": "确认删除", "models.installing": "安装中…", "models.installed": "已安装", "models.switchHint": "", "models.tauriOnly": "拖放安装需要在 Agent Avatar 应用内使用", "models.unrecognized": "无法识别。",
     ...Object.fromEntries(SEMANTIC_STATES.map(state => [`state.${state}`, state])),
@@ -45,7 +47,7 @@ const TEXT: Record<Language, Record<string, string>> = {
     "video.display": "Display", "video.scale": "Scale", "video.opacity": "Opacity", "video.focus": "Focus crop: show top", "video.focusHint": "Only applies when Focus Mode is enabled from the context menu.", "video.rendering": "Rendering", "video.renderHint": "Lowering quality usually saves more GPU power than lowering frame rate.", "video.quality": "Quality", "video.fps": "Frame rate",
     "agent.connectors": "Connectors", "agent.connectorsHint": "Pick the agent you use and install its connector. Any remaining manual step is shown below.", "agent.mapping": "Agent state and motion", "agent.mappingHint": "Choose a motion for each agent state on the current model. Model default uses the avatar.json mapping.", "agent.default": "Model default",
     "behavior.lipSync": "Lip sync", "behavior.lipHint": "Sensitivity sets how quiet a sound still counts as speech; mouth range sets how wide it opens. Both apply to system audio, audio files and Hermes alike.", "behavior.meterHint": "The bar is how strongly the app hears speech right now; the line is the threshold to open the mouth. Play something and raise sensitivity until the bar clears the line consistently.", "behavior.sensitivity": "Sensitivity", "behavior.amplitude": "Mouth range",
-    "behavior.idle": "Idle autonomy", "behavior.idleHint": "Let the avatar look around or play motions and expressions while the agent is idle.", "behavior.delay": "Start after this many idle seconds", "behavior.zero": "Set to 0 to disable.", "behavior.random": "Random pools", "behavior.randomHint": "The Click / Double-click columns are what you trigger yourself; Idle is what it plays on its own. Click a column heading to toggle all.", "behavior.motions": "Motions", "behavior.expressions": "Expressions", "behavior.expressionClick": "Click", "behavior.motionDoubleClick": "Double-click", "behavior.idleActions": "Idle",
+    "behavior.idle": "Idle autonomy", "behavior.idleHint": "Let the avatar look around or play motions and expressions while the agent is idle.", "behavior.delay": "Start after this many idle seconds", "behavior.zero": "Set to 0 to disable.", "behavior.random": "Expressions and motions", "behavior.randomHint": "Trigger is how you set it off yourself: click the character, double-click it, or a global shortcut that works even when the avatar has no focus. Bind several rows to the same trigger and it picks among them at random. Idle is what it plays on its own; click the heading to toggle all.", "behavior.origin": "Name in model", "behavior.alias": "Alias", "behavior.trigger": "Trigger", "behavior.idleActions": "Idle", "behavior.kindExpression": "Expression", "behavior.kindMotion": "Motion", "trigger.none": "None", "trigger.click": "Click", "trigger.dblclick": "Double-click", "trigger.record": "Record shortcut…", "trigger.recording": "Press a combination… (Esc to cancel)", "trigger.needModifier": "A shortcut needs Ctrl / Alt / Shift, or ordinary typing would set it off", "trigger.taken": "That combination is taken by another app — pick a different one",
     "models.title": "Models", "models.hint": "Drop a Cubism model folder containing a *.model3.json file.", "models.drop": "Drop a model folder here",
     "common.empty": "No available items for this model", "models.empty": "No models installed", "models.hide": "Hide", "models.delete": "Delete", "models.deleteConfirm": "Click Confirm again to delete the model:", "models.deleteAgain": "Confirm", "models.installing": "Installing…", "models.installed": "Installed", "models.switchHint": "", "models.tauriOnly": "Drag-and-drop installation is only available inside Agent Avatar", "models.unrecognized": "could not be recognized.",
     ...Object.fromEntries(SEMANTIC_STATES.map(state => [`state.${state}`, state[0].toUpperCase() + state.slice(1)])),
@@ -105,39 +107,6 @@ function bindSelect<T extends string | number>(
   });
 }
 
-/** 名单的一列：点击触发的，还是闲置自治的。同一个动作在两种场合的合适程度并不一样。 */
-interface PoolColumn {
-  storageKey: string;
-  initial: string[];
-  toChange: (list: string[]) => SettingsChange;
-}
-
-/** 一份两列的可勾选清单：左列「点击」、右列「闲置」。 */
-function renderChecklist(
-  host: HTMLElement, items: { key: string; label: string }[], enabled: [string[], string[]],
-  onToggle: (column: 0 | 1, key: string, on: boolean) => void,
-): void {
-  host.textContent = "";
-  if (!items.length) { host.innerHTML = `<div class="empty">${tr("common.empty")}</div>`; return; }
-  for (const item of items) {
-    const row = document.createElement("div");
-    row.className = "check-row";
-    const name = document.createElement("span");
-    name.className = "name"; name.textContent = item.label;
-    row.append(name);
-    for (const column of [0, 1] as const) {
-      const cell = document.createElement("label");
-      cell.className = "cell";
-      const box = document.createElement("input");
-      box.type = "checkbox"; box.checked = enabled[column].includes(item.key);
-      box.addEventListener("change", () => onToggle(column, item.key, box.checked));
-      cell.append(box);
-      row.append(cell);
-    }
-    host.append(row);
-  }
-}
-
 /**
  * 语言切换时要重画的动态内容。
  *
@@ -146,36 +115,175 @@ function renderChecklist(
  */
 const redraws: (() => void)[] = [];
 
-function bindPool(
-  kind: "motions" | "expressions",
-  items: { key: string; label: string }[],
-  columns: [PoolColumn, PoolColumn],
-): void {
-  const enabled: [string[], string[]] = [[...columns[0].initial], [...columns[1].initial]];
-  const host = $<HTMLElement>(`[data-list="${kind}"]`);
-  const buttons = ([0, 1] as const).map(column =>
-    $<HTMLButtonElement>(`[data-act="${kind}-all-${column === 0 ? "click" : "idle"}"]`));
+/**
+ * 表情与动作合成的那张表：原名 | 别名 | 触发 | 闲置。
+ *
+ * 「触发」是个下拉：无 / 单击 / 双击 / 录制快捷键…。选最后一项就地进入录制状态，
+ * **不弹窗** —— 弹窗要抢焦点，而录制正好是在抢按键，两者会打架；为一个组合键开一个窗口也太重。
+ */
+function bindActions(dir: string, items: readonly ActionItem[], idleDefault: readonly string[]): void {
+  const host = $<HTMLElement>('[data-list="actions"]');
+  const idleAll = $<HTMLButtonElement>('[data-act="actions-all-idle"]');
+  const triggers = readStringMap(triggerMapKey(dir));
+  const aliases = readStringMap(aliasMapKey(dir));
+  let idle = readPool(idleActionPoolKey(dir)) ?? [...idleDefault];
 
-  const commit = (column: 0 | 1) => {
-    writePool(columns[column].storageKey, enabled[column]);
-    announce(columns[column].toChange(enabled[column]));
-    buttons[column].dataset.on = String(enabled[column].length === items.length && items.length > 0);
-  };
-  const draw = () => renderChecklist(host, items, enabled, (column, key, on) => {
-    enabled[column] = on ? [...enabled[column], key] : enabled[column].filter(item => item !== key);
-    commit(column);
-  });
-
-  for (const column of [0, 1] as const) {
-    buttons[column].addEventListener("click", () => {
-      enabled[column] = enabled[column].length === items.length ? [] : items.map(item => item.key);
-      commit(column); draw();
-    });
-    commit(column);
+  // 从 1.0 的两个名单迁移一次。判据是「有没有存过」而不是「存的是不是空的」——
+  // 用户把所有触发都清空之后，不能下次打开设置又被旧名单迁移回来。
+  if (!hasStored(triggerMapKey(dir))) {
+    Object.assign(triggers, migrateTriggers(items,
+      readPool(expressionPoolKey(dir)) ?? [], readPool(motionPoolKey(dir)) ?? []));
+    writeStringMap(triggerMapKey(dir), triggers);
   }
+
+  const commitTriggers = () => { writeStringMap(triggerMapKey(dir), triggers); announce({ triggers: { ...triggers } }); };
+  const commitAliases = () => { writeStringMap(aliasMapKey(dir), aliases); announce({ aliases: { ...aliases } }); };
+  const commitIdle = () => {
+    writePool(idleActionPoolKey(dir), idle);
+    announce({ idleActions: [...idle] });
+    idleAll.dataset.on = String(idle.length === items.length && items.length > 0);
+  };
+
+  const draw = () => {
+    host.textContent = "";
+    if (!items.length) { host.innerHTML = `<div class="empty">${tr("common.empty")}</div>`; return; }
+    for (const item of items) host.append(actionRow(item));
+  };
+
+  function actionRow(item: ActionItem): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "action-row";
+    row.dataset.kind = item.kind;
+
+    const origin = document.createElement("span");
+    origin.className = "origin";
+    origin.textContent = item.origin;
+    // 合成一张表之后，这里是唯一能看出这行是表情还是动作的地方（左边那道色条同理）
+    origin.title = `${tr(item.kind === "motion" ? "behavior.kindMotion" : "behavior.kindExpression")} · ${item.origin}`;
+
+    const alias = document.createElement("input");
+    alias.className = "alias"; alias.type = "text"; alias.maxLength = 40;
+    alias.value = aliases[item.key] ?? "";
+    // 占位符显示「不填会用什么」：作者起的名字，或者原名
+    alias.placeholder = item.authored || item.origin;
+    alias.addEventListener("change", () => {
+      const value = alias.value.trim();
+      if (value) aliases[item.key] = value; else delete aliases[item.key];
+      commitAliases();
+    });
+
+    const trigger = document.createElement("select");
+    trigger.className = "trigger";
+    fillTriggerOptions(trigger, triggers[item.key]);
+    trigger.addEventListener("change", () => {
+      if (trigger.value === RECORD) { void recordInto(item, trigger, row); return; }
+      if (trigger.value) triggers[item.key] = trigger.value; else delete triggers[item.key];
+      clearTriggerNote(row); row.dataset.failed = "false";
+      commitTriggers();
+    });
+
+    const idleCell = document.createElement("label");
+    idleCell.className = "cell";
+    const box = document.createElement("input");
+    box.type = "checkbox"; box.checked = idle.includes(item.key);
+    box.addEventListener("change", () => {
+      idle = box.checked ? [...idle, item.key] : idle.filter(key => key !== item.key);
+      commitIdle();
+    });
+    idleCell.append(box);
+
+    row.append(origin, alias, trigger, idleCell);
+    return row;
+  }
+
+  /**
+   * 主窗口报回来「哪些组合没注册上」。**必须显式标出来** —— 被别的程序占了是常事，
+   * 静默失效的表现是「设了没反应」，用户无从判断是自己设错了还是程序坏了。
+   */
+  void listen<{ failed?: string[] }>(SHORTCUT_STATUS_EVENT, event => {
+    const failed = new Set(event.payload?.failed ?? []);
+    items.forEach((item, index) => {
+      const row = host.children[index] as HTMLElement | undefined;
+      if (!row) return;
+      const trigger = triggers[item.key];
+      const broken = Boolean(trigger) && failed.has(trigger);
+      row.dataset.failed = String(broken);
+      if (broken) showTriggerNote(row, tr("trigger.taken")); else clearTriggerNote(row);
+    });
+  }).catch(console.error);
+
+  idleAll.addEventListener("click", () => {
+    idle = idle.length === items.length ? [] : items.map(item => item.key);
+    commitIdle(); draw();
+  });
+  commitIdle();
   draw();
   redraws.push(draw);
+
+  /**
+   * 就地录制一个组合键。
+   *
+   * 录制期间必须让主窗口**暂时反注册**它已有的全局快捷键：不然你想录 `Ctrl+X`，
+   * 按下去会先把已经绑在 `Ctrl+X` 上的那一项播了，而这个按键根本传不到这里来。
+   */
+  async function recordInto(item: ActionItem, select: HTMLSelectElement, row: HTMLElement): Promise<void> {
+    const previous = triggers[item.key] ?? "";
+    select.hidden = true;
+    const pad = document.createElement("button");
+    pad.type = "button"; pad.className = "trigger recording";
+    pad.textContent = tr("trigger.recording");
+    row.insertBefore(pad, select);
+    pad.focus();
+    announce({ shortcutsSuspended: true });
+
+    const finish = (value: string | null) => {
+      window.removeEventListener("keydown", onKey, true);
+      pad.remove();
+      select.hidden = false;
+      if (value !== null) {
+        if (value) triggers[item.key] = value; else delete triggers[item.key];
+        writeStringMap(triggerMapKey(dir), triggers);
+      }
+      // 「不再暂停」和新的绑定一次发完：分两条广播会让主窗口连着跑两遍注册
+      announce({ shortcutsSuspended: false, triggers: { ...triggers } });
+      fillTriggerOptions(select, triggers[item.key]);
+      select.focus();
+    };
+
+    const onKey = (event: KeyboardEvent) => {
+      event.preventDefault(); event.stopPropagation();
+      if (event.key === "Escape") { finish(previous); return; }   // 取消 = 保持原样
+      const accelerator = acceleratorFromEvent(event);
+      if (!accelerator) return;                                    // 还只按着修饰键
+      if (!isUsableShortcut(accelerator)) { showTriggerNote(row, tr("trigger.needModifier")); return; }
+      clearTriggerNote(row);
+      finish(accelerator);
+    };
+    window.addEventListener("keydown", onKey, true);
+  }
 }
+
+const RECORD = "__record__";
+
+/** 下拉里的固定项，外加当前那个快捷键（如果有）。 */
+function fillTriggerOptions(select: HTMLSelectElement, current: string | undefined): void {
+  select.textContent = "";
+  select.append(new Option(tr("trigger.none"), ""));
+  select.append(new Option(tr("trigger.click"), "click"));
+  select.append(new Option(tr("trigger.dblclick"), "dblclick"));
+  if (current && current !== "click" && current !== "dblclick") select.append(new Option(current, current));
+  select.append(new Option(tr("trigger.record"), RECORD));
+  select.value = current ?? "";
+}
+
+/** 失败或不合法的原因贴在那一行下面。 */
+function showTriggerNote(row: HTMLElement, text: string): void {
+  let note = row.querySelector<HTMLElement>(".trigger-note");
+  if (!note) { note = document.createElement("p"); note.className = "trigger-note"; row.append(note); }
+  note.textContent = text;
+}
+
+function clearTriggerNote(row: HTMLElement): void { row.querySelector(".trigger-note")?.remove(); }
 
 function bindStateMotions(dir: string, motions: { key: string; label: string; ref: MotionRef }[]): void {
   const host = $<HTMLElement>('[data-list="state-motions"]');
@@ -210,7 +318,7 @@ function updateLocalizedSelects(): void {
 }
 
 /** 拖皮肤文件夹进来安装。用 Tauri 的窗口拖放事件而不是 HTML5 的 —— 只有前者给得到真实路径。 */
-type InstalledModel = { dir: string; label: string; model3: string; adapted: boolean };
+type InstalledModel = { dir: string; label: string; model3: string; adapted: boolean; displayNames?: Record<string, string> };
 
 async function showModels(): Promise<void> {
   const host = $<HTMLElement>('[data-list="models"]');
@@ -402,12 +510,17 @@ async function boot(): Promise<void> {
 
   const dir = currentModelDir();
   let inventory: ModelInventory = { motions: [], expressions: [] };
+  // 作者给零件起的名字，导入时由清洗器从 cdi3 / vtube.json 里读好。别名那一列拿它当默认值 ——
+  // 大多数模型作者其实起过名（boy8 起全了 20 个），用户一个字都不用填。
+  let displayNames: Record<string, string> = {};
   try {
     const baseUrl = modelBaseUrl(dir, currentModelSource());
     let model3: string | undefined;
     if (currentModelSource() === "installed") {
-      const installed = await invoke<{ dir: string; model3: string; adapted: boolean }[]>("list_installed_models").catch(() => []);
-      model3 = installed.find(item => item.dir === dir)?.model3;
+      const installed = await invoke<InstalledModel[]>("list_installed_models").catch(() => []);
+      const entry = installed.find(item => item.dir === dir);
+      model3 = entry?.model3;
+      displayNames = entry?.displayNames ?? {};
     }
     const manifest = await loadManifest({ baseUrl, manifest: "avatar.json", model3 });
     inventory = await loadInventory(baseUrl, manifest.model);
@@ -416,28 +529,14 @@ async function boot(): Promise<void> {
   }
 
   const motions = motionRefs(inventory).map((ref: MotionRef) => ({ key: motionKey(ref), label: motionLabel(inventory, ref), ref }));
-  const expressions = inventory.expressions.map(name => ({ key: name, label: name }));
+  const actions = listActions(inventory, displayNames);
+  // 闲置默认全开：自治就是「自己随便动动」，不该预先排除什么。
+  // 触发那一列不给默认值 —— 从旧版本升上来的走迁移，全新模型让用户自己挑。
+  const idleDefault = actions.map(item => item.key);
 
   guard("state-motions", () => bindStateMotions(dir, motions));
 
-  guard("motions", () => bindPool("motions", motions, [
-    { storageKey: motionPoolKey(dir),
-      initial: readPool(motionPoolKey(dir)) ?? defaultEnabledMotions(inventory),
-      toChange: enabledMotions => ({ enabledMotions }) },
-    // 闲置默认全开（含 Idle 组）：自治就是「自己随便动动」，不该预先排除什么
-    { storageKey: idleMotionPoolKey(dir),
-      initial: readPool(idleMotionPoolKey(dir)) ?? motions.map(item => item.key),
-      toChange: idleMotions => ({ idleMotions }) },
-  ]));
-
-  guard("expressions", () => bindPool("expressions", expressions, [
-    { storageKey: expressionPoolKey(dir),
-      initial: readPool(expressionPoolKey(dir)) ?? defaultEnabledExpressions(inventory),
-      toChange: enabledExpressions => ({ enabledExpressions }) },
-    { storageKey: idleExpressionPoolKey(dir),
-      initial: readPool(idleExpressionPoolKey(dir)) ?? defaultEnabledExpressions(inventory),
-      toChange: idleExpressions => ({ idleExpressions }) },
-  ]));
+  guard("actions", () => bindActions(dir, actions, idleDefault));
 }
 
 void boot();
