@@ -35,7 +35,10 @@ def audio_block():
 
 def main():
     try:
-        payload = json.load(sys.stdin)
+        # Windows：stdin 不一定是 UTF-8（Python 按系统代码页解码），
+        # 而 PowerShell 管道还会在开头塞一个 BOM。直接读字节自己解码，两颗雷一次拆掉；
+        # 坏字节换成替换符而不是抛异常 —— 解码失败不该让一整条事件丢掉。
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8-sig", "replace"))
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
         update(payload, LABEL, audio_block())

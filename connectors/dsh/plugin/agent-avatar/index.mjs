@@ -27,6 +27,15 @@ export const name = "agent-avatar";
 
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), "agent-avatar-hook.py");
 
+/**
+ * 解释器。**安装脚本会把下面这一行的默认值改成本机实测可用的绝对路径**
+ * （Windows 上 `python3` 解析到一个 0 字节的应用商店存根：能启动、打印
+ * 「Python was not found」、以 9009 退出 —— 而 stderr 在下面被 ignore、
+ * `error` 事件只在 spawn 失败时触发，所以这种坏法**一点声音都没有**）。
+ * 环境变量优先，便于用户临时换一个解释器而不用重装。
+ */
+const PYTHON = process.env.AGENT_AVATAR_PYTHON || "python3";
+
 /** 串行队列：保证事件按发生顺序抵达状态机。永不 reject，观察者不该产生未处理拒绝。 */
 let queue = Promise.resolve();
 
@@ -35,8 +44,8 @@ function emit(payload) {
     let done = false;
     const finish = () => { if (!done) { done = true; resolve(); } };
     try {
-      const child = spawn("python3", [HOOK], { stdio: ["pipe", "ignore", "ignore"] });
-      child.on("error", finish);      // python3 不存在等：静默放弃这一条
+      const child = spawn(PYTHON, [HOOK], { stdio: ["pipe", "ignore", "ignore"] });
+      child.on("error", finish);      // 解释器不存在等：静默放弃这一条
       child.on("close", finish);
       child.stdin.on("error", finish);  // 子进程先退出会让写 stdin 报 EPIPE
       child.stdin.end(JSON.stringify(payload));
