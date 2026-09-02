@@ -60,14 +60,30 @@ jobs:
       - name: Connector tests
         working-directory: connectors
         run: python -m pytest -q
-      - name: Assembled plugin trees smoke-test
-        # assemble.sh 每组装一家就喂一条事件跑一次，验证「组装后的目录能独立跑起来」——
-        # 漏拷 core 时的失败在真实注册里是静默的（hook 被跳过 / 一直 idle）。
+      - name: Marketplace tree
+        # 造出用户真正会 clone 的那棵树，并逐项自检：
+        #   - 每组装一家就喂一条事件跑一次（漏拷 core 的失败在真实注册里是静默的）
+        #   - 三份清单必须是合法 JSON、指到的目录必须真的在（清单坏掉时 harness 只会
+        #     「不显示这一项」，不报错 —— 那种失败没人查得出来）
+        #   - 五家版本号必须一致
         #
-        # 只在 POSIX 上跑：assemble.sh 是 /bin/sh 脚本，还带 heredoc python、chmod +x、
-        # rm -rf，Windows 等价物属于 WP4，写出来之前这一步在 Windows 上没有意义。
+        # 只在 POSIX 上跑：这两个是 /bin/sh 脚本（heredoc python、chmod +x、rm -rf）。
+        # Windows 侧不需要造发布树 —— 发布树必须**机器无关**，而 Windows 的
+        # assemble.ps1 会把本机解释器路径烤进去，那是**安装时**才该做的事。
         if: runner.os != 'Windows'
-        run: sh connectors/assemble.sh all "${{ runner.temp }}/connectors"
+        run: sh connectors/build-marketplace.sh "${{ runner.temp }}/marketplace"
+
+      - name: Release tree must not be machine-specific
+        # 发布树是给所有人的那一份。烤进任何一台机器的解释器绝对路径，
+        # 用户装到的就是「指向别人机器上某个 python」的插件 —— 静默失效。
+        if: runner.os != 'Windows'
+        run: |
+          # 抓的是**某台机器专属**的路径：盘符、以及某个用户的 home。
+          # `/usr/bin/python3` 不算 —— Codex 那条 POSIX 命令本来就写死了它，是故意的。
+          # 盘符要求前面不是字母，否则 `https://` 里的 `s://` 会被当成盘符。
+          if grep -rlE '(^|[^A-Za-z])[A-Za-z]:[\/]|/(Users|home)/[^/"]+/' "${{ runner.temp }}/marketplace" --include='*.json' --include='*.mjs'; then
+            echo '发布树里出现了机器相关的绝对路径' >&2; exit 1
+          fi
 
   # 出口条件：Windows 无头构建能产出可安装的 exe。
   # 只在 main 推送与手动触发时跑 —— 每个 PR 都编一次 release 太贵，而它验的是打包链路

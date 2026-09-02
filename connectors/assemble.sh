@@ -12,7 +12,13 @@
 #
 # 组装完会跑一次冒烟自检：喂一条事件给**组装后的**脚本，确认它能独立跑起来并落盘。
 # 自检用隔离的 TMPDIR，不碰用户真实的状态文件。
+#
+# 自检用哪个 python 可以用 `AGENT_AVATAR_PYTHON` 指定。默认 `python3` 在两个平台上
+# 都可能不是真的 Python：macOS 干净机器上 `/usr/bin/python3` 是 Xcode 命令行工具的
+# 占位程序（跑它会**弹出安装对话框**），Windows 上它是 0 字节的应用商店存根。
 set -eu
+
+python=${AGENT_AVATAR_PYTHON:-python3}
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 bridge="$here/../bridge"
@@ -85,10 +91,12 @@ smoke_test() {
                  event='{"hook_event_name":"UserPromptSubmit","session_id":"smoke"}' ;;
     dsh)
       # 两件事都要验：JS 插件能被 import（cordis 会 import 它），python 入口能独立落盘。
-      node --input-type=module -e "import('file://$target/index.mjs').then(m => { if (typeof m.apply !== 'function') { process.exit(1) } })" \
+      # 路径交给 node 自己转成 file URL：手拼 `file://$path` 在 Windows 上不成立
+      # （盘符会被当成主机名，报 ERR_INVALID_FILE_URL_PATH）。
+      node --input-type=module -e "const {pathToFileURL} = await import('node:url'); const m = await import(pathToFileURL(process.argv[1]).href); if (typeof m.apply !== 'function') { process.exit(1) }" "$target/index.mjs" \
         || { rm -rf "$scratch"; echo "smoke test failed: dsh 的 index.mjs 导不进来或没有 apply" >&2; exit 1; }
       if ! echo '{"hook_event_name":"pre_llm_call","session_id":"smoke","turn_id":"1"}' \
-        | TMPDIR="$scratch" python3 "$target/agent-avatar-hook.py" >/dev/null; then
+        | TMPDIR="$scratch" "$python" "$target/agent-avatar-hook.py" >/dev/null; then
         rm -rf "$scratch"; echo "smoke test failed: dsh 的 python 入口非零退出" >&2; exit 1
       fi
       if [ ! -f "$scratch/agent-avatar-state.dsh.json" ]; then
@@ -97,7 +105,7 @@ smoke_test() {
       rm -rf "$scratch"; return 0 ;;
     hermes)
       # 包形态没有 stdin 入口，直接按包加载一次：漏拷 state_machine.py 就会在这里炸。
-      TMPDIR="$scratch" python3 - "$target" <<'PY' || { rm -rf "$scratch"; echo "smoke test failed: hermes" >&2; exit 1; }
+      TMPDIR="$scratch" "$python" - "$target" <<'PY' || { rm -rf "$scratch"; echo "smoke test failed: hermes" >&2; exit 1; }
 import importlib.util, sys
 target = sys.argv[1]
 spec = importlib.util.spec_from_file_location(
@@ -109,7 +117,7 @@ assert module.HOOKS, "plugin exposes no hooks"
 PY
       rm -rf "$scratch"; return 0 ;;
   esac
-  if ! echo "$event" | TMPDIR="$scratch" python3 "$script" >/dev/null; then
+  if ! echo "$event" | TMPDIR="$scratch" "$python" "$script" >/dev/null; then
     rm -rf "$scratch"; echo "smoke test failed: $harness 的 hook 非零退出（core 可能没拷全）" >&2; exit 1
   fi
   if [ ! -f "$scratch/$state" ]; then
