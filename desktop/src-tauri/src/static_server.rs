@@ -50,7 +50,7 @@ pub const USER_MODELS_PREFIX: &str = "user-models/";
 
 /// 把 `user-models/` 之后的相对路径解析成真实文件路径，**越界一律 None**。
 ///
-/// `asset_path` 已经挡掉了 `..`、反斜线与百分号编码，但用户模型目录里可能存在符号链接
+/// `asset_path` 已经解码并挡掉了 `..`、反斜线与控制字符，但用户模型目录里可能存在符号链接
 /// （安装时我们不跟随复制，手动放进去的却可能有）。canonicalize 之后必须仍在根目录内。
 pub fn resolve_within(root: &Path, rest: &str) -> Option<PathBuf> {
     if rest.is_empty() { return None; }
@@ -59,10 +59,42 @@ pub fn resolve_within(root: &Path, rest: &str) -> Option<PathBuf> {
     target.starts_with(&root).then_some(target)
 }
 
+/// URL 的百分号解码。非法序列（`%` 后面不是两位十六进制、或解出来不是 UTF-8）一律 None。
+fn percent_decode(raw: &str) -> Option<String> {
+    if !raw.contains('%') { return Some(raw.to_owned()); }
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            out.push(u8::from_str_radix(raw.get(index + 1..index + 3)?, 16).ok()?);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// 把请求行里的目标转成**仓库内的相对路径**，越界一律 None。
+///
+/// 原来这里见到 `%` 就整个拒绝，理由是防 `%2e%2e` 这类编码过的路径穿越。副作用是
+/// **文件名带空格的模型全部取不到** —— 浏览器会把空格编成 `%20`，于是
+/// `yoyodlc 1 - f.model3.json` 这种（实测下载到的模型就长这样）直接 400。
+/// 而开发模式的 vite 路由本来就做了解码，于是「开发能用、装出来不能用」。
+///
+/// 改成**先解码、再做全部安全检查**。顺序是关键：解码后 `%2e%2e` 变成 `..`，
+/// 照样被下面的 component 检查挡住；`%5c` 变成 `\`，也照样被挡。
 pub fn asset_path(target: &str) -> Option<String> {
     let raw = target.split(['?', '#']).next()?;
-    if raw.contains('%') || raw.contains('\\') { return None; }
-    let path = raw.strip_prefix('/')?;
+    let decoded = percent_decode(raw)?;
+    // 解码之后才判：`%5c` 解出来就是反斜杠，先判等于没判
+    if decoded.contains('\\') { return None; }
+    // 控制字符与 `:` 不可能出现在合法的模型文件名里；`:` 在 Windows 上还能表示
+    // 备用数据流（`file:stream`），一并拒掉。
+    if decoded.contains(':') || decoded.chars().any(char::is_control) { return None; }
+    let path = decoded.strip_prefix('/')?;
     if !path.is_empty() && Path::new(path).components().any(|part| !matches!(part, Component::Normal(_))) { return None; }
     Some(if path.is_empty() { "index.html".to_owned() } else { path.to_owned() })
 }
@@ -146,7 +178,7 @@ fn serve<R: Runtime>(stream: TcpStream, client_addr: SocketAddr, app: &AppHandle
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
     let mut io = BufReader::new(stream);
-    let log_path = env::var("AGENT_AVATAR_HTTP_LOG").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/tmp/agent-avatar-http.log"));
+    let log_path = env::var("AGENT_AVATAR_HTTP_LOG").map(PathBuf::from).unwrap_or_else(|_| env::temp_dir().join("agent-avatar-http.log"));
     let _ = serve_connection(
         &mut io,
         |path| match path.strip_prefix(USER_MODELS_PREFIX) {
@@ -224,12 +256,28 @@ fn write_response(stream: &mut impl Write, status: u16, mime: &str, body: &[u8],
         fs::write(root.join("haru/texture.png"), b"pixels").unwrap();
         let outside = base.join("secret.txt");
         fs::write(&outside, b"nope").unwrap();
+        // 目录重解析点：两个平台都造得出（Windows 用 junction）
+        let outside_dir = base.join("secrets");
+        fs::create_dir_all(&outside_dir).unwrap();
+        fs::write(outside_dir.join("secret.txt"), b"nope either").unwrap();
+        crate::test_support::link_dir(&outside_dir, &root.join("haru").join("leak_dir")).unwrap();
+        // 指向根**内部**的重解析点是正常用法，不该误伤。
+        // 注意目标不能是链接自己的祖先：junction 指向自身父目录会成环，mklink 直接拒绝。
+        fs::create_dir_all(root.join("shared")).unwrap();
+        fs::write(root.join("shared/texture.png"), b"pixels").unwrap();
+        crate::test_support::link_dir(&root.join("shared"), &root.join("haru").join("alias_dir")).unwrap();
+        // 文件符号链接只有 Unix 造得出来，见 test_support 的说明
+        #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, root.join("haru/leak.txt")).unwrap();
-        // 指向根**内部**的符号链接是正常用法，不该误伤
+        #[cfg(unix)]
         std::os::unix::fs::symlink(root.join("haru/texture.png"), root.join("haru/alias.png")).unwrap();
 
         assert!(resolve_within(&root, "haru/texture.png").is_some());
+        assert!(resolve_within(&root, "haru/alias_dir/texture.png").is_some(), "指向根内部的重解析点应放行");
+        assert_eq!(resolve_within(&root, "haru/leak_dir/secret.txt"), None, "重解析点指向目录外，必须拒绝");
+        #[cfg(unix)]
         assert!(resolve_within(&root, "haru/alias.png").is_some(), "指向根内部的符号链接应放行");
+        #[cfg(unix)]
         assert_eq!(resolve_within(&root, "haru/leak.txt"), None, "符号链接指向目录外，必须拒绝");
         assert_eq!(resolve_within(&root, "../secret.txt"), None);
         assert_eq!(resolve_within(&root, "haru/missing.png"), None);
@@ -237,6 +285,31 @@ fn write_response(stream: &mut impl Write, status: u16, mime: &str, body: &[u8],
         fs::remove_dir_all(&base).unwrap();
     }
     #[test] fn rejects_path_traversal() { assert_eq!(asset_path("/"), Some("index.html".to_owned())); assert_eq!(asset_path("/models/haru/a.png?v=1"), Some("models/haru/a.png".to_owned())); assert_eq!(asset_path("/../secret"), None); assert_eq!(asset_path("/models/%2e%2e/secret"), None); assert_eq!(asset_path("models/file"), None); }
+
+    #[test]
+    fn serves_names_that_needed_percent_encoding() {
+        // 实测下载到的模型：目录已被清洗器改名，但文件名本身带空格，
+        // 浏览器编成 %20 —— 原来这里一见 % 就 400，模型直接切不过去
+        assert_eq!(asset_path("/user-models/yoyodlc1-f/yoyodlc%201%20-%20f.model3.json"),
+                   Some("user-models/yoyodlc1-f/yoyodlc 1 - f.model3.json".to_owned()));
+        // 中文名同理（%E4%B8%AD%E6%96%87 = 中文）
+        assert_eq!(asset_path("/user-models/m/%E4%B8%AD%E6%96%87.exp3.json"),
+                   Some("user-models/m/中文.exp3.json".to_owned()));
+    }
+
+    #[test]
+    fn decoding_does_not_open_a_traversal_hole() {
+        // 解码后仍要过 component 检查 —— 这几条是解码带来的新攻击面，必须全挡住
+        assert_eq!(asset_path("/models/%2e%2e/%2e%2e/secret"), None, "编码过的 ..");
+        assert_eq!(asset_path("/models/%2E%2E/secret"), None, "大写十六进制");
+        assert_eq!(asset_path("/models/a%5c..%5cb"), None, "编码过的反斜杠");
+        assert_eq!(asset_path("/%2fetc/passwd"), None, "编码过的斜杠拼出绝对路径");
+        assert_eq!(asset_path("/models/haru%00.png"), None, "NUL 截断");
+        assert_eq!(asset_path("/models/haru%3astream"), None, "Windows 备用数据流");
+        assert_eq!(asset_path("/models/%zz/x"), None, "非法十六进制");
+        assert_eq!(asset_path("/models/%e4%b8/x"), None, "残缺的 UTF-8 序列");
+        assert_eq!(asset_path("/models/%2"), None, "结尾截断的转义");
+    }
     #[test] fn drifts_to_next_available_port() { let mut calls = 0; let (value, selected) = select_available(17880, 20, |port| { calls += 1; if calls < 3 { Err(std::io::Error::new(std::io::ErrorKind::AddrInUse, "occupied")) } else { Ok(port) } }).unwrap(); assert_eq!((value, selected, calls), (17882, 17882, 3)); }
     struct ShortWriter { bytes: Vec<u8>, max_write: usize }
     impl Write for ShortWriter { fn write(&mut self, bytes: &[u8]) -> io::Result<usize> { let size = bytes.len().min(self.max_write); self.bytes.extend_from_slice(&bytes[..size]); Ok(size) } fn flush(&mut self) -> io::Result<()> { Ok(()) } }

@@ -1,9 +1,13 @@
-use std::{env, fs::{self, OpenOptions}, io::Write, path::{Path, PathBuf}, process::Command, sync::Mutex, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{env, fs::{self, OpenOptions}, io::Write, path::{Path, PathBuf}, sync::Mutex, time::{Duration, SystemTime, UNIX_EPOCH}};
 use hit_test::{should_ignore, Mode, Region};
 use tauri::{Emitter, Manager, window::Color};
 use std::sync::OnceLock;
 mod hit_test;
 mod config;
+mod model_clean;
+mod platform;
+#[cfg(test)]
+mod test_support;
 
 /// **面向用户的错误只返回代号，措辞留在前端。**
 ///
@@ -70,7 +74,7 @@ fn append_log_event(path: &Path, event: &str) -> std::io::Result<()> {
     file.flush()
 }
 fn log_path() -> PathBuf {
-    env::var("AGENT_AVATAR_LOG").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/tmp/agent-avatar-webview.log"))
+    env::var("AGENT_AVATAR_LOG").map(PathBuf::from).unwrap_or_else(|_| env::temp_dir().join("agent-avatar-webview.log"))
 }
 #[tauri::command]
 fn log_event(event: String) {
@@ -89,8 +93,7 @@ fn open_in_browser(url: String) -> Result<(), String> {
     let url = if url == LIVE2D_SAMPLE_URL { url.as_str() } else {
         loopback_url(&url).ok_or_else(|| "only the Live2D sample page or loopback URLs are allowed".to_owned())?
     };
-    Command::new("open").arg(url).spawn().map_err(|error| error.to_string())?;
-    Ok(())
+    platform::open_in_default_browser(url)
 }
 
 #[cfg(target_os = "macos")]
@@ -245,7 +248,12 @@ mod tests {
     fn log_path_falls_back_to_the_documented_default() {
         // 只读不写环境：读是安全的，写才是 UB。
         if env::var("AGENT_AVATAR_LOG").is_err() {
-            assert_eq!(log_path(), PathBuf::from("/tmp/agent-avatar-webview.log"));
+            // 原来这里比的是 `PathBuf::from("/tmp/...")` —— 两边同一个字面量，
+            // 恒等成立，跨平台跑也永远绿，等于没有断言。改成分别验「落在系统临时目录下」
+            // 与「文件名对」，这才是这条默认值真正的两个约定。
+            let path = log_path();
+            assert!(path.starts_with(env::temp_dir()), "{path:?} 不在系统临时目录下");
+            assert_eq!(path.file_name().unwrap(), "agent-avatar-webview.log");
         }
     }
     #[test]
@@ -341,6 +349,18 @@ fn spawn_hit_test(app: tauri::AppHandle) {
             if applied != Some(ignore) {
                 let _ = handle.set_ignore_cursor_events(ignore);
                 applied = Some(ignore);
+                // 记下每一次翻转。**这是「第一下点了没反应」唯一可查的证据** ——
+                // 穿透是窗口级开关，关掉期间网页层收不到任何事件，所以只看前端日志
+                // 永远只能看到「什么都没发生」。把翻转时刻记下来，就能和前端的
+                // `input:pointerdown` 对时间：点击落在翻转之前 = 撞上了 60ms 轮询窗口期
+                //（HIT_POLL_MS），落在之后却没有 pointerdown = 另一回事（系统吞掉了）。
+                append_log_event(&log_path(), &serde_json::json!({
+                    "event": "hit:ignore-cursor",
+                    "ignore": ignore,
+                    "inside": inside,
+                    "dwellMs": dwell,
+                    "mode": if config.1 == Mode::ClickThrough { "through" } else { "normal" },
+                }).to_string()).ok();
             }
         }
     });
@@ -366,6 +386,12 @@ pub fn run() {
             let window = tauri::WebviewWindowBuilder::new(app, "main", url).title("Agent Avatar").inner_size(340.0, 440.0).resizable(false).decorations(false).transparent(true).background_color(Color(0, 0, 0, 0)).always_on_top(true).shadow(false).center().build()?;
             // Reapply transparency to the created WKWebView instance. WRY's runtime path sets
             // drawsBackground on the instance in addition to the builder-time configuration.
+            //
+            // **这是 macOS/WKWebView 专属的补丁，不是 Windows 透明的开关。**
+            // Windows 走的是 WebView2 + DirectComposition 的逐像素 alpha，透明由上面
+            // builder 的 `.transparent(true)` + `background_color(0,0,0,0)` 就已经成立
+            //（WP-S 实测：84% 像素全透明、无白边、无幽灵标题栏）。这一行在 Windows 上是空操作，
+            // 留着是因为它对 macOS 必要 —— 以后调 Windows 透明时**不要从这里下手**。
             window.set_background_color(Some(Color(0, 0, 0, 0)))?;
             app.manage(Mutex::new(HitConfig::default()));
             spawn_hit_test(app.handle().clone());

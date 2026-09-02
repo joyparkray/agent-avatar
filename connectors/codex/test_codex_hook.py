@@ -28,7 +28,7 @@ def send(path, event, **fields):
     # 🔴 Codex 的 exit 2 阻塞范围比 CC 还大（连 PostToolUse 都算），绝不能返回 2
     assert result.returncode == 0, result.stderr
     try:
-        return json.loads(Path(path).read_text())
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
 
@@ -80,22 +80,22 @@ def test_permission_request_is_never_acted_on(tmp_path):
     """PermissionRequest 是**阻塞式决策 hook**。我们既不注册也不处理 —— 就算收到也必须无副作用。"""
     p = tmp_path / "s.json"
     send(p, "UserPromptSubmit", turn_id="t1")
-    before = json.loads(p.read_text())["sequence"]
+    before = json.loads(p.read_text(encoding="utf-8"))["sequence"]
     result = invoke(p, {"hook_event_name": "PermissionRequest", "session_id": S,
                         "turn_id": "t1", "tool_name": "shell", "tool_input": {}})
     assert result.returncode == 0
     assert result.stdout == "", "绝不能往 stdout 写东西 —— 那会被解释成决策"
-    assert json.loads(p.read_text())["sequence"] == before
+    assert json.loads(p.read_text(encoding="utf-8"))["sequence"] == before
 
 
 def test_subagent_internal_events_never_drive_the_avatar(tmp_path):
     p, T = tmp_path / "s.json", "t1"
     send(p, "UserPromptSubmit", turn_id=T)
     send(p, "SubagentStart", turn_id=T, agent_id="A1")
-    before = json.loads(p.read_text())["sequence"]
+    before = json.loads(p.read_text(encoding="utf-8"))["sequence"]
     send(p, "PostToolUse", turn_id=T, agent_id="A1", agent_type="explore",
          tool_name="shell", tool_use_id="c1", tool_response='{"exit_code":1}')
-    after = json.loads(p.read_text())
+    after = json.loads(p.read_text(encoding="utf-8"))
     assert after["sequence"] == before, "子代理内部事件不该驱动形象"
     assert after["state"] == "awaiting"
 

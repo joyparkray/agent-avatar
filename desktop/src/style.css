@@ -30,3 +30,12 @@
 .onboarding{padding-top:16px}
 /* 向导可滚动，顶栏必须跟着停在顶上 —— 滚下去之后关不掉窗口正是这次要修的毛病 */
 .connector-wizard .card-bar{position:sticky;top:-16px;z-index:2;background:#eef7ff}
+
+/* 引导页的拖放区。这一屏出现时用户手上正拿着模型文件夹，直接接住它 ——
+   原来这里是「打开设置」+「重新加载」两个按钮，要走五步才能装上一个模型。 */
+.onboarding-drop{margin:0 0 12px;padding:22px 14px;color:#4a6b85;text-align:center;
+  background:#f7fbff;border:2px dashed #9bc8e8;border-radius:10px;line-height:1.5;
+  transition:background .12s,border-color .12s}
+.onboarding-drop.over{color:#0d5a8c;background:#e3f1fb;border-color:#1683c7}
+.onboarding-drop.ok{color:#0f6b3f;background:#eefaf3;border-style:solid;border-color:#5cbf8f}
+.onboarding-drop.error{color:#8c2740;background:#fdeef1;border-style:solid;border-color:#e0879b}

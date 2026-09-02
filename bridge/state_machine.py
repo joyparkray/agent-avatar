@@ -16,6 +16,11 @@ try:
 except ImportError:  # pragma: no cover - platform-specific fallback
     fcntl = None
 
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - platform-specific fallback
+    msvcrt = None
+
 import json
 import os
 import re
@@ -547,6 +552,45 @@ LOCK_TIMEOUT_SECONDS = 0.5
 LOCK_RETRY_SECONDS = 0.005
 
 
+def acquire_lock(handle):
+    """试着拿独占锁。拿到 True，被占 False，平台不支持 None。**绝不阻塞**。
+
+    两个平台各有各的 API，但语义要一致：非阻塞、独占、**进程退出时由内核自动释放**。
+    最后一条是选它们而不是「创建锁文件」方案的原因 —— hook 被 kill 掉时，
+    锁文件方案会留下一把永远没人解的锁，而这两种都由操作系统兜底。
+
+    Windows 用 `msvcrt.locking`：`LK_NBLCK` 就是「非阻塞独占」，对应 flock 的
+    `LOCK_EX | LOCK_NB`。它锁的是字节区间而不是整个文件，所以约定锁第 0 个字节 ——
+    锁文件本身是空的，而 Windows 允许锁 EOF 之外的区间。
+    """
+    if fcntl is not None:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+    if msvcrt is not None:
+        try:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    return None
+
+
+def release_lock(handle):
+    """显式解锁。关文件本来也会释放，但显式写出来更清楚，也避免依赖关闭时机。"""
+    try:
+        if fcntl is not None:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError:  # pragma: no cover - 解锁失败时文件即将关闭，内核会兜底
+        pass
+
+
 def update(payload, label, audio=None, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST, harness=None):
     """把一个事件过一遍状态机并落盘。
 
@@ -593,19 +637,27 @@ def update(payload, label, audio=None, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDES
         atomic_write(path, snapshot)
 
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    if fcntl is None:
-        diagnostic("cross-process locking unavailable; writing without a lock")
-        transition()
-        return
+    # 原来这里是 `if fcntl is None: 无锁写入`。fcntl 在 Windows 上不存在，于是整条
+    # Windows 路径**静默退化成无锁的读-改-写** —— 并行工具调用与子代理会同时起好几个
+    # hook 进程，抢同一个 .sessions，互相覆盖。丢的是记账，结果是状态机算出错误状态、
+    # 形象卡住，而且不报任何错。现在两个平台各有各的锁，见 acquire_lock。
     with open(path + ".lock", "a+", encoding="utf-8") as lock:
         deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
         while True:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = acquire_lock(lock)
+            if acquired is None:
+                # 既没有 fcntl 也没有 msvcrt。我们只支持 macOS 与 Windows，两者必有其一，
+                # 所以这条实际到不了；真到了就说清楚，别再静默降级。
+                diagnostic("no cross-process lock on this platform; writing unserialised")
+                transition()
+                return
+            if acquired:
                 break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    diagnostic("state file busy; dropping this event")
-                    return
-                time.sleep(LOCK_RETRY_SECONDS)
-        transition()
+            if time.monotonic() >= deadline:
+                diagnostic("state file busy; dropping this event")
+                return
+            time.sleep(LOCK_RETRY_SECONDS)
+        try:
+            transition()
+        finally:
+            release_lock(lock)

@@ -74,7 +74,7 @@ def test_registers_exactly_the_declared_hooks(tmp_path):
     module, ctx = registered(tmp_path, tmp_path / "state.json")
     declared = [
         line.strip()[2:]
-        for line in (SOURCE / "plugin.yaml").read_text().splitlines()
+        for line in (SOURCE / "plugin.yaml").read_text(encoding="utf-8").splitlines()
         if line.startswith("  - ")
     ]
     assert set(declared) == set(module.HOOKS) == set(ctx.hooks)
@@ -115,16 +115,16 @@ def test_drives_the_state_file_end_to_end(tmp_path):
     _, ctx = registered(tmp_path, state)
 
     fire(ctx, "pre_llm_call", session_id="s1", turn_id="t1")
-    assert json.loads(state.read_text())["state"] == "writing"
+    assert json.loads(state.read_text(encoding="utf-8"))["state"] == "writing"
 
     fire(ctx, "pre_tool_call", session_id="s1", tool_name="terminal",
          args={"command": "ls"}, tool_call_id="c1", turn_id="t1")
-    assert json.loads(state.read_text())["state"] == "executing"
+    assert json.loads(state.read_text(encoding="utf-8"))["state"] == "executing"
 
     fire(ctx, "post_tool_call", session_id="s1", tool_name="terminal",
          tool_call_id="c1", turn_id="t1", status="ok")
     fire(ctx, "on_session_end", session_id="s1", turn_id="t1", completed=True, failed=False)
-    snapshot = json.loads(state.read_text())
+    snapshot = json.loads(state.read_text(encoding="utf-8"))
     assert snapshot["state"] == "idle"
     assert snapshot["detail"] == "Hermes is ready"
 

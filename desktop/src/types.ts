@@ -76,6 +76,14 @@ export interface AvatarManifest {
   id: string; version: string; cubismVersion: 4; model: string;
   expressions?: Partial<Record<Exclude<SemanticState, "idle">, string>>;
   reactions?: Partial<Record<Reaction, string>>;
-  /** `REQUIRED_MOTION_STATES` 必填；新增态缺省时按 `STATE_FALLBACK` 共用。 */
-  motions: Partial<Record<SemanticState, [string, number]>> & Record<typeof REQUIRED_MOTION_STATES[number], [string, number]>;
+  /**
+   * 有动作时：`REQUIRED_MOTION_STATES` 必填，新增态缺省按 `STATE_FALLBACK` 共用（由 manifest 的
+   * 校验在运行时保证）。
+   *
+   * **也允许整个为空**：面捕向的模型（VTube Studio 那一类）普遍一个 `motion3.json` 都不带 ——
+   * 它们靠摄像头实时驱动，动作是多余的。这类模型照样能显示：眨眼、呼吸、物理摆动、视线跟随、
+   * 口型都由 `model3.json` 的参数组与 `physics3.json` 驱动，不经过动作。
+   * 所以类型这里不再强制要求那几个键，完整性由 `manifest.ts` 在「确实有动作」时才校验。
+   */
+  motions: Partial<Record<SemanticState, [string, number]>>;
 }

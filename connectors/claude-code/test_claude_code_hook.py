@@ -28,7 +28,7 @@ def send(path, event, **fields):
     # 🔴 观察者绝不能返回 2：CC 会把它当 block（Stop 被 block = 对话停不下来）
     assert result.returncode == 0, result.stderr
     try:
-        return json.loads(Path(path).read_text())
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
 
@@ -65,12 +65,12 @@ def test_subagent_internal_events_never_drive_the_avatar(tmp_path):
     send(p, "UserPromptSubmit", prompt_id=T)
     send(p, "PreToolUse", prompt_id=T, tool_name="Agent", tool_input={}, tool_use_id="u1")
     send(p, "SubagentStart", prompt_id=T, agent_id="A1", agent_type="Explore")
-    before = json.loads(p.read_text())["sequence"]
+    before = json.loads(p.read_text(encoding="utf-8"))["sequence"]
 
     # 子代理自己的工具失败：一个字节都不该写
     send(p, "PostToolUseFailure", prompt_id=T, agent_id="A1", agent_type="Explore",
          tool_name="Bash", tool_use_id="child-1")
-    after = json.loads(p.read_text())
+    after = json.loads(p.read_text(encoding="utf-8"))
     assert after["sequence"] == before, "子代理内部事件不该驱动形象"
     assert after["state"] == "awaiting"
 
@@ -84,7 +84,7 @@ def test_resume_and_compact_must_not_wipe_live_state(tmp_path):
     T = "prompt-1"
     send(p, "UserPromptSubmit", prompt_id=T)
     send(p, "PreToolUse", prompt_id=T, tool_name="Bash", tool_input={}, tool_use_id="u1")
-    assert json.loads(p.read_text())["state"] == "executing"
+    assert json.loads(p.read_text(encoding="utf-8"))["state"] == "executing"
     for source in ("resume", "compact", "fork"):
         assert send(p, "SessionStart", source=source)["state"] == "executing", source
     # startup / clear 才是开新局
@@ -100,11 +100,11 @@ def test_orphan_subagent_stop_is_ignored_not_dequeued(tmp_path):
     T = "prompt-1"
     send(p, "UserPromptSubmit", prompt_id=T)
     send(p, "SubagentStart", prompt_id=T, agent_id="A1")
-    assert json.loads(p.read_text())["state"] == "awaiting"
+    assert json.loads(p.read_text(encoding="utf-8"))["state"] == "awaiting"
     send(p, "SubagentStop", prompt_id=T, agent_id="GHOST")     # 孤儿
-    assert json.loads(p.read_text())["state"] == "awaiting", "活着的子代理被孤儿 stop 踢掉了"
+    assert json.loads(p.read_text(encoding="utf-8"))["state"] == "awaiting", "活着的子代理被孤儿 stop 踢掉了"
     send(p, "SubagentStop", prompt_id=T, agent_id="A1")        # 真正的那条
-    assert json.loads(p.read_text())["state"] == "writing"
+    assert json.loads(p.read_text(encoding="utf-8"))["state"] == "writing"
 
 
 def test_tool_failure_and_permission_denied(tmp_path):
@@ -136,7 +136,7 @@ def test_a_new_turn_gets_a_new_prompt_id(tmp_path):
     send(p, "UserPromptSubmit", prompt_id="prompt-1")
     send(p, "PreToolUse", prompt_id="prompt-1", tool_name="Bash", tool_input={}, tool_use_id="u1")
     send(p, "Stop", prompt_id="prompt-1")
-    assert json.loads(p.read_text())["state"] == "idle"
+    assert json.loads(p.read_text(encoding="utf-8"))["state"] == "idle"
     assert send(p, "UserPromptSubmit", prompt_id="prompt-2")["state"] == "writing"
 
 
@@ -156,12 +156,12 @@ def test_unmapped_and_blocking_events_are_never_touched(tmp_path):
     """白名单：映射表外的事件一律忽略，尤其是 exit-2 可阻塞的那些。"""
     p = tmp_path / "state.json"
     send(p, "UserPromptSubmit", prompt_id="t")
-    before = json.loads(p.read_text())["sequence"]
+    before = json.loads(p.read_text(encoding="utf-8"))["sequence"]
     for event in ("PermissionRequest", "WorktreeCreate", "PreCompact", "PostToolBatch",
                   "Notification", "TaskCreated", "TeammateIdle"):
         result = invoke(p, {"hook_event_name": event, "session_id": SESSION, "prompt_id": "t"})
         assert result.returncode == 0
-    assert json.loads(p.read_text())["sequence"] == before
+    assert json.loads(p.read_text(encoding="utf-8"))["sequence"] == before
 
 
 def test_garbage_input_still_exits_zero(tmp_path):

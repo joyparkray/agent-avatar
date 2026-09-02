@@ -86,8 +86,26 @@ describe("manifest synthesis from the official model3.json", () => {
     expect(resolveForState(manifest.motions, "idle")).toEqual(["Flick", 0]);
   });
 
-  it("refuses a model with no motions at all", () => {
-    expect(() => synthesizeManifest("x", "x.model3.json", { motions: [], expressions: [] })).toThrow("no motions");
+  // 原来这里断言的是「零动作一律拒绝」。改成接受：面捕向的模型（VTube Studio 那一类）
+  // 普遍只带表情、零动作，是网上最常见的一种模型，而它们照样能显示 ——
+  // 眨眼/口型走参数组、头发衣服走 physics、视线由我们驱动，都不经过动作系统。
+  it("accepts a model with no motions at all and leaves the map empty", () => {
+    const manifest = synthesizeManifest("x", "x.model3.json", { motions: [], expressions: ["a", "b"] });
+    expect(manifest.motions).toEqual({});
+    expect(resolveForState(manifest.motions, "idle")).toBeUndefined();
+    expect(manifest.model).toBe("x.model3.json");
+  });
+
+  it("loads a motion-less model end to end", async () => {
+    // 只有表情与参数组、一个 motion3.json 都没有 —— yoyo 那三个模型就是这个形状
+    const model3 = {
+      FileReferences: { Expressions: [{ Name: "a", File: "a.exp3.json" }] },
+      Groups: [{ Target: "Parameter", Name: "LipSync", Ids: ["ParamMouthOpenY"] },
+               { Target: "Parameter", Name: "EyeBlink", Ids: ["ParamEyeLOpen"] }],
+    };
+    const fetcher = (async () => ({ ok: true, json: async () => model3 })) as unknown as typeof fetch;
+    const manifest = await loadManifest({ baseUrl: "/user-models/vtuber", model3: "v.model3.json" }, fetcher);
+    expect(manifest.motions).toEqual({});
   });
 
   it("loads a model that ships no avatar.json", async () => {

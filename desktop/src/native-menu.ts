@@ -90,7 +90,7 @@ async function modelSubmenu(state: NativeMenuState, handlers: NativeMenuHandlers
       await separator(),
       // 放在这里而不是顶层：它们都是「管理模型」的动作，跟切换模型是一回事的两面。
       await MenuItem.new({ text: text(state.language, "模型画廊…", "Model Gallery…"), action: traced(log, "gallery", () => handlers.onGallery()) }),
-      await MenuItem.new({ text: text(state.language, "在访达中打开模型文件夹", "Open Models Folder in Finder"), action: traced(log, "open-models-dir", () => handlers.onOpenModelsDir()) }),
+      await MenuItem.new({ text: text(state.language, "打开模型文件夹", "Open Models Folder"), action: traced(log, "open-models-dir", () => handlers.onOpenModelsDir()) }),
     ],
   });
 }

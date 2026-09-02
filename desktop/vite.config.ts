@@ -34,8 +34,21 @@ function localAssets(): Plugin {
  * （`#[cfg(not(debug_assertions))]`），dev 下页面是 Vite 发的 —— 不补这一段，
  * 用户装的模型在开发模式下一律 404，等于没法验证。
  */
+/**
+ * 用户数据目录，必须和 Rust 侧 `app_data_dir()` 算出同一个位置。
+ *
+ * 原来这里写死了 macOS 的 `~/Library/Application Support/...`，Windows 上于是永远指到一个
+ * 不存在的路径 —— 后果正是下面那段注释警告的那件事：**dev 模式下用户装的模型一律 404**，
+ * 菜单里空空如也，而且没有任何报错。release 不受影响（那条路由由内嵌 static_server 提供，
+ * 它走的是 Rust 的 app_data_dir）。
+ */
+function appDataDir(identifier: string): string {
+  if (process.platform === "win32") return resolve(process.env.APPDATA ?? resolve(homedir(), "AppData/Roaming"), identifier);
+  return resolve(homedir(), "Library/Application Support", identifier);
+}
+
 function userModels(): Plugin {
-  const root = resolve(homedir(), "Library/Application Support/io.github.joyparkray.agentavatar/models");
+  const root = resolve(appDataDir("io.github.joyparkray.agentavatar"), "models");
   const types: Record<string, string> = {
     json: "application/json", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
     webp: "image/webp", wav: "audio/wav", mp3: "audio/mpeg",
@@ -62,7 +75,15 @@ function userModels(): Plugin {
 export default defineConfig({
   plugins: [localAssets(), userModels()],
   clearScreen: false,
-  server: { port: 1420, strictPort: true },
+  server: {
+    port: 1420,
+    strictPort: true,
+    // 不监视 Rust 的构建产物：Windows 上 `target/debug/deps/*.dll` 在链接期间被独占，
+    // chokidar 一碰就抛 EBUSY，而这个错会让整个 vite 进程崩掉 ——
+    // 表现是 `npm run tauri dev` 刚起来就退出（beforeDevCommand 非零退出）。
+    // macOS 不锁文件，所以一直没暴露；忽略它对两个平台都只有好处（少一堆无谓的重扫）。
+    watch: { ignored: ["**/src-tauri/target/**"] },
+  },
   build: {
     rollupOptions: {
       input: {

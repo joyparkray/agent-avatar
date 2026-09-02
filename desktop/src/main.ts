@@ -7,6 +7,9 @@ import { Live2DAvatarModel } from "./live2d";
 import { FPS_CHOICES, RENDER_SCALE, type RenderQuality } from "./render-quality"; import { AvatarDirector } from "./director"; import { SemanticDriver } from "./semantic"; import { VoiceDriver, voiceWebSocketUrl } from "./voice";
 import { installGlobalDiagnostics } from "./diagnostics";
 import { installWindowDragging } from "./drag";
+import { droppedPath } from "./drop";
+import { errorMessage } from "./errors";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { buildFallbackMenu, buildNativeMenu, type NativeMenuHandlers } from "./native-menu";
 import { IdleAutonomy } from "./idle";
 import { CONNECTOR_TEXT, renderConnectors, type ConnectorState } from "./connectors";
@@ -63,6 +66,17 @@ installWindowDragging(shell, getCurrentWindow(), log, async (dx, dy) => {
   const origin = (await window.outerPosition()).toLogical(scale);
   await window.setPosition(new LogicalPosition(origin.x + dx, origin.y + dy));
 });
+// 点击穿透是**窗口级**开关：关掉期间网页层收不到任何事件，于是「点了没反应」在前端看来
+// 和「根本没点」一模一样，无从分辨。这里把每一次真正到达网页的 pointerdown 记下来，
+// 与 Rust 侧的 `hit:ignore-cursor` 翻转记录对时间，就能判断一次点击是撞上了 60ms 的
+// 轮询窗口期（HIT_POLL_MS），还是被系统拿去激活窗口了 —— 见 WINDOWS-PORT.md WP6。
+// 挂在捕获阶段：拖动、菜单等处理器都可能先行返回，挂在它们后面会漏记。
+addEventListener("pointerdown", event => log({
+  event: "input:pointerdown",
+  button: event.button,
+  x: Math.round(event.clientX), y: Math.round(event.clientY),
+  target: (event.target as Element | null)?.className || null,
+}), { capture: true });
 // 启动自检：只探 Cubism Core —— 它是**唯一**随包的运行期资产（官方可再分发清单内）。
 // 原来还探一张 `models/haru/...` 的贴图，皮肤外置之后那条路径在 .app 里必然 404，
 // 探针只会稳定地报一个假故障。皮肤能不能取到由 model:loaded / model:failed 回答。
@@ -84,15 +98,17 @@ const ONBOARDING_TEXT = {
     title: "需要安装 Live2D 模型",
     description: "发布版本不内置模型。你可以用自己已有的模型，也可以下载一个免费模型。下载的包要先解压，再把",
     emphasis: "解压出来的模型文件夹",
-    suffix: "放进模型文件夹。",
-    download: "下载免费模型", open: "打开模型文件夹", reload: "装好了，重新加载",
+    suffix: "直接拖到下面的方框里。名字带空格、表情没登记这类问题，导入时会自动处理好。",
+    download: "下载免费模型",
+    drop: "把模型文件夹拖到这里", installing: "正在安装…", installed: "装好了，正在加载…",
   },
   en: {
     title: "A Live2D model is required",
-    description: "No model is bundled with this release. Use a model you already have, or download a free one. Extract the download first, then put the ",
+    description: "No model is bundled with this release. Use a model you already have, or download a free one. Extract the download first, then drag the ",
     emphasis: "extracted model folder",
-    suffix: " into the models folder.",
-    download: "Download Free Model", open: "Open Models Folder", reload: "Reload After Installing",
+    suffix: " onto the box below. Folder names with spaces, unregistered expressions and the like are fixed up on import.",
+    download: "Download Free Model",
+    drop: "Drop the model folder here", installing: "Installing…", installed: "Installed — loading…",
   },
 } as const;
 
@@ -195,8 +211,9 @@ function applyOnboardingLanguage(locale: Language): void {
   root.querySelector<HTMLElement>('[data-onboarding="emphasis"]')!.textContent = copy.emphasis;
   root.querySelector<HTMLElement>('[data-onboarding="suffix"]')!.textContent = copy.suffix;
   root.querySelector<HTMLElement>('[data-act="download-model"]')!.textContent = copy.download;
-  root.querySelector<HTMLElement>('[data-act="open-models"]')!.textContent = copy.open;
-  root.querySelector<HTMLElement>('[data-act="reload"]')!.textContent = copy.reload;
+  // 拖放区只在「还没开始安装」时才由语言切换重写，否则会把「正在安装…」覆盖掉
+  const zone = root.querySelector<HTMLElement>('[data-act="drop-model"]');
+  if (zone && zone.dataset.busy !== "1") zone.textContent = copy.drop;
   document.documentElement.lang = locale;
 }
 // 对外展示标签：writing/researching 对用户都是「助手在思考」，统一成 thinking，避免工具一闪造成
@@ -399,7 +416,19 @@ log({ event: "endpoint:discovered", url: discovered?.url ?? null, hasToken: Bool
     // 那正是「打开就嘴一动不动」的原因（ROADMAP D1）。系统音频对所有会出声的 agent
     // 都有效（Codex Voice、Claude Desktop voice mode、本地 TTS 都从系统音频出）。
     // 用户选过就记住，不必每次开机重选。
-    await audio.start(readAudioSource());
+    // 音源起不来**不能**掀翻整个 boot：这一段在 boot 的大 try 里，而它下面的 catch 会把任何
+    // 异常报成「模型加载失败」并弹致命窗。Windows 上必现（全局采集只有 macOS 有，
+    // `start_global_audio` 直接 Err），实机表现是：模型明明已经加载、Idle 动作都起来了，
+    // 却被一个音频错误顶成「模型加载失败」，用户按提示去换模型，换几个都一样。
+    // macOS 上同样够得着 —— 用户拒绝音频权限、或 process tap 建不起来时是同一条路径。
+    //
+    // 音源只驱动嘴型：拿不到就退回 off，形象、状态、动作全都照常。
+    try {
+      await audio.start(readAudioSource());
+    } catch (error) {
+      log({ event: "audio-source:unavailable", source: readAudioSource(), error: String(error).slice(0, 200) });
+      await audio.start("off").catch(() => {});
+    }
     // 语义轮询顺带盯着 token：desktop 每次启动重新生成 token（且换端口），由 hook 写进同一个
     // 状态文件。复用这条已有的轮询，不另起定时器。
     // 「状态来源」读哪个 harness 的语义状态。声明必须在轮询器之前 —— 它被闭包捕获，
@@ -458,9 +487,8 @@ log({ event: "endpoint:discovered", url: discovered?.url ?? null, hasToken: Bool
       ? `<div class="fallback onboarding">`
         + `<label class="onboarding-language"><span>Language</span><select data-act="onboarding-language"><option value="zh-CN">中文</option><option value="en">English</option></select></label>`
         + `<b data-onboarding="title"></b><p><span data-onboarding="description"></span><strong data-onboarding="emphasis"></strong><span data-onboarding="suffix"></span></p>`
-        + `<div class="fallback-actions"><button data-act="download-model">下载免费模型</button>`
-        + `<button data-act="open-models">打开模型文件夹</button>`
-        + `<button data-act="reload">装好了，重新加载</button></div></div>`
+        + `<div class="onboarding-drop" data-act="drop-model">把模型文件夹拖到这里</div>`
+        + `<div class="fallback-actions"><button data-act="download-model">下载免费模型</button></div></div>`
       : `<div class="fallback"><b>${FAILURE_TEXT[language()].title}</b><p>${escapeHtml(String(error))}</p>`
         + `<p>${FAILURE_TEXT[language()].detail}</p>`
         // 按钮而不是只写「去右键菜单里换」：这张卡片盖住了整个窗口，
@@ -489,9 +517,46 @@ log({ event: "endpoint:discovered", url: discovered?.url ?? null, hasToken: Bool
     root.querySelector('[data-act="download-model"]')?.addEventListener("click", () => void invoke("open_in_browser", {
       url: "https://www.live2d.com/en/learn/sample/momose-hiyori/",
     }).catch(console.error));
-    root.querySelector('[data-act="open-models"]')?.addEventListener("click",
-      () => void invoke("open_models_dir").catch(console.error));
-    root.querySelector('[data-act="reload"]')?.addEventListener("click", () => location.reload());
+    // 引导页自己就是拖放区：原来这里放的是「打开设置」+「装好了，重新加载」两个按钮，
+    // 用户要走「开设置 → 切到模型页 → 拖 → 关设置 → 回来点重新加载」五步。
+    // 而这一屏出现的时刻，用户手上正拿着那个文件夹 —— 直接接住它就行。
+    const dropZone = root.querySelector<HTMLElement>('[data-act="drop-model"]');
+    if (dropZone) {
+      const copy = () => ONBOARDING_TEXT[language()];
+      const say = (text: string, busy: boolean, kind = "") => {
+        dropZone.textContent = text;
+        dropZone.dataset.busy = busy ? "1" : "";
+        dropZone.className = `onboarding-drop ${kind}`;
+      };
+      // `getCurrentWebview()` 在非 Tauri 环境下**同步抛错**，`.catch()` 接不住（见 settings.ts 同款注释）
+      try {
+        void getCurrentWebview().onDragDropEvent(async event => {
+          const path = droppedPath(event.payload);
+          if (!path) {
+            const over = event.payload.type === "enter" || event.payload.type === "over";
+            dropZone.classList.toggle("over", over);
+            return;
+          }
+          dropZone.classList.remove("over");
+          say(copy().installing, true);
+          try {
+            const installed = await invoke<{ dir: string }>("install_model", { path });
+            log({ event: "onboarding:installed", dir: installed.dir });
+            // 装完直接选中并重载 —— 用户已经表达了「就用这个」，再让他自己去菜单里挑一次是多余的
+            rememberModel(installed.dir, "installed");
+            say(copy().installed, true, "ok");
+            location.reload();
+          } catch (error) {
+            log({ event: "onboarding:install:error", error: String(error).slice(0, 200) });
+            say(errorMessage(error, language()), false, "error");
+            // 报完错回到可再试的状态，否则用户不知道还能不能再拖
+            setTimeout(() => { if (dropZone.dataset.busy !== "1") say(copy().drop, false); }, 4000);
+          }
+        }).catch(console.error);
+      } catch (error) {
+        log({ event: "onboarding:drag-drop:unavailable", error: String(error).slice(0, 200) });
+      }
+    }
     // 复用同一个菜单：卡片上的按钮和右键是同一条路，不必再写一套选择界面
     root.querySelector('[data-act="pick-model"]')?.addEventListener("click",
       event => openContextMenu?.(event as MouseEvent));

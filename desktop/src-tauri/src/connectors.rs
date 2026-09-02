@@ -312,6 +312,10 @@ mod tests {
     }
 
     #[test]
+    // Windows 上整条连接器链路（`command_path` 的 `:` 分隔符与 Homebrew 路径、`home()` 只读 HOME、
+    // 三条 `/usr/bin` 绝对路径）都还没做，属于 WP4。在那之前这条断言注定不成立 ——
+    // 显式 ignore 而不是删掉或改宽，是为了让它在测试输出里留一行可见的欠账。
+    #[cfg_attr(windows, ignore = "connector 链路尚未 Windows 化，见 WINDOWS-PORT.md WP4")]
     fn command_path_adds_the_usual_install_locations() {
         // 从 Finder 启动只继承最小 PATH，脚本要的 node/codex/codebuddy 都不在里面。
         let path = command_path();

@@ -1,7 +1,12 @@
-# 公开的质量记录：四套测试全在这里跑一遍。
+# 公开的质量记录：四套测试在 macOS 与 Windows 上各跑一遍。
 #
-# 用 macOS runner 而不是 Linux：Rust 侧有 macOS 专属的原生代码（Core Audio process tap 的
+# 为什么不用 Linux runner：Rust 侧有 macOS 专属的原生代码（Core Audio process tap 的
 # Objective-C shim 由 build.rs 用 cc 编出来），在 Linux 上根本编不过。
+#
+# 为什么补 Windows：从 v1.1 起 Windows 是一等平台，而 WP2/WP3/WP4 那类「只在 Windows
+# 触发」的分支，不进矩阵就永远无人验证 —— 那正是移植里最容易静默失效的部分。
+# CI 的职责边界到此为止：编译 + 单元测试。窗口透明、渲染、GPU 加速、交互手感、真实安装
+# 一律要真机 —— GitHub 的 runner 没有 GPU，WebGL 会回落软件渲染，在那上面测渲染无论红绿都不可信。
 name: CI
 
 on:
@@ -12,8 +17,13 @@ on:
 
 jobs:
   desktop:
-    name: Desktop app (types, vitest, cargo)
-    runs-on: macos-latest
+    name: Desktop app (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一边红不该掩盖另一边的结果 —— 移植期最想看的恰恰是「哪个平台红」
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
     defaults:
       run:
         working-directory: desktop
@@ -33,8 +43,12 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
   connectors:
-    name: Connectors (all five harnesses)
-    runs-on: macos-latest
+    name: Connectors (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -48,5 +62,35 @@ jobs:
         run: python -m pytest -q
       - name: Assembled plugin trees smoke-test
         # assemble.sh 每组装一家就喂一条事件跑一次，验证「组装后的目录能独立跑起来」——
-        # 漏拷 core 时的失败在真实注册里是静默的（hook 被跳过 / 一直 idle）
+        # 漏拷 core 时的失败在真实注册里是静默的（hook 被跳过 / 一直 idle）。
+        #
+        # 只在 POSIX 上跑：assemble.sh 是 /bin/sh 脚本，还带 heredoc python、chmod +x、
+        # rm -rf，Windows 等价物属于 WP4，写出来之前这一步在 Windows 上没有意义。
+        if: runner.os != 'Windows'
         run: sh connectors/assemble.sh all "${{ runner.temp }}/connectors"
+
+  # 出口条件：Windows 无头构建能产出可安装的 exe。
+  # 只在 main 推送与手动触发时跑 —— 每个 PR 都编一次 release 太贵，而它验的是打包链路
+  # （NSIS、图标、tauri.windows.conf.json 的 targets 合并），不是代码正确性。
+  windows-bundle:
+    name: Windows NSIS bundle
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+      - name: Build NSIS installer
+        run: npm run tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-avatar-windows-nsis
+          path: desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error

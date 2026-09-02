@@ -89,11 +89,23 @@ describe("model interaction behavior", () => {
 
 describe("empty model onboarding", () => {
   const main = readFileSync("src/main.ts", "utf8");
-  it.each(["下载免费模型", "打开模型文件夹", "装好了，重新加载"])("offers %s", label => {
+  it.each(["下载免费模型", "把模型文件夹拖到这里"])("offers %s", label => {
     expect(main).toContain(label);
   });
-  it("opens the managed model directory", () => {
-    expect(main).toMatch(/data-act="open-models"[\s\S]*open_models_dir/);
+  // 引导页自己接住拖放：原来是「打开设置」+「装好了，重新加载」两个按钮，用户要走
+  //「开设置 → 切模型页 → 拖 → 关设置 → 点重新加载」五步，而这一屏出现时他手上正拿着那个文件夹。
+  it("installs a dropped folder in place instead of sending the user to Settings", () => {
+    expect(main).toMatch(/data-act="drop-model"[\s\S]*onDragDropEvent/);
+    expect(main).toMatch(/install_model[\s\S]*rememberModel\(installed\.dir, "installed"\)/);
+    // 装完自己选中并加载，不再要求用户手动重来一次
+    expect(main).not.toContain('<button data-act="reload">装好了，重新加载</button>');
+    const copy = main.slice(main.indexOf("const ONBOARDING_TEXT"), main.indexOf("} as const;"));
+    expect(copy).not.toContain("放进模型文件夹");
+    expect(copy).not.toContain("打开设置");
+  });
+  it("keeps the drop zone usable after a failed install", () => {
+    // 报完错要回到「还能再拖一次」的状态，否则用户不知道是不是彻底坏了
+    expect(main).toMatch(/errorMessage\(error, language\(\)\)[\s\S]*say\(copy\(\)\.drop, false\)/);
   });
   it("makes the no-model window interactive and emphasizes the extracted folder", () => {
     // 「模型文件夹」是同一个东西在设置页/右键菜单里的叫法，引导页原来叫「安装目录」，
@@ -102,7 +114,8 @@ describe("empty model onboarding", () => {
     const copy = main.slice(main.indexOf("const ONBOARDING_TEXT"), main.indexOf("} as const;"));
     expect(copy).not.toContain("安装目录");
     expect(main).toMatch(/set_hit_region[\s\S]*width: innerWidth[\s\S]*height: innerHeight/);
-    expect(main).toContain('data-act="reload"');
+    // 「加载失败」那张卡（不是这张引导卡）仍然保留重新加载按钮
+    expect(main).toContain('FAILURE_TEXT[language()].reload');
   });
   it("offers a persisted Chinese and English language switch", () => {
     expect(main).toContain('data-act="onboarding-language"');

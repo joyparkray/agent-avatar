@@ -5,6 +5,8 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 
 SCRIPT = Path(__file__).with_name("agent-avatar-hook.py")
 
@@ -42,7 +44,7 @@ def test_real_bridge_transitions_and_atomic_snapshot(tmp_path):
     for sequence, (payload, expected) in enumerate(events, 1):
         result = invoke(path, payload)
         assert result.returncode == 0, result.stderr
-        snapshot = json.loads(path.read_text())
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
         assert set(snapshot) == {"state", "detail", "sequence", "updated_at"}
         assert snapshot["state"] == expected
         assert snapshot["sequence"] == sequence
@@ -56,7 +58,7 @@ def test_only_current_session_drives_state(tmp_path):
     invoke(path, {"hook_event_name": "pre_tool_call", "session_id": "working", "tool_name": "exec_command", "tool_call_id": "c1"})
     invoke(path, {"hook_event_name": "pre_llm_call", "session_id": "thinking", "turn_id": "t1"})
     # last_active=thinking → writing；working 的 executing 不再跨会话覆盖
-    assert json.loads(path.read_text())["state"] == "writing"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "writing"
 
 
 def test_stale_subagent_session_does_not_poison_syncing(tmp_path):
@@ -67,7 +69,7 @@ def test_stale_subagent_session_does_not_poison_syncing(tmp_path):
     # 当前会话开始思考（LLM 生成）
     invoke(path, {"hook_event_name": "pre_llm_call", "session_id": "thinking", "turn_id": "t1"})
     # 只聚合当前(thinking)会话 → writing；ghost 的 subagents=1 不顶成 syncing
-    assert json.loads(path.read_text())["state"] == "writing"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "writing"
 
 
 def test_invalid_input_is_fail_open(tmp_path):
@@ -86,19 +88,37 @@ def test_carries_the_session_token_and_keeps_it_when_absent(tmp_path):
     env = hook_env(path, HERMES_DASHBOARD_SESSION_TOKEN="tok-abc")
     result = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(start), text=True, capture_output=True, env=env, check=False)
     assert result.returncode == 0, result.stderr
-    assert json.loads(path.read_text())["audio"] == {"token": "tok-abc"}
+    assert json.loads(path.read_text(encoding="utf-8"))["audio"] == {"token": "tok-abc"}
 
-    # 状态文件里有凭据，权限必须锁到属主可读
-    assert oct(path.stat().st_mode)[-3:] == "600"
+    # 权限那条保证单独一个用例，见 test_locks_the_state_file_to_the_owner
 
     # gateway / cron 会话不是 desktop 的后代，环境里没有 token —— 不能把已有的抹掉
     bare = hook_env(path)
     follow = {"hook_event_name": "pre_tool_call", "session_id": "s1", "tool_name": "exec_command", "tool_call_id": "c1"}
     result = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(follow), text=True, capture_output=True, env=bare, check=False)
     assert result.returncode == 0, result.stderr
-    snapshot = json.loads(path.read_text())
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
     assert snapshot["state"] == "executing"
     assert snapshot["audio"] == {"token": "tok-abc"}
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows 无 POSIX 权限位，状态文件权限口径待拍板，见 WINDOWS-PORT.md WP3",
+)
+def test_locks_the_state_file_to_the_owner(tmp_path):
+    """状态文件里有凭据与工具调用文本，权限必须锁到属主可读。
+
+    单独成一个用例是为了 Windows：那里 `tempfile.mkstemp` 的 0600 是 POSIX 语义，
+    NTFS 走 ACL 继承，实测拿到 666。塞在别的用例里就得整条 skip，会连带丢掉
+    token 保留那部分覆盖。拆出来之后，Windows 上只有这一条显示为 skipped。
+    """
+    path = tmp_path / "state.json"
+    start = {"hook_event_name": "pre_llm_call", "session_id": "s1", "turn_id": "t1"}
+    env = hook_env(path, HERMES_DASHBOARD_SESSION_TOKEN="tok-abc")
+    result = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(start), text=True, capture_output=True, env=env, check=False)
+    assert result.returncode == 0, result.stderr
+    assert oct(path.stat().st_mode)[-3:] == "600"
 
 
 def test_turn_end_clears_stale_active(tmp_path):
@@ -109,10 +129,10 @@ def test_turn_end_clears_stale_active(tmp_path):
     invoke(path, {"hook_event_name": "pre_llm_call", "session_id": "s1", "turn_id": "t1"})
     invoke(path, {"hook_event_name": "pre_tool_call", "session_id": "s1", "turn_id": "t1",
                   "tool_name": "exec_command", "tool_call_id": "unmatched-call"})
-    assert json.loads(path.read_text())["state"] == "executing"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "executing"
     # 不触发配对的 post_tool_call（模拟漏掉/对不上），直接结束 turn —— 应清回 idle
     invoke(path, {"hook_event_name": "post_llm_call", "session_id": "s1", "turn_id": "t1"})
-    assert json.loads(path.read_text())["state"] == "idle"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "idle"
 
 
 def test_stale_active_on_dead_turn_never_escalates_to_executing(tmp_path):
@@ -121,7 +141,7 @@ def test_stale_active_on_dead_turn_never_escalates_to_executing(tmp_path):
     path = tmp_path / "state.json"
     invoke(path, {"hook_event_name": "pre_tool_call", "session_id": "s1", "turn_id": "ghost-turn",
                   "tool_name": "exec_command", "tool_call_id": "c1"})
-    state = json.loads(path.read_text())["state"]
+    state = json.loads(path.read_text(encoding="utf-8"))["state"]
     assert state != "executing", state
 
 
@@ -133,11 +153,11 @@ def test_post_tool_call_keeps_writing_while_turn_is_still_active(tmp_path):
     invoke(path, {"hook_event_name": "pre_llm_call", "session_id": "s1", "turn_id": "t1"})
     invoke(path, {"hook_event_name": "pre_tool_call", "session_id": "s1", "turn_id": "t1",
                   "tool_name": "exec_command", "tool_call_id": "c1"})
-    assert json.loads(path.read_text())["state"] == "executing"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "executing"
     # 工具结束，但 turn 未走 post_llm_call（LLM 继续思考）→ 保持 writing
     invoke(path, {"hook_event_name": "post_tool_call", "session_id": "s1",
                   "tool_name": "exec_command", "tool_call_id": "c1"})
-    assert json.loads(path.read_text())["state"] == "writing"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "writing"
 
 
 def test_blocked_tool_emits_blocked_reaction_not_error(tmp_path):
@@ -148,7 +168,7 @@ def test_blocked_tool_emits_blocked_reaction_not_error(tmp_path):
                   "tool_name": "exec_command", "tool_call_id": "c1"})
     invoke(path, {"hook_event_name": "post_tool_call", "session_id": "s1",
                   "tool_name": "exec_command", "tool_call_id": "c1", "status": "blocked"})
-    snapshot = json.loads(path.read_text())
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
     assert snapshot["reaction"]["kind"] == "blocked"
     assert snapshot["reaction"]["sequence"] == 1
     assert snapshot["state"] != "error"  # blocked 不当 error，turn 继续
@@ -159,7 +179,7 @@ def test_interrupted_emits_interrupted_reaction(tmp_path):
     path = tmp_path / "state.json"
     invoke(path, {"hook_event_name": "pre_llm_call", "session_id": "s1", "turn_id": "t1"})
     invoke(path, {"hook_event_name": "on_session_end", "session_id": "s1", "turn_id": "t1", "interrupted": True})
-    snapshot = json.loads(path.read_text())
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
     assert snapshot["reaction"]["kind"] == "interrupted"
     assert snapshot["reaction"]["sequence"] == 1
 
@@ -170,10 +190,10 @@ def test_untracked_subagent_stop_does_not_leak_awaiting(tmp_path):
     都清不掉，Rust 的 300s 兜底也救不了（每个事件都会刷新文件 mtime）。"""
     path = tmp_path / "state.json"
     invoke(path, {"hook_event_name": "subagent_start", "session_id": "s1", "child_session_id": "A"})
-    assert json.loads(path.read_text())["state"] == "awaiting"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "awaiting"
     result = invoke(path, {"hook_event_name": "subagent_stop", "session_id": "s1", "child_session_id": "B"})
     assert "untracked subagent" in result.stderr  # 记账对不上要留痕
-    assert json.loads(path.read_text())["state"] != "awaiting"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] != "awaiting"
 
 
 def test_session_end_clears_subagents(tmp_path):
@@ -181,9 +201,9 @@ def test_session_end_clears_subagents(tmp_path):
     path = tmp_path / "state.json"
     invoke(path, {"hook_event_name": "pre_llm_call", "session_id": "s1", "turn_id": "t1"})
     invoke(path, {"hook_event_name": "subagent_start", "session_id": "s1", "child_session_id": "A"})
-    assert json.loads(path.read_text())["state"] == "awaiting"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "awaiting"
     invoke(path, {"hook_event_name": "on_session_end", "session_id": "s1", "turn_id": "t1"})
-    assert json.loads(path.read_text())["state"] == "idle"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "idle"
 
 
 def test_reaction_carries_a_monotonic_timestamp(tmp_path):
@@ -192,12 +212,12 @@ def test_reaction_carries_a_monotonic_timestamp(tmp_path):
     path = tmp_path / "state.json"
     interrupted = {"hook_event_name": "on_session_end", "session_id": "s1", "turn_id": "t1", "interrupted": True}
     invoke(path, interrupted)
-    first = json.loads(path.read_text())["reaction"]
+    first = json.loads(path.read_text(encoding="utf-8"))["reaction"]
 
     (tmp_path / "state.json.sessions").unlink()  # 模拟 TMPDIR 清理 / schema 变更后的重建
     time.sleep(0.01)
     invoke(path, interrupted)
-    second = json.loads(path.read_text())["reaction"]
+    second = json.loads(path.read_text(encoding="utf-8"))["reaction"]
 
     assert first["sequence"] == second["sequence"] == 1  # 计数确实复位了
     assert second["at"] > first["at"]                    # 但 at 单调，皮肤据此仍能触发
@@ -210,7 +230,7 @@ def test_subagent_own_session_never_drives_the_avatar(tmp_path):
     path = tmp_path / "state.json"
     invoke(path, {"hook_event_name": "pre_llm_call", "session_id": "P", "turn_id": "t1"})
     invoke(path, {"hook_event_name": "subagent_start", "parent_session_id": "P", "child_session_id": "C"})
-    assert json.loads(path.read_text())["state"] == "awaiting"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "awaiting"
 
     for child_event in (
             {"hook_event_name": "pre_llm_call", "session_id": "C", "turn_id": "ct1"},
@@ -219,10 +239,10 @@ def test_subagent_own_session_never_drives_the_avatar(tmp_path):
             {"hook_event_name": "post_tool_call", "session_id": "C", "turn_id": "ct1",
              "tool_name": "exec_command", "tool_call_id": "cc1", "status": "error"}):
         invoke(path, child_event)
-        assert json.loads(path.read_text())["state"] == "awaiting", child_event["hook_event_name"]
+        assert json.loads(path.read_text(encoding="utf-8"))["state"] == "awaiting", child_event["hook_event_name"]
 
     invoke(path, {"hook_event_name": "subagent_stop", "parent_session_id": "P", "child_session_id": "C", "child_status": "success"})
-    assert json.loads(path.read_text())["state"] == "writing"  # 回到父会话自己的状态
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "writing"  # 回到父会话自己的状态
 
 
 def test_nested_subagent_sessions_are_ignored_too(tmp_path):
@@ -234,7 +254,7 @@ def test_nested_subagent_sessions_are_ignored_too(tmp_path):
     invoke(path, {"hook_event_name": "subagent_start", "session_id": "C", "child_session_id": "D"})
     invoke(path, {"hook_event_name": "post_tool_call", "session_id": "D",
                   "tool_name": "exec_command", "tool_call_id": "d1", "status": "error"})
-    assert json.loads(path.read_text())["state"] == "awaiting"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "awaiting"
 
 
 def test_parent_session_errors_still_show(tmp_path):
@@ -243,7 +263,7 @@ def test_parent_session_errors_still_show(tmp_path):
     invoke(path, {"hook_event_name": "pre_llm_call", "session_id": "P", "turn_id": "t1"})
     invoke(path, {"hook_event_name": "post_tool_call", "session_id": "P", "turn_id": "t1",
                   "tool_name": "exec_command", "tool_call_id": "p1", "status": "error"})
-    assert json.loads(path.read_text())["state"] == "error"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "error"
 
 
 BACKGROUND_REVIEW_MESSAGE = (
@@ -259,7 +279,7 @@ def test_syncing_splits_into_awaiting_reviewing_and_syncing(tmp_path):
         path = tmp_path / ("state-%d.json" % len(list(tmp_path.iterdir())))
         for event in events:
             invoke(path, event)
-        return json.loads(path.read_text())["state"]
+        return json.loads(path.read_text(encoding="utf-8"))["state"]
 
     turn = {"hook_event_name": "pre_llm_call", "session_id": "P", "turn_id": "t1"}
     assert state_after([turn, {"hook_event_name": "subagent_start", "parent_session_id": "P",
@@ -283,9 +303,9 @@ def test_reviewing_yields_to_a_new_turn(tmp_path):
     path = tmp_path / "state.json"
     invoke(path, {"hook_event_name": "pre_llm_call", "session_id": "P", "turn_id": "r1",
                   "user_message": BACKGROUND_REVIEW_MESSAGE})
-    assert json.loads(path.read_text())["state"] == "reviewing"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "reviewing"
     invoke(path, {"hook_event_name": "pre_llm_call", "session_id": "P", "turn_id": "t2"})
-    assert json.loads(path.read_text())["state"] == "writing"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "writing"
 
 
 def test_awaiting_outranks_a_tool_running_in_the_same_turn(tmp_path):
@@ -294,9 +314,9 @@ def test_awaiting_outranks_a_tool_running_in_the_same_turn(tmp_path):
     invoke(path, {"hook_event_name": "pre_llm_call", "session_id": "P", "turn_id": "t1"})
     invoke(path, {"hook_event_name": "pre_tool_call", "session_id": "P", "turn_id": "t1",
                   "tool_name": "exec_command", "tool_call_id": "e"})
-    assert json.loads(path.read_text())["state"] == "executing"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "executing"
     invoke(path, {"hook_event_name": "subagent_start", "parent_session_id": "P", "child_session_id": "C"})
-    assert json.loads(path.read_text())["state"] == "awaiting"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "awaiting"
 
 
 def test_a_turn_that_failed_shows_error_even_when_every_tool_succeeded(tmp_path):
@@ -313,7 +333,7 @@ def test_a_turn_that_failed_shows_error_even_when_every_tool_succeeded(tmp_path)
                   "tool_name": "exec_command", "tool_call_id": "c1", "status": "ok"})
     invoke(path, {"hook_event_name": "on_session_end", "session_id": "P", "turn_id": "t1",
                   "extra": {"completed": False, "failed": True}})
-    assert json.loads(path.read_text())["state"] == "error"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "error"
 
 
 def test_a_successful_turn_still_ends_idle(tmp_path):
@@ -322,7 +342,7 @@ def test_a_successful_turn_still_ends_idle(tmp_path):
     invoke(path, {"hook_event_name": "pre_llm_call", "session_id": "P", "turn_id": "t1"})
     invoke(path, {"hook_event_name": "on_session_end", "session_id": "P", "turn_id": "t1",
                   "extra": {"completed": True, "failed": False}})
-    assert json.loads(path.read_text())["state"] == "idle"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "idle"
 
 
 def test_a_tool_event_without_a_session_id_joins_the_active_session(tmp_path):
@@ -336,8 +356,8 @@ def test_a_tool_event_without_a_session_id_joins_the_active_session(tmp_path):
     invoke(path, {"hook_event_name": "pre_llm_call", "session_id": "P", "turn_id": "t1"})
     invoke(path, {"hook_event_name": "pre_tool_call", "session_id": "", "turn_id": "t1",
                   "tool_name": "exec_command", "tool_call_id": "c1"})
-    assert json.loads(path.read_text())["state"] == "executing"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "executing"
     # 收尾后仍要回到「LLM 还在这一轮里」而不是 idle —— 证明它记在同一个会话上
     invoke(path, {"hook_event_name": "post_tool_call", "session_id": "", "turn_id": "t1",
                   "tool_name": "exec_command", "tool_call_id": "c1", "status": "ok"})
-    assert json.loads(path.read_text())["state"] == "writing"
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "writing"

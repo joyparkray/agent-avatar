@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "mock": "node scripts/mock-speak-server.mjs",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "pack:portable": "node scripts/pack-portable.mjs"
   },
   "dependencies": {
     "@jannchie/pixi-live2d-display": "^1.4.0",

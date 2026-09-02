@@ -24,7 +24,7 @@ def send(path, event, **fields):
     # 🔴 观察者绝不能返回 2 —— 同一份 CLI，退出码 2 会拦死工具
     assert result.returncode == 0, result.stderr
     try:
-        return json.loads(Path(path).read_text())
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
 

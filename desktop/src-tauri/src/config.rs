@@ -7,8 +7,9 @@
 //! 而且每次更新会整包覆盖。同一份文档指定的正确去处是 `Library/Application Support/<bundle-id>`,
 //! 也就是 Tauri `app_data_dir()` 返回的路径。
 use crate::user_error;
+use crate::model_clean;
 use serde_json::{json, Value};
-use std::{fs, path::{Path, PathBuf}, process::Command};
+use std::{fs, path::{Path, PathBuf}};
 use tauri::{Manager, Runtime};
 
 /// 配置文件的体积上限。正常只有几百字节；手改坏或塞了别的东西时直接当默认处理，不去解析。
@@ -125,8 +126,7 @@ pub fn write_config(app: tauri::AppHandle, config: Value) -> Result<(), String> 
 #[tauri::command(async)]
 pub fn open_models_dir(app: tauri::AppHandle) -> Result<(), String> {
     let dir = models_dir(&app)?;
-    Command::new("open").arg(&dir).spawn().map_err(|error| error.to_string())?;
-    Ok(())
+    crate::platform::reveal_in_file_manager(&dir)
 }
 
 // ---------------------------------------------------------------------------
@@ -228,19 +228,23 @@ pub fn install_model(app: tauri::AppHandle, path: String) -> Result<Value, Strin
         }
         return Err(user_error::NOT_A_FOLDER.to_owned());
     }
-    let name = source.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_owned();
-    if !is_safe_dir_name(&name) {
-        return Err(format!("{}|{name}", user_error::BAD_NAME));
-    }
+    // 名字不合规**不再拒绝，而是改名**。原来这里直接报错，用户拿到的只有一句
+    // 「名字不能用」，得自己回文件管理器改完再拖一次 —— 而下载来的模型十有八九带空格
+    //（实测：`yoyo - b`、`yoyodlc1 - f`）。名字只是内部目录名，界面上显示的是 model_label()，
+    // 没有理由为它挡住安装。
+    let raw_name = source.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_owned();
+    let base = model_clean::normalize_dir_name(&raw_name);
     // 顶层没有就往下找两层：官方包解压后模型常在子目录里（见 MODEL_SCAN_DEPTH）。
     let mut found = vec![];
     find_model_dirs(&source, "", MODEL_SCAN_DEPTH, &mut found);
     let Some((_, model3)) = found.first().cloned() else {
         return Err(user_error::NO_MODEL3.to_owned());
     };
-    let target = models_dir(&app)?.join(&name);
+    let target = models_dir(&app)?.join(&base);
     if target.exists() {
-        return Err(format!("{}|{name}", user_error::ALREADY_INSTALLED));
+        // 同名仍然报「已安装」而不是自动加后缀：重复拖同一个模型是最常见的情形，
+        // 静默装出 `yoyo-2` 只会让用户以为装了两个不同的东西。
+        return Err(format!("{}|{base}", user_error::ALREADY_INSTALLED));
     }
     // 先拷到临时名再改名：中途失败不会留下半个模型目录，让菜单里多出一个打不开的条目。
     let staging = target.with_extension("installing");
@@ -250,8 +254,14 @@ pub fn install_model(app: tauri::AppHandle, path: String) -> Result<Value, Strin
         let _ = fs::remove_dir_all(&staging);
         return Err(error);
     }
+    // 清洗在**提交之前**做，且只作用于暂存目录 —— 用户拖进来的源文件夹全程只读。
+    // 清洗失败不该让整次安装失败：模型本身是好的，只是少了补登记的表情。
+    let cleaned = match model_clean::clean_tree(&staging, MODEL_SCAN_DEPTH) {
+        Ok(report) => report.registered_expressions,
+        Err(_) => 0,
+    };
     fs::rename(&staging, &target).map_err(|error| error.to_string())?;
-    Ok(json!({ "dir": name, "model3": model3 }))
+    Ok(json!({ "dir": base, "model3": model3, "renamedFrom": (base != raw_name).then_some(raw_name), "registeredExpressions": cleaned }))
 }
 
 /// 用户装了哪些模型。带上 model3 文件名 —— 前端没法列目录，而没有 `avatar.json` 的模型
@@ -261,6 +271,15 @@ pub fn list_installed_models(app: tauri::AppHandle) -> Vec<Value> {
     let Ok(root) = models_dir(&app) else { return vec![] };
     let mut found = vec![];
     find_model_dirs(&root, "", MODEL_SCAN_DEPTH, &mut found);
+    // 补清洗：在 v1.1 之前装的模型、以及用户直接放进目录的，都没经过安装时的清洗。
+    // 不做这一步的话，老用户升级上来表情还是不可用，而他不会知道要重装一遍。
+    // `is_clean` 只读一个小标记文件，已清洗的直接跳过，所以放在菜单每次打开都会走的路径上也不贵。
+    for (relative, _) in &found {
+        let dir = root.join(relative);
+        if !model_clean::is_clean(&dir) {
+            let _ = model_clean::clean_model(&dir);   // 清洗失败不该让模型列不出来
+        }
+    }
     found.into_iter()
         .filter(|(relative, _)| !relative.is_empty())  // root 自己不是模型
         .map(|(relative, model3)| json!({
@@ -465,16 +484,26 @@ mod tests {
         let root = scratch("copy");
         let (from, to) = (root.join("from"), root.join("to"));
         let outside = root.join("secret.txt");
+        let outside_dir = root.join("secrets");
         fs::create_dir_all(from.join("nested")).unwrap();
+        fs::create_dir_all(&outside_dir).unwrap();
         fs::write(&outside, b"do not copy me").unwrap();
+        fs::write(outside_dir.join("secret.txt"), b"do not copy me either").unwrap();
         fs::write(from.join("Haru.model3.json"), b"{}").unwrap();
         fs::write(from.join("nested/texture.png"), b"pixels").unwrap();
+        // 目录重解析点：两个平台都能造（Windows 用 junction），是这条测试的跨平台底座
+        crate::test_support::link_dir(&outside_dir, &from.join("leak_dir")).unwrap();
+        // 文件符号链接只在 Unix 上造得出来（Windows 需要管理员/开发者模式），
+        // 但两者在 copy_tree 里撞的是同一句 `kind.is_symlink()`
+        #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, from.join("leak.txt")).unwrap();
 
         let mut budget = (0u64, 0usize);
         copy_tree(&from, &to, &mut budget).unwrap();
         assert!(to.join("Haru.model3.json").is_file());
         assert!(to.join("nested/texture.png").is_file());
+        assert!(!to.join("leak_dir").exists(), "目录重解析点不该被跟随复制");
+        #[cfg(unix)]
         assert!(!to.join("leak.txt").exists(), "符号链接不该被跟随复制");
         assert_eq!(budget.1, 2);
         fs::remove_dir_all(&root).unwrap();

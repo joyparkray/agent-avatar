@@ -7,8 +7,19 @@ name = "agent_avatar_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
-cc = "1"
 [dependencies]
+# `macos-private-api` 看着像是该按平台拆掉，但**不能**：tauri-build 会拿它和
+# `tauri.conf.json` 里的 `app.macOSPrivateApi` 对表，且这条校验在三个平台都跑 ——
+# 拆成 target 专属依赖后，Windows 上会直接构建失败（"features on the Cargo.toml file
+# does not match the allowlist defined under tauri.conf.json"）。
+# 要拆就得把 `macOSPrivateApi` 一并挪进 `tauri.macos.conf.json`，那会动到 macOS 的
+# 窗口透明，属于需要在 Mac 上实测的改动，不在本工作包内。这个 feature 在 Windows 上是空操作。
 tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-single-instance = "2"
 serde_json = "1"
+
+# macOS 专属：Core Audio 的 Objective-C shim 由 build.rs 用 cc 编出来，Windows 不需要它。
+# build-dependencies 的 target 判定看的是**宿主**平台，与 build.rs 里那个
+# `#[cfg(target_os = "macos")]` 口径一致（build.rs 也是按宿主编的）。
+[target.'cfg(target_os = "macos")'.build-dependencies]
+cc = "1"
