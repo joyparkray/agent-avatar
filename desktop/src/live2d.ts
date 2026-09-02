@@ -1,10 +1,11 @@
 import "./pixi";
-import { Application, RendererType } from "pixi.js";
+import { Application, RendererType, UPDATE_PRIORITY } from "pixi.js";
 import { Live2DModel, MotionPriority } from "@jannchie/pixi-live2d-display/cubism4";
 import { loadManifest } from "./manifest";
 import { restoreClearColor } from "./gl-state";
 import { renderResolution, type RenderQuality } from "./render-quality";
 import { focusFrame, autoFocusZoom, FOCUS_ZOOM, type Framing } from "./dock";
+import { HIT_CELL_PX, HIT_SAMPLE_MS, packHitMask, type HitArea } from "./hit-mask";
 
 /**
  * 渲染口径均已定案，故写死为常量而非可调开关：
@@ -67,7 +68,7 @@ export class Live2DAvatarModel implements AvatarModel {
     this.model.anchor.set(0.5, 0.5); this.fit();
     // 缩放走窗口尺寸，模型始终 fit-to-window，故窗口变化后必须重新适配。
     this.stopResizeWatch = watchResize(this.host, () => this.fit());
-    this.app.stage.addChild(this.model); this.log({ event: "model:stage:after", width: this.model.width, height: this.model.height, stageChildren: this.app.stage.children.length });
+    this.app.stage.addChild(this.model); this.startHitSampling(); this.log({ event: "model:stage:after", width: this.model.width, height: this.model.height, stageChildren: this.app.stage.children.length });
     // mipLevelCount 是首帧上传时才算出来的，故等一帧再记。>1 = mipmap 生效（见 pixi.ts 的说明）；
     // 恒为 1 时全身构图会重新变回「线条粗糙、断断续续的锯齿」，而那是个只能靠眼睛发现的退化。
     requestAnimationFrame(() => this.log({ event: "model:textures", ...this.textureSnapshot() }));
@@ -243,7 +244,13 @@ export class Live2DAvatarModel implements AvatarModel {
     if (this.framing === "focus") this.fit();
     this.log({ event: "framing:focus-zoom", zoom: Number(zoom.toFixed(2)) });
   }
-  /** 人物当前包围盒（CSS 像素）。供 Rust 侧光标命中判定使用。 */
+  /**
+   * 人物当前包围盒（CSS 像素），取自模型**声明的**画布。供 `hitArea` 兜底。
+   *
+   * 注意这个盒子比人物大得多 —— Live2D 作者普遍在四周留出透明边距给头发与衣摆的摆动，
+   * 实测 CandyBoy 声明的画布占了窗口 91.7%，人物真正的像素只有 31.5%。真正的命中判定
+   * 走 `hitArea`，这里只在抽不出像素时顶上。
+   */
   bounds(): { x: number; y: number; width: number; height: number } | undefined {
     if (!this.model) return undefined;
     // 聚焦模式下模型远超窗口，命中区域必须裁到窗口内，否则穿透判定会把窗口外也算成人物。
@@ -251,6 +258,72 @@ export class Live2DAvatarModel implements AvatarModel {
     const left = Math.max(0, box.minX), top = Math.max(0, box.minY);
     const right = Math.min(this.host.clientWidth, box.maxX), bottom = Math.min(this.host.clientHeight, box.maxY);
     return right > left && bottom > top ? { x: left, y: top, width: right - left, height: bottom - top } : undefined;
+  }
+  /**
+   * 人物的命中区域：不透明像素的外接矩形 + 盒内的占位网格。供 Rust 侧光标命中判定使用。
+   *
+   * 返回的是采样线程最近一次的结果（见 `startHitSampling`），还没采到时退回 `bounds()`
+   * 的矩形 —— 命中松一点，总好过一只点不动的桌宠。
+   */
+  hitArea(): HitArea | undefined {
+    return this.latestHitArea ?? this.bounds();
+  }
+  private hitCanvas?: HTMLCanvasElement;
+  private hitContext?: CanvasRenderingContext2D | null;
+  private latestHitArea?: HitArea;
+  private lastHitSampleAt = 0;
+  private stopHitSampling?: () => void;
+  /**
+   * 每隔 HIT_SAMPLE_MS 把画面缩到一张 ~62×80 的小图，读 alpha 通道算出命中网格。
+   *
+   * **必须挂在 ticker 上、且优先级低于渲染**（UTILITY < Application 用的 LOW），
+   * 不能用 setInterval 也不能用 requestAnimationFrame：画布没开 `preserveDrawingBuffer`，
+   * 绘制缓冲在合成之后就没了，帧外 drawImage 读到的是一张全透明的图
+   * （实测覆盖率 0%，表现就是人物整只点不动）。
+   *
+   * 也**不能**用 `renderer.extract`：那条路会把 stage 重渲进一张小 RenderTexture，而
+   * pixi-live2d-display 的 Cubism 渲染器按渲染目标尺寸算投影矩阵，尺寸一换就画出一块斜楔子
+   * ——实测拿到的不是人物形状，命中区域会整个跑到窗口角上去。直接读已经画好的那一帧，
+   * 既绕开这个耦合，也省掉多渲染一遍。
+   */
+  private startHitSampling(): void {
+    const app = this.app;
+    if (!app) return;
+    const sample = () => {
+      const now = performance.now();
+      if (now - this.lastHitSampleAt < HIT_SAMPLE_MS) return;
+      this.lastHitSampleAt = now;
+      const width = this.host.clientWidth, height = this.host.clientHeight;
+      const cols = Math.max(1, Math.round(width / HIT_CELL_PX)), rows = Math.max(1, Math.round(height / HIT_CELL_PX));
+      if (!this.hitCanvas) {
+        this.hitCanvas = document.createElement("canvas");
+        // willReadFrequently：不加的话每次 getImageData 都会把纹理从 GPU 拉回来，实测慢一个量级
+        this.hitContext = this.hitCanvas.getContext("2d", { willReadFrequently: true });
+      }
+      const context = this.hitContext;
+      if (!context) return;
+      if (this.hitCanvas.width !== cols || this.hitCanvas.height !== rows) {
+        this.hitCanvas.width = cols; this.hitCanvas.height = rows;
+      }
+      try {
+        context.clearRect(0, 0, cols, rows);
+        context.drawImage(app.canvas, 0, 0, cols, rows);
+        const { data } = context.getImageData(0, 0, cols, rows);
+        this.latestHitArea = packHitMask(data, cols, rows, width, height);
+      } catch (error) {
+        this.warnOnce("hit-mask:sample-failed", { error: String(error).slice(0, 200) });
+        this.latestHitArea = undefined;
+      }
+    };
+    app.ticker.add(sample, null, UPDATE_PRIORITY.UTILITY);
+    this.stopHitSampling = () => app.ticker.remove(sample);
+  }
+  /** 采样每几百毫秒跑一次，失败会刷屏；同一个原因只记一次。 */
+  private warned = new Set<string>();
+  private warnOnce(event: string, detail: object): void {
+    if (this.warned.has(event)) return;
+    this.warned.add(event);
+    this.log({ event, ...detail });
   }
   /** 整体不透明度。Pixi 的 alpha 不会传进 Cubism，须用官方 setModelColor（其内部按预乘处理）。 */
   setOpacity(value: number): void {
@@ -330,5 +403,5 @@ export class Live2DAvatarModel implements AvatarModel {
     return core?.offscreens?.count ?? 0;
   }
   reset(): void { this.setVocalLevel(0); }
-  destroy(): void { this.cancelExpressionRevert(); this.stopResizeWatch?.(); this.stopResizeWatch = undefined; this.removeContextListeners?.(); this.removeContextListeners = undefined; this.model?.destroy(); this.app?.destroy(true); }
+  destroy(): void { this.cancelExpressionRevert(); this.stopHitSampling?.(); this.stopHitSampling = undefined; this.stopResizeWatch?.(); this.stopResizeWatch = undefined; this.removeContextListeners?.(); this.removeContextListeners = undefined; this.model?.destroy(); this.app?.destroy(true); }
 }

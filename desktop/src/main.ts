@@ -515,7 +515,7 @@ log({ event: "endpoint:discovered", url: discovered?.url ?? null, hasToken: Bool
         + `<button data-act="pick-model">${FAILURE_TEXT[language()].pick}</button>`
         + `<button data-act="reload">${FAILURE_TEXT[language()].reload}</button></div>`;
     // 没有模型时没有人物包围盒，默认命中策略会把整窗穿透；引导页必须临时整窗可交互。
-    void invoke("set_hit_region", { x: 0, y: 0, width: innerWidth, height: innerHeight, mode: "normal", trackCursor: false })
+    void invoke("set_hit_region", { x: 0, y: 0, width: innerWidth, height: innerHeight, mode: "normal", trackCursor: false, maskCols: 0, maskRows: 0, maskBits: [] })
       .catch(error => log({ event: "onboarding:hit-region:error", error: String(error).slice(0, 200) }));
     const locale = language();
     // 两张卡都盖住整窗：没有顶栏的话窗口拖不动、也看不到任何关闭入口（右键菜单里有「退出」，
@@ -834,16 +834,20 @@ function startHitReporting(model: Live2DAvatarModel, mode: () => "normal" | "thr
     // 接入向导是一张盖住整个窗口的卡片。人物包围盒之外默认是穿透的，
     // 不整窗放开的话卡片上的按钮一个都点不动（首启引导页同一条道理）。
     if (wizardOpen) {
-      void invoke("set_hit_region", { x: 0, y: 0, width: innerWidth, height: innerHeight, mode: "normal", trackCursor: false })
+      void invoke("set_hit_region", { x: 0, y: 0, width: innerWidth, height: innerHeight, mode: "normal", trackCursor: false, maskCols: 0, maskRows: 0, maskBits: [] })
         .catch(error => log({ event: "hit-region:error", error: String(error).slice(0, 200) }));
       return;
     }
     // HTML 菜单时代这里有一条「菜单打开时整窗可交互」的特例。原生菜单不需要：
     // 它由系统绘制并自行抓取事件，实机日志确认各项回调照常触发，与窗口穿透状态无关。
-    const box = model.bounds();
+    // hitArea 带占位网格：包围盒里的空白（腋下、两腿之间、发缝）也要能穿透。
+    // 抽不出像素时它退化成 bounds() 的矩形，此时 cols/rows 为 0，Rust 侧照旧整盒命中。
+    const box = model.hitArea();
     if (!box) return;
-    void invoke("set_hit_region", { x: box.x, y: box.y, width: box.width, height: box.height, mode: mode(), trackCursor: trackCursor() })
-      .catch(error => log({ event: "hit-region:error", error: String(error).slice(0, 200) }));
+    void invoke("set_hit_region", {
+      x: box.x, y: box.y, width: box.width, height: box.height, mode: mode(), trackCursor: trackCursor(),
+      maskCols: box.cols ?? 0, maskRows: box.rows ?? 0, maskBits: box.bits ?? [],
+    }).catch(error => log({ event: "hit-region:error", error: String(error).slice(0, 200) }));
   };
   report();
   setInterval(report, HIT_REPORT_MS);

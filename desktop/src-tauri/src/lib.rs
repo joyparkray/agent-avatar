@@ -56,7 +56,7 @@ const HIT_POLL_MS: u64 = 60;
 const DWELL_MS: u128 = 3000;
 
 #[derive(Default)]
-struct HitConfig { region: Region, mode: Mode, track_cursor: bool }
+struct HitConfig { region: std::sync::Arc<Region>, mode: Mode, track_cursor: bool }
 fn rotate_log_if_needed(path: &Path, max_bytes: u64) -> std::io::Result<()> {
     if fs::metadata(path).is_ok_and(|metadata| metadata.len() >= max_bytes) {
         let rotated = PathBuf::from(format!("{}.1", path.display()));
@@ -161,10 +161,18 @@ fn bring_to_front(window: &tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+/// `mask_bits` 是行主序、每字节低位在前的位图，打包规则见 `hit_test::Mask`；
+/// 传 `0, 0, []` 表示不带网格（整个矩形都算命中），向导页走的就是这条。
+///
+/// 三个平铺参数而不是一个结构体：本仓库不引 serde derive（`Cargo.toml` 只有 serde_json），
+/// 为三个标量单开一个依赖不划算。
 #[tauri::command]
-fn set_hit_region(state: tauri::State<'_, Mutex<HitConfig>>, x: f64, y: f64, width: f64, height: f64, mode: String, track_cursor: bool) -> Result<(), String> {
+fn set_hit_region(state: tauri::State<'_, Mutex<HitConfig>>, x: f64, y: f64, width: f64, height: f64, mode: String, track_cursor: bool, mask_cols: usize, mask_rows: usize, mask_bits: Vec<u8>) -> Result<(), String> {
+    // 尺寸对不上时 `Mask::new` 返回 None，于是退回「整个包围盒都算命中」——
+    // 也就是加网格之前的行为。宁可命中松一点，也不要一只点不动的桌宠。
+    let mask = hit_test::Mask::new(mask_cols, mask_rows, mask_bits);
     let mut config = state.lock().map_err(|_| "hit config poisoned".to_owned())?;
-    config.region = Region { x, y, width, height };
+    config.region = std::sync::Arc::new(Region { x, y, width, height, mask });
     config.mode = Mode::from_label(&mode);
     config.track_cursor = track_cursor;
     Ok(())
@@ -294,7 +302,7 @@ fn spawn_hit_test(app: tauri::AppHandle) {
             if window.is_none() { window = app.get_webview_window("main"); }
             let Some(handle) = window.as_ref() else { continue };
             let config = match app.state::<Mutex<HitConfig>>().lock() {
-                Ok(guard) => (guard.region, guard.mode, guard.track_cursor),
+                Ok(guard) => (guard.region.clone(), guard.mode, guard.track_cursor),
                 Err(_) => continue,
             };
             let Ok(cursor) = handle.cursor_position() else { window = None; continue };
