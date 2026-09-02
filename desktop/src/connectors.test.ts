@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { diagnosePrompt, diagnosisReasons, installPrompt, MARKETPLACE_REPO, stateFileName } from "./connector-diagnosis";
+import { CONNECTOR_VERSION, diagnosePrompt, diagnosisReasons, installPrompt, isOutdated, MARKETPLACE_REPO, stateFileName } from "./connector-diagnosis";
 import { CONNECTOR_HARNESSES, CONNECTOR_TEXT, freshness, HARNESS_LABELS, linkState, postInstallSteps, statusLabel } from "./connectors";
 
 describe("connector install wizard", () => {
@@ -89,6 +89,25 @@ describe("connector install wizard", () => {
     for (const harness of CONNECTOR_HARNESSES) {
       expect(installPrompt(harness, "zh-CN", "posix")).toContain(MARKETPLACE_REPO);
     }
+  });
+
+  it("agrees with the core about what version connectors report", () => {
+    // connector 把版本写进每一次状态快照，app 拿它判断该不该提示更新。
+    // 两边对不上的话，用户会被告知一个错误的版本号 —— 或者永远被提示「该更新了」。
+    const core = readFileSync("../bridge/state_machine.py", "utf8");
+    expect(core).toContain(`CONNECTOR_VERSION = "${CONNECTOR_VERSION}"`);
+    // 五家的清单也必须是同一个版本（build-marketplace.sh 会逐个对，这里守住其中一份）
+    const manifest = readFileSync("../connectors/claude-code/plugin/agent-avatar/.claude-plugin/plugin.json", "utf8");
+    expect(JSON.parse(manifest).version).toBe(CONNECTOR_VERSION);
+  });
+
+  it("treats a connector that reports nothing as outdated", () => {
+    // 旧版 connector 根本不写这个字段。把它当成「最新」的话，装着老版本的用户
+    // 永远不会被告知该更新 —— 而 Windows 上那份收不到 harness 的自动更新。
+    expect(isOutdated(null)).toBe(true);
+    expect(isOutdated(undefined)).toBe(true);
+    expect(isOutdated("0.9.0")).toBe(true);
+    expect(isOutdated(CONNECTOR_VERSION)).toBe(false);
   });
 
   it("only asks Windows users for the extra localise step", () => {

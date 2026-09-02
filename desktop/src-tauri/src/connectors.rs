@@ -130,6 +130,12 @@ pub fn list_connectors() -> Vec<Value> {
             // 用「有没有写过」而不是「最近有没有写过」当门：一周没用那家 agent 的用户
             // 不该被告知需要重新配置。新旧程度另外显示，由前端决定怎么说。
             "lastSignalSeconds": crate::hermes::last_signal_seconds(harness),
+            // 上报的 connector 版本。Windows 上装的是本地化过的副本，收不到 harness 的
+            // 自动更新 —— 这条是「该更新了」唯一能被看见的地方。
+            "connectorVersion": crate::hermes::reported_connector_version(harness),
+            // hook 跑起来了但出错时留下的那条记录（第 2 层诊断）。界面据此说出**具体原因**，
+            // 而不是只给一串「可能是这些」。
+            "diagnostic": crate::hermes::last_diagnostic(harness),
         })
     }).collect()
 }

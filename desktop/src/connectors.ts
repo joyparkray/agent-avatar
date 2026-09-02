@@ -1,6 +1,6 @@
 import "./connectors.css";
 import { invoke } from "@tauri-apps/api/core";
-import { diagnosePrompt, diagnosisReasons, installPrompt } from "./connector-diagnosis";
+import { CONNECTOR_VERSION, diagnosePrompt, diagnosisReasons, installPrompt, isOutdated } from "./connector-diagnosis";
 import { errorMessage } from "./errors";
 import type { Language } from "./prefs";
 
@@ -29,6 +29,10 @@ export interface ConnectorState {
   path?: string | null;
   /** 这家的 hook 最后一次写状态文件是多久以前（秒）。从没写过 = null，见 Rust 侧注释。 */
   lastSignalSeconds?: number | null;
+  /** connector 自己上报的版本。没上报过（没装 / 旧版没写这个字段）= null。 */
+  connectorVersion?: string | null;
+  /** hook 最后一次出错留下的记录（第 2 层诊断）。从没出过错 = null。 */
+  diagnostic?: { at?: string; message?: string; python?: string } | null;
 }
 
 /**
@@ -76,10 +80,15 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "details.show": "安装说明", "details.steps": "还需要你做这几步：",
     "details.none": "装完即用，没有额外步骤。新开一个会话就会生效。",
     "details.stale": "如果它之前一直是好的，多半是系统清理了临时目录；新开一次会话就会恢复。",
+    "version.outdated": "connector {have}，最新 {latest}",
+    "version.unknown": "版本未知",
+    "prompt.update": "复制更新提示词",
     "prompt.install": "复制安装提示词",
     "prompt.reinstall": "复制重装提示词",
     "prompt.copied": "已复制，贴给你的 agent 就行",
     "prompt.copyFailed": "复制不了，请手动选中下面这段：",
+    "diagnosis.said": "插件自己报的错：",
+    "diagnosis.python": "它用的解释器：",
     "diagnosis.title": "一直没通？可能是这些原因：",
     "diagnosis.ask": "复制排查提示词",
     uninstall: "卸载", done: "完成",
@@ -99,10 +108,15 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "details.show": "Setup guide", "details.steps": "You still need to:",
     "details.none": "Nothing else to do. It takes effect in your next session.",
     "details.stale": "If it used to work, the temp directory was probably cleaned — start a new session to restore it.",
+    "version.outdated": "connector {have}, latest is {latest}",
+    "version.unknown": "unknown version",
+    "prompt.update": "Copy update prompt",
     "prompt.install": "Copy install prompt",
     "prompt.reinstall": "Copy reinstall prompt",
     "prompt.copied": "Copied — paste it to your agent",
     "prompt.copyFailed": "Couldn't copy. Select this text instead:",
+    "diagnosis.said": "The plugin reported: ",
+    "diagnosis.python": "Interpreter it used: ",
     "diagnosis.title": "Still not connected? It could be:",
     "diagnosis.ask": "Copy a prompt for your agent",
     uninstall: "Uninstall", done: "Done",
@@ -223,6 +237,14 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
       if (state === "connected" && typeof entry.lastSignalSeconds === "number") {
         linkText.textContent += ` · ${freshness(entry.lastSignalSeconds, locale)}`;
       }
+      // 通了、但装的是旧版：Windows 上那份是本地化过的副本，收不到 harness 的自动更新，
+      // 不说的话用户永远停在旧版。**只在真的通了之后说** —— 没通的时候他有更要紧的问题。
+      const outdated = state === "connected" && isOutdated(entry.connectorVersion);
+      if (outdated) {
+        linkText.textContent += ` · ${text("version.outdated")
+          .replace("{have}", entry.connectorVersion ?? text("version.unknown"))
+          .replace("{latest}", CONNECTOR_VERSION)}`;
+      }
       link.append(dot, linkText);
 
       const status = document.createElement("p");
@@ -255,7 +277,8 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
       // 装一个、看得懂报错、还能重试。
       const install = document.createElement("button");
       if (!installed) install.className = "primary";
-      install.textContent = text(installed ? "prompt.reinstall" : "prompt.install");
+      install.textContent = text(outdated ? "prompt.update" : installed ? "prompt.reinstall" : "prompt.install");
+      if (outdated) install.className = "primary";      // 这一行现在有事要做，让它看得出来
       install.addEventListener("click", () => copyPrompt(harness, installPrompt(harness, locale)));
       actions.append(install);
 
@@ -300,6 +323,18 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
         diagnosis.className = "connector-diagnosis";
         const title = document.createElement("p");
         title.className = "connector-diagnosis-title"; title.textContent = text("diagnosis.title");
+        diagnosis.append(title);
+        // hook 自己留下的那条**具体原因**排在所有猜测之前 —— 有实据时不该让用户先读五条
+        // 「可能是」。它只在这一档显示：已经通了的时候，那多半是一条陈年旧错。
+        const recorded = entry.diagnostic?.message?.trim();
+        if (recorded) {
+          const said = document.createElement("p");
+          said.className = "connector-diagnosis-said";
+          said.textContent = `${text("diagnosis.said")}${recorded}`;
+          if (entry.diagnostic?.python) said.textContent += `
+${text("diagnosis.python")}${entry.diagnostic.python}`;
+          diagnosis.append(said);
+        }
         const reasons = document.createElement("ul");
         for (const reason of diagnosisReasons(harness, locale)) {
           const item = document.createElement("li"); item.textContent = reason; reasons.append(item);
@@ -307,7 +342,7 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
         const ask = document.createElement("button");
         ask.type = "button"; ask.className = "ghost"; ask.textContent = text("diagnosis.ask");
         ask.addEventListener("click", () => copyPrompt(harness, diagnosePrompt(harness, locale)));
-        diagnosis.append(title, reasons, ask);
+        diagnosis.append(reasons, ask);
       }
 
       row.append(name, actions, link, status, details, diagnosis, prompt);

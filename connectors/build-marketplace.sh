@@ -46,6 +46,14 @@ for manifest in "$here/codex/plugin/agent-avatar/.codex-plugin/plugin.json" \
   other=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)
   [ "$other" = "$version" ] || { echo "版本不一致：$manifest 是 $other，应为 $version" >&2; exit 1; }
 done
+# Hermes 的清单是 YAML，写法不同但同样要对上
+hermes_version=$(sed -n 's/^version:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' \
+                 "$here/hermes/plugin/agent-avatar/plugin.yaml" | head -1)
+[ "$hermes_version" = "$version" ] || { echo "版本不一致：hermes 是 $hermes_version，应为 $version" >&2; exit 1; }
+# core 里那个常量会被写进**每一次状态快照**，app 拿它判断该不该提示更新 ——
+# 它和清单对不上的话，用户会被告知一个错误的版本号。
+core_version=$(sed -n 's/^CONNECTOR_VERSION = "\([^"]*\)".*/\1/p' "$here/../bridge/state_machine.py" | head -1)
+[ "$core_version" = "$version" ] || { echo "版本不一致：state_machine.py 是 $core_version，应为 $version" >&2; exit 1; }
 
 # 每家组装进 plugins/<harness>/agent-avatar。assemble.sh 顺带跑冒烟自检 ——
 # 漏拷 core 的失败在真实注册里是静默的（hook 被跳过 / 形象一直 idle）。

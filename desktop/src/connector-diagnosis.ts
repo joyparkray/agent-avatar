@@ -21,6 +21,21 @@ import type { Language } from "./prefs";
  */
 export const MARKETPLACE_REPO = "joyparkray/agent-avatar-connectors";
 
+/**
+ * 这个版本的 app 配套的 connector 版本。**必须与 bridge/state_machine.py 的
+ * `CONNECTOR_VERSION` 一致**（有测试盯着）。
+ *
+ * 拿它和 connector 上报的版本比，就能说出「你装的是 1.0.0，最新 1.2.0」。
+ * 之所以需要这条：Windows 上装的是**本地化过的副本**（解释器路径写死在里面），
+ * 收不到 harness 的自动更新 —— 更新因此是显式的，那就得有人把「该更新了」说出来。
+ */
+export const CONNECTOR_VERSION = "1.0.0";
+
+/** 上报的版本和 app 配套的对不上时，该不该提示更新。没上报过版本的（旧 connector）也算。 */
+export function isOutdated(reported: string | null | undefined): boolean {
+  return reported !== CONNECTOR_VERSION;
+}
+
 /** 各家的状态文件名。Hermes 沿用无后缀的老路径（已装好的用户不该因为改名就断掉）。 */
 export function stateFileName(harness: string): string {
   return harness === "hermes" ? "agent-avatar-state.json" : `agent-avatar-state.${harness}.json`;

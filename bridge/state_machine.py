@@ -31,6 +31,17 @@ import time
 from datetime import datetime, timezone
 
 STATE_SCHEMA_VERSION = 2
+
+# connector 的版本，写进每一次快照。
+#
+# 为什么要写：Windows 上装 connector 的那份是**本地化过的副本**（解释器路径写死了），
+# 所以它收不到 harness 的自动更新 —— 换来的是「更新是显式的」，代价是我们得让用户知道
+# 有新版。app 本来就在读这个状态文件，于是它能准确说出「你装的是 1.0.0，最新 1.2.0」
+# 并给出一句更新用的提示词。这比后台静默更新更可见，而可见性正是这条链路上最缺的东西。
+#
+# **必须与五家 plugin.json / plugin.yaml 里的 version 一致** ——
+# build-marketplace.sh 会逐个对，不一致就构建失败。
+CONNECTOR_VERSION = "1.0.0"
 # reaction 信号在快照里保留多久：皮肤以 200ms 轮询，2s 足够它读到并去重（按 at）触发一次。
 REACTION_HOLD_SECONDS = 2.0
 BACKGROUND_REVIEW_MARKER = (
@@ -500,8 +511,35 @@ def apply_event(data, payload, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST):
 # ---------------------------------------------------------------------------
 # 快照落盘：原子写 + 非阻塞锁
 # ---------------------------------------------------------------------------
-def diagnostic(message):
+def diagnostic(message, harness=None):
+    """出错时说一声 —— **两个地方都说**。
+
+    stderr 是给人看的，但**没人在看**：dsh 那条链路直接把子进程的 stderr 设成 `ignore`，
+    Claude Code / Codex 也只在自己的错误面板里留一行。所以还要落一个文件，
+    让 app 能读到并把原因说出来 —— 这是三层诊断里的**第 2 层**
+    （见 private/RELEASE-CONNECTOR-WIZARD-DESIGN.md「失效怎么被看见」）：
+    「跑起来了但出错」。
+
+    第 3 层（插件根本没跑起来）这里够不着 —— 那时候这个函数一行都不会执行，
+    只能由 app 从外面判「装了却从没上报过」。
+
+    🔴 **这个函数绝不能抛异常。** 它是在 except 分支里被调用的，
+    在这里炸掉等于把一个「事件被忽略」升级成「hook 崩了」。
+    """
     print("agent-avatar-hook: " + message, file=sys.stderr)
+    try:
+        path = os.path.join(os.path.dirname(state_path(harness)),
+                            "agent-avatar-diagnostic.%s.json" % (harness or "hermes"))
+        atomic_write(path, {
+            "at": utc_timestamp(),
+            "harness": harness,
+            "connector_version": CONNECTOR_VERSION,
+            # 解释器路径是最有用的一条：Windows 上「装了但不动」十次有九次是它不对
+            "python": sys.executable,
+            "message": message,
+        })
+    except Exception:                      # noqa: BLE001 - 见上：诊断本身绝不能成为故障
+        pass
 
 
 # 每个 harness 写自己的快照文件，皮肤按「状态来源」设置读其中一个。
@@ -618,6 +656,7 @@ def update(payload, label, audio=None, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDES
             "detail": detail_for(state, label),
             "sequence": sequence + 1,
             "updated_at": utc_timestamp(),
+            "connector_version": CONNECTOR_VERSION,
         }
         # reaction 是叠加层：从 data 里带出近期的 reaction（时间窗内），皮肤按 at 去重触发一次。
         # 去重键是 `at` 而不是 `sequence`：sequence 存在易失的 .sessions 里，文件被重建

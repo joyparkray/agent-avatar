@@ -45,7 +45,9 @@ def test_real_bridge_transitions_and_atomic_snapshot(tmp_path):
         result = invoke(path, payload)
         assert result.returncode == 0, result.stderr
         snapshot = json.loads(path.read_text(encoding="utf-8"))
-        assert set(snapshot) == {"state", "detail", "sequence", "updated_at"}
+        # connector_version 让 app 能说出「你装的是 X，最新 Y」—— Windows 上那份是
+        # 本地化过的副本，收不到 harness 的自动更新，只能靠这条把「该更新了」说出来。
+        assert set(snapshot) == {"state", "detail", "sequence", "updated_at", "connector_version"}
         assert snapshot["state"] == expected
         assert snapshot["sequence"] == sequence
         assert snapshot["updated_at"].endswith("Z")

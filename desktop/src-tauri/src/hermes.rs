@@ -65,6 +65,39 @@ fn state_file_name(harness: &str) -> String {
     else { format!("agent-avatar-state.{harness}.json") }
 }
 
+/// hook 最后一次出错时留下的那条记录；从没出过错 = None。
+///
+/// 这是三层诊断里的**第 2 层**：hook 跑起来了、但事件没处理成
+/// （core 漏拷、事件解析炸、状态文件写不进去）。这种失败原来只写 stderr，
+/// 而**没人在看** —— dsh 那条链路直接把子进程的 stderr 设成 `ignore`。
+/// 有了这个文件，界面就能说出**具体原因**，而不是只显示「装了但不动」。
+pub fn last_diagnostic(harness: &str) -> Option<Value> {
+    let name = format!("agent-avatar-diagnostic.{}.json", harness);
+    let newest = candidates(&name).into_iter()
+        .filter_map(|path| Some((fs::metadata(&path).ok()?.modified().ok()?, path)))
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, path)| path)?;
+    serde_json::from_str(&fs::read_to_string(newest).ok()?).ok()
+}
+
+/// 这家 harness 上报的 connector 版本；没上报过或旧版 connector 没写这个字段 = None。
+///
+/// **为什么需要它**：Windows 上装的是**本地化过的副本**（解释器绝对路径写死在里面），
+/// 所以它收不到 harness 的自动更新 —— 换来的是「更新是显式的」，代价是得有人告诉用户
+/// 有新版。app 本来就在读这个文件，于是它能准确说出「你装的是 1.0.0，最新 1.2.0」。
+///
+/// 读的是**最新的那一份**：同一家可能在多个临时目录下留过文件（TMPDIR 变过），
+/// 拿旧的那份的版本号去比，会把已经更新过的用户一直标成过期。
+pub fn reported_connector_version(harness: &str) -> Option<String> {
+    let newest = candidate_paths(harness).into_iter()
+        .filter_map(|path| Some((fs::metadata(&path).ok()?.modified().ok()?, path)))
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, path)| path)?;
+    let raw = fs::read_to_string(newest).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value.get("connector_version")?.as_str().map(str::to_owned)
+}
+
 /// 这家 harness 的 hook 最后一次写状态文件是多久以前（秒）；从没写过 = None。
 ///
 /// **这是「链路通没通」的唯一真信号**：插件目录在不在只说明文件装了，而没 enable（Hermes）、
@@ -82,19 +115,24 @@ pub fn last_signal_seconds(harness: &str) -> Option<u64> {
 }
 
 fn candidate_paths(harness: &str) -> Vec<PathBuf> {
-    let name = state_file_name(harness);
+    candidates(&state_file_name(harness))
+}
+
+/// 某个文件名在各个可能的临时目录下的位置。状态文件与诊断文件共用这一份落点规则 ——
+/// 两边各写一份必然会漂，而漂了之后表现是「诊断文件明明写了，app 就是读不到」。
+fn candidates(name: &str) -> Vec<PathBuf> {
     let mut paths = vec![];
     // 顺序要跟 **Python 侧** `state_machine.state_path()` 对齐 —— 它用的是
     // `tempfile.gettempdir()`，而那函数先看 `TMPDIR`，再退到系统默认临时目录。
     // 两边算出不同的位置，结果就是 Rust 永远读不到 bridge 写的状态文件，
     // 而且完全静默：桌宠一直显示 idle，没有任何报错。
-    if let Ok(dir) = env::var("TMPDIR") { paths.push(PathBuf::from(&dir).join(&name)); }
-    paths.push(env::temp_dir().join(&name));
+    if let Ok(dir) = env::var("TMPDIR") { paths.push(PathBuf::from(&dir).join(name)); }
+    paths.push(env::temp_dir().join(name));
     // macOS 上 TMPDIR 是每用户/每会话的 `/var/folders/...`，而 harness 若由 launchd、cron
     // 或别的用户拉起，拿到的 TMPDIR 不同 —— 原来这条 `/tmp` 兜底就是为这个，保留。
     // Windows 上没有对应概念（`/tmp` 会被解析成当前盘根目录），所以只在 unix 上加。
     #[cfg(unix)]
-    paths.push(PathBuf::from("/tmp").join(&name));
+    paths.push(PathBuf::from("/tmp").join(name));
     paths.dedup();
     paths
 }

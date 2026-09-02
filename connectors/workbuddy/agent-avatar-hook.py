@@ -39,7 +39,7 @@ def main():
             update(translated, WORKBUDDY["label"], orphan_subagent_stop=ORPHAN_IGNORE,
                    harness=WORKBUDDY["id"])
     except Exception as exc:
-        diagnostic("hook event ignored: " + str(exc))
+        diagnostic("hook event ignored: " + str(exc), WORKBUDDY["id"])
     return 0  # 绝不返回 2 —— 见模块注释
 
 

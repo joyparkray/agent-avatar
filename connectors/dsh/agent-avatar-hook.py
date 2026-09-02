@@ -45,7 +45,7 @@ def main():
             # 同一个 runId 成对发出（官方类型注释），没有 CC 那种 compact 造出的孤儿。
             update(payload, LABEL, harness=HARNESS)
     except Exception as exc:
-        diagnostic("dsh hook event ignored: " + str(exc))
+        diagnostic("dsh hook event ignored: " + str(exc), HARNESS)
     return 0   # 🔴 永远 0
 
 
