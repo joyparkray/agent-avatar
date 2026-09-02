@@ -45,6 +45,8 @@ export interface SettingsChange {
   aliases?: Record<string, string>;
   /** 闲置自治的候选（合并后的键）。 */
   idleActions?: string[];
+  /** 常驻的项：这些开关一直保持。 */
+  heldActions?: string[];
   /** 设置页正在录制快捷键，主窗口要暂时让出已注册的全局热键。 */
   shortcutsSuspended?: boolean;
   quality?: string;
@@ -203,6 +205,8 @@ export const triggerMapKey = (dir: string): string => `triggers:${dir}`;
 export const aliasMapKey = (dir: string): string => `aliases:${dir}`;
 /** 闲置名单。表情与动作合成一张表之后，这两份也合成一份。 */
 export const idleActionPoolKey = (dir: string): string => `idleActions:${dir}`;
+/** 常驻名单：这些项对应的参数每帧按住，可以同时开多个。 */
+export const heldActionPoolKey = (dir: string): string => `heldActions:${dir}`;
 
 /**
  * 存过没有 —— 迁移只该跑一次，而「存过一个空映射」和「从来没存过」必须分得开：

@@ -39,6 +39,18 @@ Windows support, and the model handling needed to make third-party models work t
   `.vtube.json`; those names are now read on import and filled in for you (boy8 gets all
   20: 兽耳, 生气, 星星…). Rename any of them; the name is display only, so playback,
   state mapping and the random pools are unaffected.
+- **Keep on.** Most of what third-party models call expressions are single-parameter
+  switches — cat ears, a hood, a drink in the hand, a symbol over the head — and those can
+  be held indefinitely and combined freely. Tick as many as you like: cat ears and a drink
+  and an angry mark all show at once. No exclusivity is enforced, because there is none to
+  detect: the parameters are independent and all render together. Two props do overlap in
+  the same hand, but that is a matter of taste, and nothing in the model records which
+  entries share a body part — guessing would also forbid the combinations that do work
+  (hiding head, body and ears together). Entries that change several parameters at once
+  cannot be held: those go through the expression manager, which shows one at a time.
+- The table is grouped by the author's own categories from `.cdi3.json` — boy8 arrives
+  sorted into 隐藏 / 表情 / 动作 — with everything else under one heading rather than an
+  invented taxonomy.
 - Fixed: the **Idle** column in Settings was written to the config but never read. Idle
   autonomy was actually drawing from the double-click pool, so turning entries off for
   idle did nothing. It now uses the column you set.

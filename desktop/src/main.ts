@@ -1,7 +1,7 @@
-import { actionLabel, actionsFor, CLICK, DBLCLICK, listActions, migrateTriggers, pickAction, shortcutsIn, type ActionItem, type Trigger } from "./actions";
+import { actionLabel, actionsFor, CLICK, DBLCLICK, heldParameters, listActions, migrateTriggers, pickAction, shortcutsIn, type ActionItem, type SwitchTable, type Trigger } from "./actions";
 import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 import "./style.css"; import "./state.css"; import { invoke } from "@tauri-apps/api/core"; import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleActionPoolKey, aliasMapKey, hasStored, readStringMap, triggerMapKey, SHORTCUT_STATUS_EVENT, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, lipSensitivityPercent, mouthAmplitudePercent, readStateSource, writeStateSource, connectorWizardSeen, rememberConnectorWizardSeen, type Language, type StateSource, type SettingsChange } from "./prefs";
+import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleActionPoolKey, heldActionPoolKey, aliasMapKey, hasStored, readStringMap, triggerMapKey, SHORTCUT_STATUS_EVENT, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, lipSensitivityPercent, mouthAmplitudePercent, readStateSource, writeStateSource, connectorWizardSeen, rememberConnectorWizardSeen, type Language, type StateSource, type SettingsChange } from "./prefs";
 import type { ModelChoice } from "./native-menu";
 import type { ModelSource } from "./prefs";
 import type { AvatarSource } from "./types";
@@ -17,7 +17,7 @@ import { IdleAutonomy } from "./idle";
 import { CONNECTOR_TEXT, renderConnectors, type ConnectorState } from "./connectors";
 
 /** 用户装的皮肤（Rust 侧扫数据目录得来）。 */
-type InstalledModel = { dir: string; label: string; model3: string; adapted: boolean; displayNames?: Record<string, string> };
+type InstalledModel = { dir: string; label: string; model3: string; adapted: boolean; displayNames?: Record<string, string>; switches?: SwitchTable };
 
 /**
  * 菜单里的皮肤清单 = 随包的 + 用户装的。
@@ -592,7 +592,9 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
   ]);
   // 作者给零件起的名字（清洗时从 cdi3 / vtube.json 读好的）。状态条上显示的就是这个，
   // 不然用户看到的是「播放 F1」这种自己也不知道是什么的东西。
-  const displayNames = installed.find(item => item.dir === dir)?.displayNames ?? {};
+  const installedEntry = installed.find(item => item.dir === dir);
+  const displayNames = installedEntry?.displayNames ?? {};
+  const switches: SwitchTable = installedEntry?.switches ?? {};
   let hiddenModels = readHiddenModels();
   let models = menuModels(initialModels, hiddenModels);
   let alwaysOnTop = prefs.read("alwaysOnTop", 1) === 1, clickThrough = prefs.read("clickThrough", 0) === 1;
@@ -613,7 +615,7 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
   if (snapBottom) void bottomSnap.snap();
   // 表情与动作合成一张表：每一项绑一个触发方式（单击 / 双击 / 全局快捷键），
   // 同一个触发绑多项就在它们之间随机。见 actions.ts。
-  const actions = listActions(inventory, displayNames);
+  const actions = listActions(inventory, displayNames, switches);
   let triggers: Record<string, Trigger> = readStringMap(triggerMapKey(dir));
   if (!hasStored(triggerMapKey(dir))) {
     // 1.0 的四个名单迁移一次；旧键留着不动，万一用户降级回去还在
@@ -621,6 +623,10 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
   }
   let aliases = readStringMap(aliasMapKey(dir));
   let idleActions: string[] = readPool(idleActionPoolKey(dir)) ?? actions.map(item => item.key);
+  // 常驻：每帧按住这些项对应的参数。互不冲突（实测六样同时开都在），所以不做任何互斥判断。
+  let heldActions: string[] = readPool(heldActionPoolKey(dir)) ?? [];
+  const applyHeld = () => model.setHeldParameters(heldParameters(actions, heldActions));
+  applyHeld();
   let lastActionKey: string | undefined;
 
   /**
@@ -691,6 +697,7 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
     if (payload.triggers) { triggers = payload.triggers; refreshShortcuts = true; }
     if (payload.aliases) aliases = payload.aliases;
     if (payload.idleActions) idleActions = payload.idleActions;
+    if (payload.heldActions) { heldActions = payload.heldActions; applyHeld(); }
     // 设置页正在录制组合键：让出已注册的热键，否则用户想录的那个会先被自己截走
     if (payload.shortcutsSuspended !== undefined) { shortcutsSuspended = payload.shortcutsSuspended; refreshShortcuts = true; }
     if (refreshShortcuts) void applyShortcuts();

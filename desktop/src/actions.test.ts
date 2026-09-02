@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   acceleratorFromEvent, actionLabel, actionsFor, CLICK, DBLCLICK, isUsableShortcut,
-  listActions, migrateTriggers, pickAction, shortcutsIn, type ActionItem, type Trigger,
+  groupActions, heldParameters, listActions, migrateTriggers, MOTION_GROUP, pickAction, shortcutsIn, type Trigger,
 } from "./actions";
 import type { ModelInventory } from "./inventory";
 
@@ -135,5 +135,44 @@ describe("从旧名单迁移", () => {
 
   it("空名单迁出空绑定，不会凭空给用户绑上什么", () => {
     expect(migrateTriggers(items, [], [])).toEqual({});
+  });
+});
+
+describe("常驻", () => {
+  const switches = {
+    Q: { param: "Param70", group: "隐藏" },
+    F1: { param: "Param64", group: "表情" },
+  };
+  const items = listActions(inventory, {}, switches);
+
+  it("只有单参数开关能常驻，其余没有 hold", () => {
+    expect(items.find(item => item.origin === "Q")?.hold).toBe("Param70");
+    expect(items.find(item => item.origin === "F1")?.hold).toBe("Param64");
+    // 动作不是开关
+    expect(items.filter(item => item.kind === "motion").every(item => !item.hold)).toBe(true);
+  });
+
+  /**
+   * 不做任何冲突检测：这些参数彼此独立，同时置 1 就同时画出来（实测六样同时生效）。
+   * 道具叠在同一只手上是显示体验的事，模型里没有数据能告诉我们哪两项占同一个部位。
+   */
+  it("勾几个就按住几个，不互相排斥", () => {
+    expect(heldParameters(items, ["expression:Q", "expression:F1"])).toEqual({ Param70: 1, Param64: 1 });
+    expect(heldParameters(items, [])).toEqual({});
+    // 不能常驻的项即使混进名单也不会按住什么
+    expect(heldParameters(items, ["motion:TapBody:0"])).toEqual({});
+  });
+
+  it("按作者的分类分块，动作单独一组，没分类的归到最后", () => {
+    const mixed = listActions(inventory, {}, { Q: { param: "P", group: "隐藏" } });
+    const blocks = groupActions(mixed);
+    expect(blocks.map(block => block.group)).toEqual([undefined, "隐藏", MOTION_GROUP]);
+    expect(blocks[1].items.map(item => item.origin)).toEqual(["Q"]);
+    expect(blocks[2].items).toHaveLength(2);
+  });
+
+  it("作者没分类时就是一整块，不凭空造分类", () => {
+    const flat = listActions({ expressions: ["a", "b"], motions: [] }, {}, { a: { param: "P1" }, b: { param: "P2" } });
+    expect(groupActions(flat)).toHaveLength(1);
   });
 });

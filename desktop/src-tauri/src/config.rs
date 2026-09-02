@@ -282,7 +282,10 @@ pub fn list_installed_models(app: tauri::AppHandle) -> Vec<Value> {
             "adapted": root.join(&relative).join("avatar.json").is_file(),
             // 作者给零件起的人话名字，设置页拿它当默认别名。清洗时算好写进标记文件，
             // 这里只是转发 —— 前端不必自己去解析 cdi3 与 vtube.json 两种格式。
-            "displayNames": model_clean::read_display_names(&root.join(&relative)),
+            "displayNames": model_clean::read_marker_object(&root.join(&relative), "displayNames"),
+            // 哪些项是「单参数开关」——只有这些能常驻（一直按住那个参数）。
+            // 多参数的走表情管理器，一次只能挂一个，做不到叠加常驻。
+            "switches": model_clean::read_marker_object(&root.join(&relative), "switches"),
         }))
         .collect()
 }

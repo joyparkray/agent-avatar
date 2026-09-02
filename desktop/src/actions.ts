@@ -31,7 +31,17 @@ export interface ActionItem {
   authored?: string;
   /** 动作专用：播放时要用的 [组, 序号]。 */
   motion?: MotionRef;
+  /**
+   * 单参数开关按住的那个参数。只有带这个的项能「常驻」——
+   * 多参数的表情走表情管理器，机制上一次只能挂一个，做不到叠加常驻。
+   */
+  hold?: string;
+  /** 作者在 `.cdi3.json` 里的分类（隐藏 / 表情 / 动作…）。没分类就没有。 */
+  group?: string;
 }
+
+/** 清洗时算好的开关表：文件名主干 → 按住哪个参数、属于哪一组。 */
+export type SwitchTable = Record<string, { param?: string; group?: string | null }>;
 
 export const expressionActionKey = (name: string): string => `expression:${name}`;
 export const motionActionKey = (ref: MotionRef): string => `motion:${motionKey(ref)}`;
@@ -42,9 +52,10 @@ export const motionActionKey = (ref: MotionRef): string => `motion:${motionKey(r
  * `displayNames` 是清洗时从模型里读出来的「作者起的名字」，键是文件名主干
  * （boy8 的 `F1` → `生气`）。取不到就留空，由界面回落到原名。
  */
-export function listActions(inventory: ModelInventory, displayNames: Record<string, string> = {}): ActionItem[] {
+export function listActions(inventory: ModelInventory, displayNames: Record<string, string> = {}, switches: SwitchTable = {}): ActionItem[] {
   const expressions = inventory.expressions.map((name): ActionItem => ({
     key: expressionActionKey(name), kind: "expression", origin: name, authored: displayNames[name],
+    hold: switches[name]?.param, group: switches[name]?.group ?? undefined,
   }));
   const motions = motionRefs(inventory).map(([group, index]): ActionItem => {
     // 组名为空的模型（haru_greeter 的 27 个动作全在 "" 组里）拿文件名当原名，
@@ -162,6 +173,42 @@ export function migrateTriggers(
   for (const motion of dblclickMotions) {
     const key = `motion:${motion}`;
     if (items.some(item => item.key === key)) out[key] = DBLCLICK;
+  }
+  return out;
+}
+
+/**
+ * 按作者的分类把行分块。组内保持原顺序；没分类的项归到最后一组（组名为 `undefined`，
+ * 界面显示成「其他」）—— **不凭空造分类**，CandyBoy 就是 34 项全在一个组里，那就是一整块。
+ *
+ * 动作（真 motion）永远单独一组：它们不是开关，常驻那一列对它们没有意义。
+ */
+export function groupActions(items: readonly ActionItem[]): { group?: string; items: ActionItem[] }[] {
+  const order: (string | undefined)[] = [];
+  const byGroup = new Map<string | undefined, ActionItem[]>();
+  for (const item of items) {
+    const group = item.kind === "motion" ? MOTION_GROUP : item.group;
+    if (!byGroup.has(group)) { byGroup.set(group, []); order.push(group); }
+    byGroup.get(group)!.push(item);
+  }
+  return order.map(group => ({ group, items: byGroup.get(group)! }));
+}
+
+/** 动作那一组的组名。是个哨兵值，界面把它翻译成「动作」。 */
+export const MOTION_GROUP = " motion";
+
+/**
+ * 常驻的项要按住的参数。同一个参数被勾了多次也只按一次。
+ *
+ * 不做任何冲突检测：这些参数彼此独立，同时置 1 就同时画出来
+ * （实测 酒 + 麦克风 + 生气 + 星星 + 爱心 + 兽耳 六样同时生效，谁也没顶掉谁）。
+ * 道具叠在同一只手上确实难看，但那是显示体验，不是逻辑冲突 ——
+ * 而「哪两项占用同一个身体部位」模型里没有任何数据记录，猜只会猜错。由用户自己决定勾什么。
+ */
+export function heldParameters(items: readonly ActionItem[], held: readonly string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const item of items) {
+    if (item.hold && held.includes(item.key)) out[item.hold] = 1;
   }
   return out;
 }

@@ -28,6 +28,16 @@ function watchResize(target: HTMLElement, onResize: () => void): () => void {
   return () => observer.disconnect();
 }
 
+/** pixi-live2d-display 的内部模型：这两个成员没有公开类型，但都是稳定 API。 */
+interface InternalModelWithUpdate {
+  update(deltaSeconds: number, now: number): void;
+  coreModel: {
+    setParameterValueById(id: string, value: number): void;
+    getParameterIndex(id: string): number;
+    getParameterDefaultValue(index: number): number;
+  };
+}
+
 export class Live2DAvatarModel implements AvatarModel {
   private app?: Application; private model?: Live2DModel; private manifest?: AvatarManifest; private removeContextListeners?: () => void; private renderCount = 0; private baseSize: [number, number] = [1, 1]; private stopResizeWatch?: () => void; private expressionRevert?: number; private framing: Framing = "full";
   private semanticMotions: Partial<Record<SemanticState, [string, number]>> = {};
@@ -325,6 +335,40 @@ export class Live2DAvatarModel implements AvatarModel {
     this.warned.add(event);
     this.log({ event, ...detail });
   }
+  /**
+   * 常驻开关：每帧把这些参数按住。
+   *
+   * **必须每帧写，不能只写一次。** 在 boy8 上只写一次确实会一直生效，但那只是因为它恰好
+   * 没有动作去碰这几个参数；换个模型完全可能有动作每帧重算同一个参数，那时候设一次
+   * 下一帧就被盖掉，表现是「勾了偶尔失效」这种最难查的样子。
+   *
+   * 写的时机也讲究：必须在 `internalModel.update()` **之后** —— 动作、表情、物理都在那里面
+   * 算完并写进参数，在它之前写等于白写。所以这里包住 update 而不是挂 ticker。
+   */
+  setHeldParameters(values: Record<string, number>): void {
+    const internal = this.model?.internalModel as unknown as InternalModelWithUpdate | undefined;
+    const released = Object.keys(this.held).filter(id => !(id in values));
+    this.held = values;
+    if (!internal) return;
+    // **取消常驻必须显式写回默认值。** Cubism 的参数是逐帧保留的，只有被动作/表情/物理
+    // 驱动的那些才会每帧重写；开关参数没人驱动，所以「不再写它」不等于「关掉它」——
+    // 值会原样留在那里，表现是取消勾选之后猫耳还是不见（实测踩到过）。
+    for (const id of released) {
+      const core = internal.coreModel;
+      const index = core.getParameterIndex(id);
+      if (index >= 0) core.setParameterValueById(id, core.getParameterDefaultValue(index));
+    }
+    if (this.holdInstalled) return;
+    const original = internal.update.bind(internal);
+    internal.update = (deltaSeconds: number, now: number) => {
+      original(deltaSeconds, now);
+      const core = internal.coreModel;
+      for (const [id, value] of Object.entries(this.held)) core.setParameterValueById(id, value);
+    };
+    this.holdInstalled = true;
+  }
+  private held: Record<string, number> = {};
+  private holdInstalled = false;
   /** 整体不透明度。Pixi 的 alpha 不会传进 Cubism，须用官方 setModelColor（其内部按预乘处理）。 */
   setOpacity(value: number): void {
     const alpha = Math.max(0, Math.min(1, value));

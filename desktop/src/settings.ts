@@ -1,4 +1,4 @@
-import { acceleratorFromEvent, actionLabel, isUsableShortcut, listActions, migrateTriggers, type ActionItem } from "./actions";
+import { acceleratorFromEvent, actionLabel, groupActions, isUsableShortcut, listActions, migrateTriggers, MOTION_GROUP, type ActionItem, type SwitchTable } from "./actions";
 import "./settings.css";
 import { invoke } from "@tauri-apps/api/core";
 import { openRawLevelFor } from "./audio-source";
@@ -14,7 +14,7 @@ import {
 import { FPS_CHOICES, RENDER_SCALE, type RenderQuality } from "./render-quality";
 import {
   currentModelDir, DEFAULT_FOCUS_PERCENT, loadPrefs, quality, expressionPoolKey, motionPoolKey, prefs, readPool, writePool,
-  aliasMapKey, hasStored, idleActionPoolKey, readStringMap, triggerMapKey, writeStringMap,
+  aliasMapKey, hasStored, heldActionPoolKey, idleActionPoolKey, readStringMap, triggerMapKey, writeStringMap,
   idleDelaySeconds, rememberIdleDelay, rememberStatusPosition, statusPosition, STATUS_LABELS, STATUS_POSITIONS,
   currentModelSource, language, LANGUAGES, modelBaseUrl, readStateMotions, rememberLanguage, rememberStateMotions,
   readHiddenModels, writeHiddenModels, SETTINGS_EVENT, SHORTCUT_STATUS_EVENT, type Language, type SettingsChange, type StatusPosition,
@@ -36,7 +36,7 @@ const TEXT: Record<Language, Record<string, string>> = {
     "video.display": "显示", "video.scale": "缩放", "video.opacity": "透明度", "video.focus": "聚焦范围：显示顶部", "video.focusHint": "仅在右键菜单启用聚焦模式时生效。", "video.rendering": "渲染", "video.renderHint": "降低画质通常比降低帧率更省 GPU。", "video.quality": "画质", "video.fps": "帧率",
     "agent.connectors": "接入", "agent.connectorsHint": "选择你在用的 agent，自动下载并安装对应的 connector；安装后如需手动步骤会显示在下面。", "agent.mapping": "状态与动作", "agent.mappingHint": "为当前模型的每个 Agent 状态选择动作。选择“模型默认”会使用 avatar.json 的映射。", "agent.default": "模型默认",
     "behavior.lipSync": "口型", "behavior.lipHint": "灵敏度决定多小的声音算「在说话」；张嘴幅度决定嘴张多大。对系统音频、音频文件与 Hermes 三种音源都生效。", "behavior.meterHint": "上面是当前听到的口型强度，竖线是张嘴的门槛。放点声音，把灵敏度拉到柱子能稳定越过竖线为止。", "behavior.sensitivity": "灵敏度", "behavior.amplitude": "张嘴幅度",
-    "behavior.idle": "闲置自治", "behavior.idleHint": "无人交互且 Agent 空闲时，让形象自己看四周、播放动作或表情。", "behavior.delay": "静置多少秒后开始", "behavior.zero": "填 0 即关闭。", "behavior.random": "表情与动作", "behavior.randomHint": "「触发」是你亲自触发的方式：单击人物、双击人物，或一个全局快捷键（桌宠没有焦点时也管用）。同一个触发绑多项就在它们之间随机。「闲置」是没人理它时自己播的，点标题可全开或全关。", "behavior.origin": "原名", "behavior.alias": "别名", "behavior.trigger": "触发", "behavior.idleActions": "闲置", "behavior.kindExpression": "表情", "behavior.kindMotion": "动作", "trigger.none": "无", "trigger.click": "单击", "trigger.dblclick": "双击", "trigger.record": "录制快捷键…", "trigger.recording": "按下组合键…（Esc 取消）", "trigger.needModifier": "快捷键要带 Ctrl / Alt / Shift，否则你正常打字也会触发", "trigger.taken": "这个组合已被别的程序占用，换一个",
+    "behavior.idle": "闲置自治", "behavior.idleHint": "无人交互且 Agent 空闲时，让形象自己看四周、播放动作或表情。", "behavior.delay": "静置多少秒后开始", "behavior.zero": "填 0 即关闭。", "behavior.random": "表情与动作", "behavior.randomHint": "「触发」是你亲自触发的方式：单击人物、双击人物，或一个全局快捷键（桌宠没有焦点时也管用）。同一个触发绑多项就在它们之间随机。「常驻」勾上就一直保持，可以同时勾多个（戴着猫耳 + 拿着饮料 + 生气）；只有那种「只改一个参数」的项能常驻。「闲置」是没人理它时自己播的，点标题可全开或全关。", "behavior.origin": "原名", "behavior.alias": "别名", "behavior.trigger": "触发", "behavior.hold": "常驻", "behavior.idleActions": "闲置", "behavior.groupOther": "其他", "behavior.groupMotion": "动作（播放一次）", "behavior.holdOnlySwitch": "这一项要同时改多个参数，做不到常驻 —— 它一次只能显示一个", "behavior.holdOnlyMotion": "动作是播一次就结束的，没有「常驻」；想让它一直循环，用「闲置」那一列", "behavior.kindExpression": "表情", "behavior.kindMotion": "动作", "trigger.none": "无", "trigger.click": "单击", "trigger.dblclick": "双击", "trigger.record": "录制快捷键…", "trigger.recording": "按下组合键…（Esc 取消）", "trigger.needModifier": "快捷键要带 Ctrl / Alt / Shift，否则你正常打字也会触发", "trigger.taken": "这个组合已被别的程序占用，换一个",
     "models.title": "模型", "models.hint": "拖入包含 *.model3.json 的 Cubism 模型文件夹。", "models.drop": "拖模型文件夹到此处",
     "common.empty": "这个模型没有可用项", "models.empty": "尚未安装模型", "models.hide": "隐藏", "models.delete": "删除", "models.deleteConfirm": "再点一次「确认删除」就会删除模型：", "models.deleteAgain": "确认删除", "models.installing": "安装中…", "models.installed": "已安装", "models.switchHint": "", "models.tauriOnly": "拖放安装需要在 Agent Avatar 应用内使用", "models.unrecognized": "无法识别。",
     ...Object.fromEntries(SEMANTIC_STATES.map(state => [`state.${state}`, state])),
@@ -47,7 +47,7 @@ const TEXT: Record<Language, Record<string, string>> = {
     "video.display": "Display", "video.scale": "Scale", "video.opacity": "Opacity", "video.focus": "Focus crop: show top", "video.focusHint": "Only applies when Focus Mode is enabled from the context menu.", "video.rendering": "Rendering", "video.renderHint": "Lowering quality usually saves more GPU power than lowering frame rate.", "video.quality": "Quality", "video.fps": "Frame rate",
     "agent.connectors": "Connectors", "agent.connectorsHint": "Pick the agent you use and install its connector. Any remaining manual step is shown below.", "agent.mapping": "Agent state and motion", "agent.mappingHint": "Choose a motion for each agent state on the current model. Model default uses the avatar.json mapping.", "agent.default": "Model default",
     "behavior.lipSync": "Lip sync", "behavior.lipHint": "Sensitivity sets how quiet a sound still counts as speech; mouth range sets how wide it opens. Both apply to system audio, audio files and Hermes alike.", "behavior.meterHint": "The bar is how strongly the app hears speech right now; the line is the threshold to open the mouth. Play something and raise sensitivity until the bar clears the line consistently.", "behavior.sensitivity": "Sensitivity", "behavior.amplitude": "Mouth range",
-    "behavior.idle": "Idle autonomy", "behavior.idleHint": "Let the avatar look around or play motions and expressions while the agent is idle.", "behavior.delay": "Start after this many idle seconds", "behavior.zero": "Set to 0 to disable.", "behavior.random": "Expressions and motions", "behavior.randomHint": "Trigger is how you set it off yourself: click the character, double-click it, or a global shortcut that works even when the avatar has no focus. Bind several rows to the same trigger and it picks among them at random. Idle is what it plays on its own; click the heading to toggle all.", "behavior.origin": "Name in model", "behavior.alias": "Alias", "behavior.trigger": "Trigger", "behavior.idleActions": "Idle", "behavior.kindExpression": "Expression", "behavior.kindMotion": "Motion", "trigger.none": "None", "trigger.click": "Click", "trigger.dblclick": "Double-click", "trigger.record": "Record shortcut…", "trigger.recording": "Press a combination… (Esc to cancel)", "trigger.needModifier": "A shortcut needs Ctrl / Alt / Shift, or ordinary typing would set it off", "trigger.taken": "That combination is taken by another app — pick a different one",
+    "behavior.idle": "Idle autonomy", "behavior.idleHint": "Let the avatar look around or play motions and expressions while the agent is idle.", "behavior.delay": "Start after this many idle seconds", "behavior.zero": "Set to 0 to disable.", "behavior.random": "Expressions and motions", "behavior.randomHint": "Trigger is how you set it off yourself: click the character, double-click it, or a global shortcut that works even when the avatar has no focus. Bind several rows to the same trigger and it picks among them at random. Keep on holds an item indefinitely, and several can be on at once (cat ears + a drink + angry); only entries that change a single parameter can be held. Idle is what it plays on its own; click the heading to toggle all.", "behavior.origin": "Name in model", "behavior.alias": "Alias", "behavior.trigger": "Trigger", "behavior.hold": "Keep on", "behavior.idleActions": "Idle", "behavior.groupOther": "Other", "behavior.groupMotion": "Motions (play once)", "behavior.holdOnlySwitch": "This one changes several parameters at once, so it cannot stay on — only one of its kind shows at a time", "behavior.holdOnlyMotion": "A motion plays once and ends, so there is nothing to keep on; use the Idle column to have it come back", "behavior.kindExpression": "Expression", "behavior.kindMotion": "Motion", "trigger.none": "None", "trigger.click": "Click", "trigger.dblclick": "Double-click", "trigger.record": "Record shortcut…", "trigger.recording": "Press a combination… (Esc to cancel)", "trigger.needModifier": "A shortcut needs Ctrl / Alt / Shift, or ordinary typing would set it off", "trigger.taken": "That combination is taken by another app — pick a different one",
     "models.title": "Models", "models.hint": "Drop a Cubism model folder containing a *.model3.json file.", "models.drop": "Drop a model folder here",
     "common.empty": "No available items for this model", "models.empty": "No models installed", "models.hide": "Hide", "models.delete": "Delete", "models.deleteConfirm": "Click Confirm again to delete the model:", "models.deleteAgain": "Confirm", "models.installing": "Installing…", "models.installed": "Installed", "models.switchHint": "", "models.tauriOnly": "Drag-and-drop installation is only available inside Agent Avatar", "models.unrecognized": "could not be recognized.",
     ...Object.fromEntries(SEMANTIC_STATES.map(state => [`state.${state}`, state[0].toUpperCase() + state.slice(1)])),
@@ -127,6 +127,8 @@ function bindActions(dir: string, items: readonly ActionItem[], idleDefault: rea
   const triggers = readStringMap(triggerMapKey(dir));
   const aliases = readStringMap(aliasMapKey(dir));
   let idle = readPool(idleActionPoolKey(dir)) ?? [...idleDefault];
+  // 常驻默认全关：勾上是「一直保持」，不该有任何一项是我们替用户开的
+  let held = readPool(heldActionPoolKey(dir)) ?? [];
 
   // 从 1.0 的两个名单迁移一次。判据是「有没有存过」而不是「存的是不是空的」——
   // 用户把所有触发都清空之后，不能下次打开设置又被旧名单迁移回来。
@@ -138,6 +140,7 @@ function bindActions(dir: string, items: readonly ActionItem[], idleDefault: rea
 
   const commitTriggers = () => { writeStringMap(triggerMapKey(dir), triggers); announce({ triggers: { ...triggers } }); };
   const commitAliases = () => { writeStringMap(aliasMapKey(dir), aliases); announce({ aliases: { ...aliases } }); };
+  const commitHeld = () => { writePool(heldActionPoolKey(dir), held); announce({ heldActions: [...held] }); };
   const commitIdle = () => {
     writePool(idleActionPoolKey(dir), idle);
     announce({ idleActions: [...idle] });
@@ -147,13 +150,22 @@ function bindActions(dir: string, items: readonly ActionItem[], idleDefault: rea
   const draw = () => {
     host.textContent = "";
     if (!items.length) { host.innerHTML = `<div class="empty">${tr("common.empty")}</div>`; return; }
-    for (const item of items) host.append(actionRow(item));
+    // 按作者在 cdi3 里的分类分块。boy8 会得到「隐藏 / 表情 / 动作」，CandyBoy 只有一块 ——
+    // 那就是作者没分类，照实显示，不凭空造分类。
+    for (const block of groupActions(items)) {
+      const heading = document.createElement("h3");
+      heading.className = "action-group";
+      heading.textContent = block.group === MOTION_GROUP ? tr("behavior.groupMotion") : block.group ?? tr("behavior.groupOther");
+      host.append(heading);
+      for (const item of block.items) host.append(actionRow(item));
+    }
   };
 
   function actionRow(item: ActionItem): HTMLElement {
     const row = document.createElement("div");
     row.className = "action-row";
     row.dataset.kind = item.kind;
+    row.dataset.key = item.key;
 
     const origin = document.createElement("span");
     origin.className = "origin";
@@ -182,6 +194,24 @@ function bindActions(dir: string, items: readonly ActionItem[], idleDefault: rea
       commitTriggers();
     });
 
+    // 常驻只对「单参数开关」开放。多参数的是一整张脸，走表情管理器一次只能挂一个；
+    // 动作是时间性的，播完就结束。两种都显示成 ─ 并说明原因，而不是给个点不动的复选框。
+    const holdCell = document.createElement("label");
+    holdCell.className = "cell";
+    if (item.hold) {
+      const holdBox = document.createElement("input");
+      holdBox.type = "checkbox"; holdBox.checked = held.includes(item.key);
+      holdBox.addEventListener("change", () => {
+        held = holdBox.checked ? [...held, item.key] : held.filter(key => key !== item.key);
+        commitHeld();
+      });
+      holdCell.append(holdBox);
+    } else {
+      holdCell.textContent = "─";
+      holdCell.className = "cell muted";
+      holdCell.title = item.kind === "motion" ? tr("behavior.holdOnlyMotion") : tr("behavior.holdOnlySwitch");
+    }
+
     const idleCell = document.createElement("label");
     idleCell.className = "cell";
     const box = document.createElement("input");
@@ -192,7 +222,7 @@ function bindActions(dir: string, items: readonly ActionItem[], idleDefault: rea
     });
     idleCell.append(box);
 
-    row.append(origin, alias, trigger, idleCell);
+    row.append(origin, alias, trigger, holdCell, idleCell);
     return row;
   }
 
@@ -202,20 +232,22 @@ function bindActions(dir: string, items: readonly ActionItem[], idleDefault: rea
    */
   void listen<{ failed?: string[] }>(SHORTCUT_STATUS_EVENT, event => {
     const failed = new Set(event.payload?.failed ?? []);
-    items.forEach((item, index) => {
-      const row = host.children[index] as HTMLElement | undefined;
-      if (!row) return;
+    // 按 key 找行，不用序号：分组之后表里还夹着组标题，序号和 items 对不上了
+    for (const item of items) {
+      const row = host.querySelector<HTMLElement>(`.action-row[data-key="${CSS.escape(item.key)}"]`);
+      if (!row) continue;
       const trigger = triggers[item.key];
       const broken = Boolean(trigger) && failed.has(trigger);
       row.dataset.failed = String(broken);
       if (broken) showTriggerNote(row, tr("trigger.taken")); else clearTriggerNote(row);
-    });
+    }
   }).catch(console.error);
 
   idleAll.addEventListener("click", () => {
     idle = idle.length === items.length ? [] : items.map(item => item.key);
     commitIdle(); draw();
   });
+  commitHeld();
   commitIdle();
   draw();
   redraws.push(draw);
@@ -318,7 +350,7 @@ function updateLocalizedSelects(): void {
 }
 
 /** 拖皮肤文件夹进来安装。用 Tauri 的窗口拖放事件而不是 HTML5 的 —— 只有前者给得到真实路径。 */
-type InstalledModel = { dir: string; label: string; model3: string; adapted: boolean; displayNames?: Record<string, string> };
+type InstalledModel = { dir: string; label: string; model3: string; adapted: boolean; displayNames?: Record<string, string>; switches?: SwitchTable };
 
 async function showModels(): Promise<void> {
   const host = $<HTMLElement>('[data-list="models"]');
@@ -513,6 +545,8 @@ async function boot(): Promise<void> {
   // 作者给零件起的名字，导入时由清洗器从 cdi3 / vtube.json 里读好。别名那一列拿它当默认值 ——
   // 大多数模型作者其实起过名（boy8 起全了 20 个），用户一个字都不用填。
   let displayNames: Record<string, string> = {};
+  // 哪些项是单参数开关（能常驻），以及作者把它归在哪一组
+  let switches: SwitchTable = {};
   try {
     const baseUrl = modelBaseUrl(dir, currentModelSource());
     let model3: string | undefined;
@@ -521,6 +555,7 @@ async function boot(): Promise<void> {
       const entry = installed.find(item => item.dir === dir);
       model3 = entry?.model3;
       displayNames = entry?.displayNames ?? {};
+      switches = entry?.switches ?? {};
     }
     const manifest = await loadManifest({ baseUrl, manifest: "avatar.json", model3 });
     inventory = await loadInventory(baseUrl, manifest.model);
@@ -529,7 +564,7 @@ async function boot(): Promise<void> {
   }
 
   const motions = motionRefs(inventory).map((ref: MotionRef) => ({ key: motionKey(ref), label: motionLabel(inventory, ref), ref }));
-  const actions = listActions(inventory, displayNames);
+  const actions = listActions(inventory, displayNames, switches);
   // 闲置默认全开：自治就是「自己随便动动」，不该预先排除什么。
   // 触发那一列不给默认值 —— 从旧版本升上来的走迁移，全新模型让用户自己挑。
   const idleDefault = actions.map(item => item.key);

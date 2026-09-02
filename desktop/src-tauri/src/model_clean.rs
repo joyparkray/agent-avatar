@@ -20,7 +20,7 @@ use std::fs;
 use std::path::Path;
 
 /// 清洗规则的版本。规则变了就加一，扫描时据此判断已装的模型要不要重洗。
-pub const CLEANER_VERSION: u32 = 4;
+pub const CLEANER_VERSION: u32 = 5;
 
 /// 清洗留下的标记文件。点开头 —— `list_model_issues` 会跳过点开头的条目，不会把它当成坏模型报出来。
 pub const MARKER: &str = ".agent-avatar-clean.json";
@@ -123,11 +123,12 @@ fn list_files(dir: &Path, suffix: &str) -> Vec<String> {
     out
 }
 
-/// `*.cdi3.json` 里作者给参数起的显示名：`Param70` → `兽耳`。
+/// `*.cdi3.json` 里每个参数的显示名与所属分组：`Param70` → (`兽耳`, `隐藏`)。
 ///
-/// 只收**和 Id 不同**的那些 —— Cubism 导出时会给没起名的参数把 Name 填成 Id 本身
-///（CandyBoy 有一半是 `Key13` → `Key13`），那种当别名等于没起。
-fn parameter_names(dir: &Path) -> std::collections::HashMap<String, String> {
+/// 分组是作者自己的分类，界面按它把开关分块。boy8 分了「隐藏 / 表情 / 动作」三组，
+/// 第三组其实是道具（酒、麦克风、手机）—— 作者管它叫动作，但它们是叠加型开关不是 motion。
+/// CandyBoy 把 34 项全塞在一个 `KEY` 组里，也就是没分类，界面照实显示成一整组。
+fn parameter_groups(dir: &Path) -> std::collections::HashMap<String, (Option<String>, Option<String>)> {
     let Some(cdi) = fs::read_dir(dir).ok().into_iter().flatten().flatten().map(|e| e.path())
         .find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".cdi3.json"))) else {
         return Default::default();
@@ -135,12 +136,25 @@ fn parameter_names(dir: &Path) -> std::collections::HashMap<String, String> {
     let Ok(value) = fs::read_to_string(cdi).map_err(|_| ()).and_then(|t| serde_json::from_str::<Value>(&t).map_err(|_| ())) else {
         return Default::default();
     };
+    let groups: std::collections::HashMap<&str, &str> = value.get("ParameterGroups").and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(|g| Some((g.get("Id")?.as_str()?, g.get("Name")?.as_str()?))).collect())
+        .unwrap_or_default();
     value.get("Parameters").and_then(Value::as_array).map(|list| list.iter()
         .filter_map(|item| {
             let id = item.get("Id")?.as_str()?;
-            let name = item.get("Name")?.as_str()?;
-            (!name.is_empty() && name != id).then(|| (id.to_owned(), name.to_owned()))
+            // Cubism 导出时会给没起名的参数把 Name 填成 Id 本身，那种当别名等于没起
+            let name = item.get("Name").and_then(Value::as_str).filter(|n| !n.is_empty() && *n != id);
+            let group = item.get("GroupId").and_then(Value::as_str).and_then(|g| groups.get(g)).copied();
+            Some((id.to_owned(), (name.map(str::to_owned), group.map(str::to_owned))))
         }).collect()).unwrap_or_default()
+}
+
+/// 作者给参数起的显示名，`parameter_groups` 的名字那一半。
+///
+/// 只收**和 Id 不同**的那些 —— Cubism 导出时会给没起名的参数把 Name 填成 Id 本身
+///（CandyBoy 有一半是 `Key13` → `Key13`），那种当别名等于没起。
+fn parameter_names(dir: &Path) -> std::collections::HashMap<String, String> {
+    parameter_groups(dir).into_iter().filter_map(|(id, (name, _))| Some((id, name?))).collect()
 }
 
 /// `*.vtube.json` 里作者给热键起的名字：`hair.exp3.json` → `hair`。返回 文件名 → 名字。
@@ -186,11 +200,45 @@ fn display_names(dir: &Path) -> Value {
     Value::Object(out)
 }
 
+/// 可以「常驻」的开关：只改一个参数、且 Blend 为 Add 的表情。
+///
+/// 为什么这是判据：这类表情就是一个开关（`{"Id":"Param70","Value":1.0,"Blend":"Add"}`），
+/// 直接写参数就能一直按住，而且**互不干扰** —— 2026-09-02 实测 酒 + 麦克风 + 生气 + 星星 +
+/// 爱心 + 兽耳 同时开，六样全都画出来，谁也没顶掉谁。多参数的那种是「一整张脸」，
+/// 走表情管理器，机制上一次只能挂一个，做不到常驻叠加。
+///
+/// 值得记一句：**没有任何冲突需要程序去检测**。道具组的项叠起来会挤在同一只手上，
+/// 但那是显示体验的事，不是逻辑冲突；而「哪两项占用同一个身体部位」模型里没有任何数据记录，
+/// 按组去猜互斥反而会禁掉真实用法（隐藏组的 头 + 身体 + 兽耳 同时开正是要的）。所以不猜。
+///
+/// 产物形如 `{"Q": {"param": "Param70", "group": "隐藏"}}`，键是文件名主干。
+fn switches(dir: &Path) -> Value {
+    let parameters = parameter_groups(dir);
+    let mut out = serde_json::Map::new();
+    for file in list_files(dir, ".exp3.json") {
+        let Some(id) = single_add_parameter(&dir.join(&file)) else { continue };
+        let group = parameters.get(&id).and_then(|(_, group)| group.clone());
+        let stem = file.trim_end_matches(".exp3.json").to_owned();
+        out.insert(stem, json!({ "param": id, "group": group }));
+    }
+    Value::Object(out)
+}
+
 /// 表情只改一个参数时返回那个参数 ID。多参数的是「一张脸」，没有单一的名字可取。
 fn single_parameter_id(path: &Path) -> Option<String> {
     let value: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
     let list = value.get("Parameters")?.as_array()?;
     (list.len() == 1).then(|| list[0].get("Id")?.as_str().map(str::to_owned)).flatten()
+}
+
+/// 同上，但还要求 `Blend` 是 `Add` —— 只有加法叠加的那种按住才有意义，
+/// `Overwrite` 会把动作算出来的值整个盖掉。
+fn single_add_parameter(path: &Path) -> Option<String> {
+    let value: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    let list = value.get("Parameters")?.as_array()?;
+    if list.len() != 1 { return None; }
+    (list[0].get("Blend").and_then(Value::as_str) == Some("Add"))
+        .then(|| list[0].get("Id")?.as_str().map(str::to_owned)).flatten()
 }
 
 /// 补上空着的 `Groups` 条目（`LipSync` / `EyeBlink`），返回补了几组。
@@ -321,11 +369,11 @@ pub fn is_clean(dir: &Path) -> bool {
         .is_some_and(|version| version >= CLEANER_VERSION as u64)
 }
 
-/// 从标记文件里读回作者起的名字（清洗时算好的）。读不到就返回空对象。
-pub fn read_display_names(dir: &Path) -> Value {
+/// 从标记文件里读回清洗时算好的某个对象（`displayNames` / `switches`）。读不到就返回空对象。
+pub fn read_marker_object(dir: &Path, field: &str) -> Value {
     fs::read_to_string(dir.join(MARKER)).ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|value| value.get("displayNames").cloned())
+        .and_then(|value| value.get(field).cloned())
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}))
 }
@@ -335,7 +383,7 @@ pub fn clean_model(dir: &Path) -> Result<CleanReport, String> {
     let (registered_expressions, registered_motions, filled_groups) = register_assets(dir)?;
     let marker = json!({ "cleanerVersion": CLEANER_VERSION,
         "registeredExpressions": registered_expressions, "registeredMotions": registered_motions,
-        "filledGroups": filled_groups, "displayNames": display_names(dir) });
+        "filledGroups": filled_groups, "displayNames": display_names(dir), "switches": switches(dir) });
     fs::write(dir.join(MARKER), serde_json::to_string_pretty(&marker).map_err(|e| e.to_string())?)
         .map_err(|error| error.to_string())?;
     Ok(CleanReport { registered_expressions, registered_motions, filled_groups })
@@ -440,6 +488,41 @@ mod tests {
         assert_eq!(names["Q"], "兽耳", "cdi3 的参数名应当压过 vtube 的热键名");
         assert_eq!(names["hair"], "换发型", "cdi3 把 Name 填成 Id 时不算起过名，该退到 vtube");
         assert!(names.get("face").is_none(), "多参数表情没有单一参数可取名");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 判据是「单参数 + Add」。多参数是一整张脸（走表情管理器，一次只能一个），
+    /// Overwrite 会把动作算出来的值整个盖掉，两种都不能按住。
+    #[test]
+    fn switches_are_single_add_parameter_expressions_with_their_group() {
+        let dir = scratch("switches");
+        write_model(&dir, None);
+        fs::write(dir.join("Q.exp3.json"), r#"{"Parameters":[{"Id":"Param70","Value":1.0,"Blend":"Add"}]}"#).unwrap();
+        fs::write(dir.join("N1.exp3.json"), r#"{"Parameters":[{"Id":"Param54","Value":1.0,"Blend":"Add"}]}"#).unwrap();
+        fs::write(dir.join("face.exp3.json"), r#"{"Parameters":[{"Id":"A","Value":1.0,"Blend":"Add"},{"Id":"B","Value":1.0,"Blend":"Add"}]}"#).unwrap();
+        fs::write(dir.join("over.exp3.json"), r#"{"Parameters":[{"Id":"C","Value":1.0,"Blend":"Overwrite"}]}"#).unwrap();
+        fs::write(dir.join("m.cdi3.json"), serde_json::to_string(&json!({
+            "Parameters": [{ "Id": "Param70", "Name": "兽耳", "GroupId": "G1" },
+                           { "Id": "Param54", "Name": "酒", "GroupId": "G2" }],
+            "ParameterGroups": [{ "Id": "G1", "Name": "隐藏" }, { "Id": "G2", "Name": "动作" }]
+        })).unwrap()).unwrap();
+
+        let out = switches(&dir);
+        assert_eq!(out["Q"]["param"], "Param70");
+        assert_eq!(out["Q"]["group"], "隐藏");
+        assert_eq!(out["N1"]["group"], "动作");
+        assert!(out.get("face").is_none(), "多参数是一整张脸，不能常驻叠加");
+        assert!(out.get("over").is_none(), "Overwrite 会盖掉动作，按住它没有意义");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 作者没分组时组名为空，界面把这些归到「其他」，而不是凭空造一个分类。
+    #[test]
+    fn a_switch_without_a_group_reports_none() {
+        let dir = scratch("switches-nogroup");
+        write_model(&dir, None);
+        fs::write(dir.join("k.exp3.json"), r#"{"Parameters":[{"Id":"K1","Value":1.0,"Blend":"Add"}]}"#).unwrap();
+        assert_eq!(switches(&dir)["k"]["group"], Value::Null);
         fs::remove_dir_all(&dir).ok();
     }
 

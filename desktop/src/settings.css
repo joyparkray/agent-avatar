@@ -41,7 +41,7 @@ input[type="range"] { width: 100%; margin: 0; }
 /* 表情与动作合成的一张表：原名 | 别名 | 触发 | 闲置。
    四列宽度在表头和数据行之间共用一个模板，改一处必须改两处，否则表头会和列错开。
    触发那一列要塞得下 `Control+Shift+9` 外加下拉箭头，所以给的是固定宽度而不是比例。 */
-.action-head, .action-row { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) 132px 46px; gap: 8px; align-items: center; }
+.action-head, .action-row { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) 132px 46px 46px; gap: 8px; align-items: center; }
 /* settings.css 没有全局 box-sizing（那条在主窗口的 style.css 里），默认是 content-box ——
    格子里的 width:100% 会再加上 padding 和边框，把相邻两列压到一起。别名和触发原来就是这么重叠的。 */
 .action-head > *, .action-row > * { box-sizing: border-box; min-width: 0; }
@@ -68,6 +68,11 @@ input[type="range"] { width: 100%; margin: 0; }
 /* 注册失败的原因贴在整行下面，占满四列 —— 静默失效是这个功能最容易骗人的地方 */
 .action-row .trigger-note { grid-column: 1 / -1; margin: 2px 0 0; font-size: 11px; color: color-mix(in srgb, red 65%, CanvasText); }
 .action-row[data-failed="true"] .trigger { border-color: color-mix(in srgb, red 65%, CanvasText); }
+/* 作者自己的分类（隐藏 / 表情 / 道具…）。CandyBoy 只有一组，那一条标题就是整张表的标题。 */
+.action-group { margin: 12px 0 2px; padding-left: 4px; font-size: 11px; font-weight: 600; opacity: .6; letter-spacing: .04em; }
+.action-group:first-child { margin-top: 4px; }
+/* 不能常驻的那一格显示 ─，不给点不动的复选框（点不动的复选框看起来像坏了） */
+.action-row .cell.muted { opacity: .35; cursor: help; }
 .action-list .empty { opacity: .5; padding: 6px 2px; }
 
 button {
