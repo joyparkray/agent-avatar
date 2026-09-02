@@ -23,3 +23,8 @@ serde_json = "1"
 # `#[cfg(target_os = "macos")]` 口径一致（build.rs 也是按宿主编的）。
 [target.'cfg(target_os = "macos")'.build-dependencies]
 cc = "1"
+
+# Windows 专属：全局音频采集走 WASAPI 的 loopback（macOS 那边是 Core Audio process tap，
+# 两者没有共同的抽象，所以各写各的 —— 见 platform/ 的说明）。
+[target.'cfg(target_os = "windows")'.dependencies]
+wasapi = "0.24"

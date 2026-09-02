@@ -96,37 +96,17 @@ fn open_in_browser(url: String) -> Result<(), String> {
     platform::open_in_default_browser(url)
 }
 
-#[cfg(target_os = "macos")]
-extern "C" {
-    fn echo_global_audio_start(callback: extern "C" fn(f32));
-    fn echo_global_audio_stop();
-    fn echo_global_audio_last_error() -> *const std::os::raw::c_char;
-}
-
-#[cfg(target_os = "macos")]
-extern "C" fn global_audio_level(level: f32) {
-    if level < 0.0 {
-        // 带出原生侧具体失败的那一步与 OSStatus，否则前端只知道「失败了」
-        let reason = unsafe { std::ffi::CStr::from_ptr(echo_global_audio_last_error()) }
-            .to_string_lossy().into_owned();
-        if let Some(app) = APP_HANDLE.get() { let _ = app.emit("global-audio-error", reason); }
-        return;
-    }
-    if let Some(app) = APP_HANDLE.get() { let _ = app.emit("global-audio-level", level); }
-}
-
+/// 全局音频采集。两个平台的实现天差地别（Core Audio process tap / WASAPI loopback），
+/// 但都收在 `platform` 里，且都只吐 `global-audio-level` 与 `global-audio-error` 两个事件 ——
+/// 所以这里看不出平台，前端也看不出。
 #[tauri::command]
 fn start_global_audio() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    unsafe { echo_global_audio_start(global_audio_level); return Ok(()); }
-    #[allow(unreachable_code)]
-    Err("global audio capture is only available on macOS".to_owned())
+    platform::start_global_audio()
 }
 
 #[tauri::command]
 fn stop_global_audio() {
-    #[cfg(target_os = "macos")]
-    unsafe { echo_global_audio_stop(); }
+    platform::stop_global_audio()
 }
 
 /// 打开一个工具窗口（设置 / 画廊）。

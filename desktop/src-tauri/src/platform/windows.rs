@@ -29,3 +29,7 @@ pub fn open_in_default_browser(url: &str) -> Result<(), String> {
 pub fn listening_ports() -> Vec<u16> {
     vec![]
 }
+
+/// 全局音频采集（WASAPI loopback）。实现见 `windows_audio`。
+pub fn start_global_audio() -> Result<(), String> { super::windows_audio::start() }
+pub fn stop_global_audio() { super::windows_audio::stop() }

@@ -26,3 +26,34 @@ pub fn listening_ports() -> Vec<u16> {
     };
     crate::hermes::parse_listening_ports(&String::from_utf8_lossy(&output.stdout))
 }
+
+// ---------------------------------------------------------------------------
+// 全局音频采集 —— Core Audio process tap，原生实现在 native/AudioCapture.m
+// ---------------------------------------------------------------------------
+extern "C" {
+    fn echo_global_audio_start(callback: extern "C" fn(f32));
+    fn echo_global_audio_stop();
+    fn echo_global_audio_last_error() -> *const std::os::raw::c_char;
+}
+
+/// 原生侧每算完一段就回调一次。负值表示出错 —— C 那边没有别的通道能把失败带出来。
+extern "C" fn on_level(level: f32) {
+    let Some(app) = crate::APP_HANDLE.get() else { return };
+    if level < 0.0 {
+        // 带出原生侧具体失败的那一步与 OSStatus，否则前端只知道「失败了」
+        let reason = unsafe { std::ffi::CStr::from_ptr(echo_global_audio_last_error()) }
+            .to_string_lossy().into_owned();
+        let _ = tauri::Emitter::emit(app, "global-audio-error", reason);
+        return;
+    }
+    let _ = tauri::Emitter::emit(app, "global-audio-level", level);
+}
+
+pub fn start_global_audio() -> Result<(), String> {
+    unsafe { echo_global_audio_start(on_level) };
+    Ok(())
+}
+
+pub fn stop_global_audio() {
+    unsafe { echo_global_audio_stop() };
+}
