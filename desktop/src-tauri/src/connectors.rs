@@ -42,8 +42,16 @@ fn command_path() -> String {
     format!("{extra}:{inherited}")
 }
 
+/// 用户目录。**Windows 上没有 `HOME`** —— 那是 POSIX 与 Git Bash 的约定，
+/// 从资源管理器启动的 app 进程里只有 `USERPROFILE`。只读 HOME 的话，五家的插件目录
+/// 全都算到 `/` 底下去，表现是**装好了界面还说没装**（而这正是本模块要报的那个状态）。
 fn home() -> PathBuf {
-    env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/"))
+    for name in ["HOME", "USERPROFILE"] {
+        if let Ok(value) = env::var(name) {
+            if !value.is_empty() { return PathBuf::from(value); }
+        }
+    }
+    PathBuf::from("/")
 }
 
 /// `$VAR`，没设就用 `$HOME/<fallback>`。各家 install-plugin.sh 里的口径，原样照搬。
@@ -51,19 +59,46 @@ fn harness_home(var: &str, fallback: &str) -> PathBuf {
     env::var(var).ok().filter(|value| !value.is_empty()).map(PathBuf::from).unwrap_or_else(|| home().join(fallback))
 }
 
-/// 装完之后插件落在哪。判断「已装/未装」与卸载都看这个目录。
-/// 路径来自各家 `install-plugin.sh` 里的 `target=`，改脚本时这里要跟着改。
+/// 「自包含的本地 marketplace」里插件树的相对位置。三家同形（Claude Code / Codex /
+/// WorkBuddy 的插件机制本来就是一套），只有清单文件名各不相同。
+const LOCAL_MARKETPLACE: &str = "local-marketplaces/agent-avatar-local/plugins/agent-avatar";
+
+/// 装完之后插件可能落在哪 —— **新旧布局都要认**，按优先级排。
+///
+/// 定案（见 private/RELEASE-CONNECTOR-WIZARD-DESIGN.md「已定方案」）之后，
+/// claude-code 与 codex 改成了和 WorkBuddy 一样的「本地 marketplace」布局：
+/// 光把文件拷进 `~/.claude/plugins/local/` 或 `~/.codex/plugins/` **根本不会被发现**
+/// （2026-09-02 实测：用户重启 app 后 Plugins 页里什么都没有）。
+///
+/// 旧目录仍然要认：按老布局装过的机器上插件还在那儿。只认新的话，
+/// 表现是「明明装着，界面说没装」—— 而这个模块的全部意义就是不让这种事发生。
+fn plugin_dirs(harness: &str) -> Vec<PathBuf> {
+    match harness {
+        "claude-code" => {
+            let root = harness_home("CLAUDE_CONFIG_DIR", ".claude");
+            vec![root.join(LOCAL_MARKETPLACE), root.join("plugins/local/agent-avatar")]
+        }
+        "codex" => {
+            let root = harness_home("CODEX_HOME", ".codex");
+            vec![root.join(LOCAL_MARKETPLACE), root.join("plugins/agent-avatar")]
+        }
+        "workbuddy" => vec![harness_home("WORKBUDDY_HOME", ".workbuddy").join(LOCAL_MARKETPLACE)],
+        // dsh 与 hermes 不走 marketplace：dsh 是 cordis patch 指过来的目录，
+        // hermes 是 in-process 的 Python 包，两家的位置没变过。
+        "dsh" => vec![harness_home("DSH_HOME", ".dsh").join("plugins/agent-avatar")],
+        "hermes" => vec![harness_home("HERMES_HOME", ".hermes").join("plugins/agent-avatar")],
+        _ => Vec::new(),
+    }
+}
+
+/// 首选位置（新布局）。卸载与「装到哪」的显示用它。
 pub fn plugin_dir(harness: &str) -> Option<PathBuf> {
-    Some(match harness {
-        "claude-code" => harness_home("CLAUDE_CONFIG_DIR", ".claude").join("plugins/local/agent-avatar"),
-        "codex" => harness_home("CODEX_HOME", ".codex").join("plugins/agent-avatar"),
-        "dsh" => harness_home("DSH_HOME", ".dsh").join("plugins/agent-avatar"),
-        "hermes" => harness_home("HERMES_HOME", ".hermes").join("plugins/agent-avatar"),
-        // WorkBuddy 装的是「本地 marketplace」，插件树在 marketplace 目录下面
-        "workbuddy" => harness_home("WORKBUDDY_HOME", ".workbuddy")
-            .join("local-marketplaces/agent-avatar-local/plugins/agent-avatar"),
-        _ => return None,
-    })
+    plugin_dirs(harness).into_iter().next()
+}
+
+/// 实际存在的那个位置。没有就是没装。
+fn installed_dir(harness: &str) -> Option<PathBuf> {
+    plugin_dirs(harness).into_iter().find(|dir| dir.is_dir())
 }
 
 /// 五家的接入状态。前端首次引导页与设置页共用这一条。
@@ -74,11 +109,13 @@ pub fn plugin_dir(harness: &str) -> Option<PathBuf> {
 #[tauri::command(async)]
 pub fn list_connectors() -> Vec<Value> {
     HARNESSES.iter().map(|harness| {
-        let dir = plugin_dir(harness);
+        let found = installed_dir(harness);
         json!({
             "harness": harness,
-            "installed": dir.as_deref().is_some_and(Path::is_dir),
-            "path": dir.map(|path| path.display().to_string()),
+            "installed": found.is_some(),
+            // 装了就报实际位置，没装就报**将要**装到哪 —— 后者也是有用的信息
+            // （用户拿它去看杀软的隔离区里那条路径对不对得上）
+            "path": found.or_else(|| plugin_dir(harness)).map(|path| path.display().to_string()),
             // 用「有没有写过」而不是「最近有没有写过」当门：一周没用那家 agent 的用户
             // 不该被告知需要重新配置。新旧程度另外显示，由前端决定怎么说。
             "lastSignalSeconds": crate::hermes::last_signal_seconds(harness),
@@ -214,7 +251,9 @@ fn without_marketplace_entry(raw: &str) -> Option<String> {
 /// 用户看得见的问题。删干净比报错更有用。
 #[tauri::command(async)]
 pub fn uninstall_connector(harness: String) -> Result<Value, String> {
-    let dir = plugin_dir(&harness).ok_or_else(|| format!("{}|{harness}", user_error::UNKNOWN_HARNESS))?;
+    // 新旧布局都要清：按老布局装过的机器上，只删新目录等于什么都没删
+    let dirs = plugin_dirs(&harness);
+    if dirs.is_empty() { return Err(format!("{}|{harness}", user_error::UNKNOWN_HARNESS)); }
     let mut notes: Vec<String> = Vec::new();
     match harness.as_str() {
         "codex" => {
@@ -249,14 +288,17 @@ pub fn uninstall_connector(harness: String) -> Result<Value, String> {
         }
         _ => {}
     }
-    if dir.is_dir() { fs::remove_dir_all(&dir).map_err(|error| error.to_string())?; }
+    for dir in &dirs {
+        if dir.is_dir() { fs::remove_dir_all(dir).map_err(|error| error.to_string())?; }
+    }
     Ok(json!({ "harness": harness, "notes": notes }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{command_path, plugin_dir, prepare_staging, strip_managed_block, tail, without_marketplace_entry, HARNESSES};
-    use std::{fs, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
+    use super::{command_path, home, plugin_dir, plugin_dirs, prepare_staging, strip_managed_block, tail,
+                without_marketplace_entry, HARNESSES, LOCAL_MARKETPLACE};
+    use std::{env, fs, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 
     fn scratch(tag: &str) -> PathBuf {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -277,12 +319,34 @@ mod tests {
 
     #[test]
     fn plugin_paths_match_the_install_scripts() {
-        // 判据来自各家 install-plugin.sh 的 `target=`。脚本改了这里必须跟着改，
+        // 判据来自各家 install-plugin.{sh,ps1} 里的 `target=`。脚本改了这里必须跟着改，
         // 否则表现是「装完了界面还说没装」。
-        let claude = plugin_dir("claude-code").unwrap();
-        assert!(claude.ends_with(".claude/plugins/local/agent-avatar") || claude.ends_with("plugins/local/agent-avatar"));
-        assert!(plugin_dir("workbuddy").unwrap().ends_with("local-marketplaces/agent-avatar-local/plugins/agent-avatar"));
+        for harness in ["claude-code", "codex", "workbuddy"] {
+            assert!(plugin_dir(harness).unwrap().ends_with(LOCAL_MARKETPLACE), "{harness}");
+        }
         assert!(plugin_dir("hermes").unwrap().ends_with("plugins/agent-avatar"));
+        assert!(plugin_dir("dsh").unwrap().ends_with("plugins/agent-avatar"));
+    }
+
+    #[test]
+    fn old_layouts_are_still_recognised() {
+        // 按老布局装过的机器上插件还在旧目录。只认新的话，表现是「明明装着，界面说没装」。
+        let claude = plugin_dirs("claude-code");
+        assert_eq!(claude.len(), 2, "claude-code 应当同时认新旧两个位置");
+        assert!(claude[1].ends_with("plugins/local/agent-avatar"), "{}", claude[1].display());
+        let codex = plugin_dirs("codex");
+        assert!(codex[1].ends_with("plugins/agent-avatar"), "{}", codex[1].display());
+        assert!(plugin_dirs("../etc").is_empty());
+    }
+
+    #[test]
+    fn home_falls_back_to_userprofile() {
+        // Windows 上没有 HOME（那是 POSIX / Git Bash 的约定）。只读 HOME 的话，
+        // 五家的插件目录全算到 `/` 底下，界面会把装好的说成没装。
+        assert!(home().is_absolute() || cfg!(windows), "home() 必须给出一个像样的路径");
+        #[cfg(windows)]
+        assert!(env::var("USERPROFILE").is_ok_and(|value| home().to_string_lossy().contains(&value)),
+                "Windows 上应当落到 USERPROFILE：{}", home().display());
     }
 
     #[test]

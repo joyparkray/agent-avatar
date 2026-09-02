@@ -1,6 +1,7 @@
 import "./connectors.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { diagnosePrompt, diagnosisReasons } from "./connector-diagnosis";
 import { errorMessage } from "./errors";
 import type { Language } from "./prefs";
 
@@ -76,6 +77,10 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "details.show": "安装说明", "details.steps": "还需要你做这几步：",
     "details.none": "装完即用，没有额外步骤。新开一个会话就会生效。",
     "details.stale": "如果它之前一直是好的，多半是系统清理了临时目录；新开一次会话就会恢复。",
+    "diagnosis.title": "一直没通？可能是这些原因：",
+    "diagnosis.ask": "复制排查提示词",
+    "diagnosis.copied": "已复制，贴给你的 agent 就行",
+    "diagnosis.copyFailed": "复制不了，请手动选中下面这段：",
     install: "安装", reinstall: "重装", uninstall: "卸载", done: "完成",
     "stage.download": "正在下载 connector…",
     "stage.extract": "正在解压…",
@@ -98,6 +103,10 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "details.show": "Setup guide", "details.steps": "You still need to:",
     "details.none": "Nothing else to do. It takes effect in your next session.",
     "details.stale": "If it used to work, the temp directory was probably cleaned — start a new session to restore it.",
+    "diagnosis.title": "Still not connected? It could be:",
+    "diagnosis.ask": "Copy a prompt for your agent",
+    "diagnosis.copied": "Copied — paste it to your agent",
+    "diagnosis.copyFailed": "Couldn't copy. Select this text instead:",
     install: "Install", reinstall: "Reinstall", uninstall: "Uninstall", done: "Done",
     "stage.download": "Downloading connector…",
     "stage.extract": "Extracting…",
@@ -291,7 +300,41 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
         });
         actions.append(remove);
       }
-      row.append(name, actions, link, status, details);
+      // 「装了但从没上报」这一档：光说「需人工配置」不够 —— 用户已经卡住了，
+      // 他需要的是「可能是哪儿」和「怎么查」。杀软那一条尤其要写出来：
+      // 文件被删掉之后，界面上只表现为「装了但不动」，普通用户永远想不到那儿去。
+      const diagnosis = document.createElement("div");
+      if (state === "unconfigured") {
+        diagnosis.className = "connector-diagnosis";
+        const title = document.createElement("p");
+        title.className = "connector-diagnosis-title"; title.textContent = text("diagnosis.title");
+        const reasons = document.createElement("ul");
+        for (const reason of diagnosisReasons(harness, locale)) {
+          const item = document.createElement("li"); item.textContent = reason; reasons.append(item);
+        }
+        // 提示词里是**钉死的命令**，不是「去找找看」——用户本来就坐在一个能执行命令的 agent
+        // 面前，这是本产品独有的分发优势；但只有当那句话退化成确定的命令时，
+        // 用户和我们才都能确认它做了什么。
+        const ask = document.createElement("button");
+        ask.type = "button"; ask.className = "ghost"; ask.textContent = text("diagnosis.ask");
+        const prompt = document.createElement("textarea");
+        prompt.className = "connector-prompt"; prompt.hidden = true; prompt.readOnly = true;
+        prompt.rows = 8; prompt.value = diagnosePrompt(harness, locale);
+        ask.addEventListener("click", () => {
+          const copied = () => say(harness, text("diagnosis.copied"));
+          // 剪贴板在 webview 里不保证可用（非安全上下文 / 权限）。失败时把原文摊开
+          // 让用户自己选 —— 不能让一个「复制」按钮点了没反应。
+          const fallback = () => {
+            prompt.hidden = false; prompt.select();
+            say(harness, text("diagnosis.copyFailed"), "error");
+          };
+          try {
+            void navigator.clipboard.writeText(prompt.value).then(copied, fallback);
+          } catch { fallback(); }
+        });
+        diagnosis.append(title, reasons, ask, prompt);
+      }
+      row.append(name, actions, link, status, details, diagnosis);
       host.append(row);
     }
     if (pending) say(pending.harness, pending.message, pending.kind);

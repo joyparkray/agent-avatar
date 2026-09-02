@@ -35,3 +35,24 @@
 }
 .connector-status.ok { color: color-mix(in srgb, #30a46c 80%, currentColor); opacity: 1; }
 .connector-status.error { color: color-mix(in srgb, #e5484d 82%, currentColor); opacity: 1; }
+
+/* 「装了但从没上报」这一档的排查清单。只在那一档出现，所以不做折叠 ——
+   看到它的人已经卡住了，再让他多点一次才看得到原因没有道理。 */
+.connector-diagnosis { grid-column: 1 / -1; margin-top: 4px; font-size: 12px; line-height: 1.55; }
+.connector-diagnosis:empty { display: none; }
+.connector-diagnosis-title { margin: 0 0 3px; opacity: .8; }
+.connector-diagnosis ul { margin: 0 0 6px; padding-left: 18px; opacity: .8; }
+.connector-diagnosis li { margin: 2px 0; }
+.connector-diagnosis .ghost {
+  font: inherit; font-size: 12px; padding: 4px 9px; border-radius: 7px; cursor: pointer;
+  opacity: .75; background: none; border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+}
+/* 剪贴板不可用时的兜底：把提示词原文摊开让用户自己选 */
+.connector-prompt {
+  display: block; width: 100%; margin-top: 6px; box-sizing: border-box;
+  font: inherit; font-size: 11px; line-height: 1.5; resize: vertical;
+  padding: 7px 9px; border-radius: 7px;
+  color: inherit; background: color-mix(in srgb, currentColor 6%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+}
+.connector-prompt[hidden] { display: none; }
