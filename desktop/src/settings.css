@@ -39,24 +39,32 @@ input[type="range"] { width: 100%; margin: 0; }
 .cols button[data-on="true"] { background: color-mix(in srgb, AccentColor 22%, transparent); border-color: AccentColor; }
 .checklist .empty, .model-list .empty { opacity: .5; padding: 6px 2px; }
 /* 表情与动作合成的一张表：原名 | 别名 | 触发 | 闲置。
-   四列宽度在表头和数据行之间共用一个 grid 模板，改一处必须改两处，否则表头会和列错开。 */
-.action-head, .action-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) 118px 52px; gap: 6px; align-items: center; }
-.action-head { margin: 14px 0 6px; font-size: 11px; opacity: .65; }
-.action-head > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+   四列宽度在表头和数据行之间共用一个模板，改一处必须改两处，否则表头会和列错开。
+   触发那一列要塞得下 `Control+Shift+9` 外加下拉箭头，所以给的是固定宽度而不是比例。 */
+.action-head, .action-row { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) 132px 46px; gap: 8px; align-items: center; }
+/* settings.css 没有全局 box-sizing（那条在主窗口的 style.css 里），默认是 content-box ——
+   格子里的 width:100% 会再加上 padding 和边框，把相邻两列压到一起。别名和触发原来就是这么重叠的。 */
+.action-head > *, .action-row > * { box-sizing: border-box; min-width: 0; }
+.action-head { position: sticky; top: 52px; z-index: 1; margin: 14px 0 6px; padding: 4px 4px 5px; font-size: 11px; opacity: .75;
+  background: Canvas; border-bottom: 1px solid color-mix(in srgb, CanvasText 14%, transparent); }
+.action-head > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 「闲置」那一格既是列标题也是全开/全关按钮，所以它是 button 而不是 span */
-.action-head button { padding: 3px 0; border-radius: 5px; font-size: 11px; }
+.action-head button { padding: 2px 0; border-radius: 5px; font-size: 11px; }
 .action-head button[data-on="true"] { background: color-mix(in srgb, AccentColor 22%, transparent); border-color: AccentColor; }
-.action-list { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; }
+/* 不给这张表自己的滚动条：它已经在「行为」这一页里，两层滚动条谁都不知道该滚哪个。
+   表头 sticky 在标签栏底下，行多了照样看得见列名。 */
+.action-list { display: flex; flex-direction: column; gap: 2px; }
 .action-row { padding: 3px 4px; border-radius: 5px; }
 .action-row:hover { background: color-mix(in srgb, CanvasText 8%, transparent); }
 .action-row .origin { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .7; font-size: 12px; }
 /* 动作与表情混在一张表里，靠左边一道色条区分，比多加一列省地方 */
-.action-row[data-kind="motion"] .origin { border-left: 2px solid color-mix(in srgb, AccentColor 55%, transparent); padding-left: 5px; }
-.action-row[data-kind="expression"] .origin { border-left: 2px solid color-mix(in srgb, CanvasText 25%, transparent); padding-left: 5px; }
-.action-row .alias, .action-row .trigger { font: inherit; width: 100%; min-width: 0; padding: 2px 5px; border-radius: 5px; }
+.action-row[data-kind="motion"] .origin { border-left: 2px solid color-mix(in srgb, AccentColor 55%, transparent); padding-left: 6px; }
+.action-row[data-kind="expression"] .origin { border-left: 2px solid color-mix(in srgb, CanvasText 25%, transparent); padding-left: 6px; }
+.action-row .alias, .action-row .trigger { font: inherit; font-size: 12px; width: 100%; padding: 3px 5px; border-radius: 5px; }
 .action-row .cell { display: flex; justify-content: center; margin: 0; }
 /* 录制中：把格子变成一个按钮，原地提示按什么，不弹窗 */
-.action-row .recording { text-align: center; cursor: default; background: color-mix(in srgb, AccentColor 20%, transparent); border-color: AccentColor; }
+.action-row .recording { width: 100%; padding: 3px 5px; text-align: center; cursor: default; font-size: 11px; white-space: nowrap; overflow: hidden;
+  background: color-mix(in srgb, AccentColor 20%, transparent); border-color: AccentColor; }
 /* 注册失败的原因贴在整行下面，占满四列 —— 静默失效是这个功能最容易骗人的地方 */
 .action-row .trigger-note { grid-column: 1 / -1; margin: 2px 0 0; font-size: 11px; color: color-mix(in srgb, red 65%, CanvasText); }
 .action-row[data-failed="true"] .trigger { border-color: color-mix(in srgb, red 65%, CanvasText); }
