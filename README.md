@@ -68,7 +68,7 @@ artist. So instead:
 - **A face for voice agents.** Real-time lip sync from system audio, a local audio file
   or a Hermes speech stream — not tied to one voice stack.
 - **Present without being in the way.** Transparent, always-on-top, and clicks pass
-  through everywhere except the character's own silhouette. Full click-through mode is
+  through outside the character's bounding box. Full click-through mode is
   one menu item away, with a 3-second hover to make it interactive again.
 - **Alive when idle.** It glances around and plays motions when nothing is happening,
   follows your cursor, and yields the instant you interact.

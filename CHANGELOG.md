@@ -3,6 +3,45 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Windows support, and the model handling needed to make third-party models work there.
+
+### Windows
+
+- Runs on Windows 10 and later. The transparent, always-on-top window and hardware
+  accelerated Live2D rendering coexist on WebView2 — verified on real hardware, not CI,
+  which has no GPU.
+- Ships as an NSIS installer and as a no-install zip (`npm run pack:portable`).
+- CI now runs the four suites on `windows-latest` as well as `macos-latest`, and builds
+  the installer.
+- Diagnostics, the state file and the HTTP log follow the platform temp directory instead
+  of a hardcoded `/tmp`.
+- The bridge takes a real cross-process lock on Windows. It previously fell back to
+  writing without one, so concurrent hooks — parallel tool calls, subagents — could
+  overwrite each other's bookkeeping and leave the avatar stuck in the wrong state.
+- Opening the model folder and external links use the platform file manager and browser.
+- Global audio capture is still macOS only; on Windows the app degrades to no lip sync
+  instead of failing to start.
+
+### Models
+
+- **Models without motions load.** Models made for face tracking commonly ship
+  expressions only; these were rejected outright with "model3 has no motions". They now
+  load and animate through blinking, breathing, physics and gaze.
+- **Imported models are tidied up.** Folder names with spaces are normalised instead of
+  refused, and expressions and motions present on disk but missing from `model3.json` are
+  registered — additively, never altering what the author declared, with the original
+  kept as `.orig`. See [docs/MODELS.md](docs/MODELS.md).
+- The first-run card is now itself a drop target: drag a model folder onto it and the app
+  installs and loads it, instead of sending you to Settings and back.
+
+### Fixed
+
+- The built-in file server rejected any URL containing a percent escape, so models whose
+  file names contain spaces or non-ASCII characters could be installed but never loaded.
+  Escapes are now decoded before the path checks rather than being treated as suspect.
+
 ## [1.0.0] — 2026-08-29
 
 First public release.

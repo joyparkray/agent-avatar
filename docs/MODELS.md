@@ -16,25 +16,44 @@ model's license is between you and its author; Agent Avatar does not redistribut
 
 ## Install
 
-Two ways, both equivalent:
+**Drag the folder onto the drop zone** — in Settings → Models, or onto the card the app
+shows when no model is installed yet. The folder is copied into the app's own model
+directory; your original is never moved or modified.
 
-- **Drag the folder into Settings → Models.** The drop zone accepts a folder; it is
-  copied into the app's model directory.
-- **Put the folder in the models directory yourself**, then pick it in the right-click
-  menu. Right-click → Models → *Open Models Folder in Finder* takes you there:
+Copying a folder into the model directory by hand still works and the menu re-scans every
+time you open it, but prefer the drop zone: imported models are tidied up on the way in
+(see below), and a hand-placed folder skips that.
 
-  ```
-  ~/Library/Application Support/io.github.joyparkray.agentavatar/models/
-  ```
+```
+macOS    ~/Library/Application Support/io.github.joyparkray.agentavatar/models/
+Windows  %APPDATA%\io.github.joyparkray.agentavatar\models\
+```
 
-The menu re-scans the directory every time you open it, so a folder you copied in
-manually shows up without restarting.
+### What happens on import
+
+Models published for VTubing tools are usually not shaped the way the Cubism runtime
+expects, so importing fixes two things — additively, never touching what the author
+declared, and keeping the original `*.model3.json` beside the result as `.orig`:
+
+- **Folder names are normalised.** A folder called `yoyo - b` becomes `yoyo-b`. Names go
+  into URLs, and the built-in file server rejects paths it cannot serve safely, so a name
+  with spaces would leave the model installed but unreachable. Directories on the way to a
+  nested model are renamed too; texture folders inside the model are left alone, since the
+  `model3.json` refers to them by name.
+- **Expressions and motions that exist on disk but are not declared** in `model3.json` are
+  registered. VTube Studio keeps its own hotkey list and does not write the Cubism one, so
+  a model can ship 36 expressions that no Cubism renderer can see. When a `.vtube.json` is
+  present its hotkey list is used to tell real animations from mouse-tracking helper
+  curves; otherwise every motion file found is registered.
 
 ## What a model folder must contain
 
 A `*.model3.json` file, within the folder or up to two levels below it. Everything else
 — textures, motions, expressions, physics — is found through that file, exactly as
-Cubism exports it. A typical download unzips to:
+Cubism exports it. **Motions are optional**: models made for face tracking often ship
+expressions only, and they load fine — blinking, breathing, physics, gaze tracking and
+lip sync all come from the parameters in `model3.json`, not from motions. Such a model
+simply looks the same in every agent state until you map expressions to states yourself. A typical download unzips to:
 
 ```
 my_model/

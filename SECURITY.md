@@ -34,9 +34,14 @@ Agent Avatar is a desktop application with a few capabilities worth knowing abou
 - **It captures system audio** (macOS Core Audio process tap) to drive lip sync, only
   while that audio source is selected. Audio is reduced to a loudness value and is never
   recorded or written to disk.
-- **It reads a state file** in `$TMPDIR` written by the connector (mode 0600; it holds
-  the agent's current state, and `AGENT_AVATAR_STATE_PATH` overrides where the app looks
-  for it), and optionally
+- **It reads a state file** in the platform temp directory, written by the connector. It
+  holds the agent's current state — one of eight fixed words, a fixed phrase naming the
+  harness, a counter and a timestamp — plus, for Hermes only, the session token the hook
+  picked up. It does **not** contain your prompts, the agent's output, commands it ran or
+  files it touched. `AGENT_AVATAR_STATE_PATH` overrides where the app looks for it.
+  The file is created `0600` on Unix, where the `/tmp` fallback is shared between users;
+  on Windows the temp directory is per-user and the file inherits an ACL granting only
+  you, Administrators and SYSTEM. It also optionally
   connects to a local Hermes endpoint on the loopback interface. URLs handed to the
   system opener are restricted to `http://localhost` and `http://127.0.0.1`.
 - **It serves your model files** to its own webview from the app's data directory, with

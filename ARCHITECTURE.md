@@ -85,13 +85,25 @@ So: **semantics go through the bridge, audio goes out of band.**
 ## Data locations
 
 ```
-~/Library/Application Support/io.github.joyparkray.agentavatar/
+macOS    ~/Library/Application Support/io.github.joyparkray.agentavatar/
+Windows  %APPDATA%\io.github.joyparkray.agentavatar\
 ├── config.json      preferences, shared by both windows
 └── models/          models you installed
 
-$TMPDIR/agent-avatar-state[.<harness>].json    the state file, 0600
-/tmp/agent-avatar-webview.log                  diagnostics, one JSON object per line
+<temp>/agent-avatar-state[.<harness>].json    the state file, one set per harness
+<temp>/agent-avatar-webview.log               diagnostics, one JSON object per line
 ```
+
+`<temp>` is the platform temp directory (`$TMPDIR`, falling back to `/tmp`, on Unix;
+`%TEMP%` on Windows). Each harness gets its own snapshot plus a `.sessions` bookkeeping
+file and a `.lock`, so two agents running at once never share a file.
+
+**File permissions.** On Unix the state file is created `0600`, because the fallback
+location `/tmp` is shared by every user on the machine. Windows has no POSIX mode bits —
+its temp directory is already per-user (`C:\Users\<you>\AppData\Local\Temp`) and the
+files inherit an ACL granting only you, Administrators and SYSTEM. The protection is
+equivalent; the mechanism is not. (Python reports mode `666` for these files on Windows,
+which is an artefact of its emulation and says nothing about the real ACL.)
 
 ## Extending it
 

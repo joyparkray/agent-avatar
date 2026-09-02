@@ -72,8 +72,9 @@ Click-through mode is on (right-click → Click Through). Hover over the charact
 3 seconds and it becomes interactive again. The status bar tells you when the mode is
 active.
 
-Outside the character's silhouette the window is deliberately transparent to clicks, so
-you can use whatever is behind it.
+Outside the character's bounding box the window is deliberately transparent to clicks,
+so you can use whatever is behind it. The box is a rectangle around the model, not its
+silhouette, so blank areas close to the character still count as the character.
 
 ## The cursor stays an arrow over the character
 
