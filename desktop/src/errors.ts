@@ -20,11 +20,6 @@ const MESSAGES: Record<Language, Record<string, Phrase>> = {
     "already-installed": name => `已经装过“${name}”了：先在模型文件夹里删掉它再重装。`,
     "too-large": () => "这个文件夹太大了，看起来不像一个模型目录。",
     "unknown-model": () => "找不到这个已安装模型，列表可能已经变了；重开设置再试。",
-    "download-failed": detail => `下载失败，检查网络后重试。${detail}`,
-    "extract-failed": detail => `解压失败：${detail}`,
-    "bad-archive": () => "下载到的压缩包结构不对（缺 connectors/ 或 bridge/），安装脚本会找不到 core。",
-    "install-failed": detail => `安装脚本没能跑完：${detail}`,
-    "local-zip-missing": path => `本地联调用的 zip 不存在：${path}`,
     "unknown-harness": name => `不认识的 agent：${name}`,
   },
   en: {
@@ -35,11 +30,6 @@ const MESSAGES: Record<Language, Record<string, Phrase>> = {
     "already-installed": name => `“${name}” is already installed: delete it from the models folder before reinstalling.`,
     "too-large": () => "That folder is too large to be a model folder.",
     "unknown-model": () => "That installed model is gone — the list may have changed. Reopen Settings and try again.",
-    "download-failed": detail => `Download failed. Check your connection and try again. ${detail}`,
-    "extract-failed": detail => `Could not extract the archive: ${detail}`,
-    "bad-archive": () => "The downloaded archive has the wrong shape (connectors/ or bridge/ is missing), so the install script cannot find its core.",
-    "install-failed": detail => `The install script did not finish: ${detail}`,
-    "local-zip-missing": path => `The local zip used for testing does not exist: ${path}`,
     "unknown-harness": name => `Unknown agent: ${name}`,
   },
 };

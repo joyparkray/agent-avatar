@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { diagnosePrompt, diagnosisReasons, stateFileName } from "./connector-diagnosis";
-import { CONNECTOR_HARNESSES, CONNECTOR_TEXT, freshness, HARNESS_LABELS, linkState, postInstallSteps, progressText, statusLabel } from "./connectors";
+import { diagnosePrompt, diagnosisReasons, installPrompt, MARKETPLACE_REPO, stateFileName } from "./connector-diagnosis";
+import { CONNECTOR_HARNESSES, CONNECTOR_TEXT, freshness, HARNESS_LABELS, linkState, postInstallSteps, statusLabel } from "./connectors";
 
 describe("connector install wizard", () => {
   it("covers exactly the five harnesses the Rust side whitelists", () => {
@@ -82,6 +82,41 @@ describe("connector install wizard", () => {
     expect(stateFileName("claude-code")).toBe("agent-avatar-state.claude-code.json");
   });
 
+  it("points the install prompt at the same repo the build script publishes", () => {
+    // 两处各写一份必然会漂，而漂了之后表现是「照提示词跑完，装的是另一个仓库」
+    const script = readFileSync("../connectors/build-marketplace.sh", "utf8");
+    expect(script).toContain(`REPO=${MARKETPLACE_REPO}`);
+    for (const harness of CONNECTOR_HARNESSES) {
+      expect(installPrompt(harness, "zh-CN", "posix")).toContain(MARKETPLACE_REPO);
+    }
+  });
+
+  it("only asks Windows users for the extra localise step", () => {
+    // POSIX 上 python3 本来就是对的，多让用户跑一步等于制造一个不存在的问题；
+    // Windows 上不跑那一步，装到的插件指向一个 0 字节的商店存根，而且**没有任何声音**。
+    for (const harness of ["claude-code", "codex", "workbuddy", "dsh"]) {
+      expect(installPrompt(harness, "zh-CN", "windows")).toContain(`python localize.py ${harness}`);
+      expect(installPrompt(harness, "zh-CN", "posix")).not.toContain("localize.py");
+    }
+    // Hermes 是 in-process 的 Python 包，两个平台都不需要本地化
+    expect(installPrompt("hermes", "zh-CN", "windows")).not.toContain("localize.py");
+  });
+
+  it("keeps the human steps human", () => {
+    // 授信这类步骤存在的意义就是「让人看一眼再点头」，让 agent 代做等于把这道防线拆了
+    for (const locale of ["zh-CN", "en"] as const) {
+      const codex = installPrompt("codex", locale, "posix");
+      expect(codex).toMatch(/不要替我授信|do not trust the hooks for me/i);
+      for (const harness of CONNECTOR_HARNESSES) {
+        // 在别人机器上装软件应当由机器的主人点头
+        expect(installPrompt(harness, locale, "windows")).toMatch(/先问我|ask me first/i);
+        // 验收标准写进提示词本身：看状态文件，不看退出码
+        expect(installPrompt(harness, locale, "windows")).toContain(stateFileName(harness));
+        expect(installPrompt(harness, locale, "posix")).toMatch(/永远 exit 0|always exits 0/);
+      }
+    }
+  });
+
   it("separates \"files are there\" from \"the link works\"", () => {
     // 这两件事混成一个「已安装」，正是用户卡住的地方：装完没 enable / 没授信 / 没重启时，
     // 目录照样在，而形象一直不动，界面却说一切正常。
@@ -116,14 +151,6 @@ describe("connector install wizard", () => {
     expect(freshness(86400 * 3, "en")).toBe("3 days ago");
   });
 
-  it("names every install stage and passes unknown ones through", () => {
-    for (const stage of ["download", "extract", "install"]) {
-      expect(progressText(stage, "zh-CN")).not.toBe(stage);
-      expect(progressText(stage, "en")).not.toBe(stage);
-    }
-    expect(progressText("mystery", "en")).toBe("mystery");
-  });
-
   it("never relies on the browser dialogs the webview does not implement", () => {
     // Tauri 的 webview 不实现 JS 的 alert/confirm/prompt（官方要用 dialog 插件），
     // 它们**静默返回**——表现是「点了没有任何反应」，用户既没有弹窗也没有错误（实机撞到）。
@@ -141,8 +168,11 @@ describe("connector install wizard", () => {
   it("is reachable from the Agent tab and registered as Tauri commands", () => {
     expect(readFileSync("settings.html", "utf8")).toContain('data-list="connectors"');
     const lib = readFileSync("src-tauri/src/lib.rs", "utf8");
-    for (const command of ["list_connectors", "install_connector", "uninstall_connector"]) {
+    for (const command of ["list_connectors", "uninstall_connector"]) {
       expect(lib).toContain(`connectors::${command}`);
     }
+    // app **不装** connector：装是用户的 agent 干的活（没有下载、没有解压、没有跑脚本 ——
+    // 那三步正是杀软误报的来源，实机被卡巴删过文件）。
+    expect(lib).not.toContain("connectors::install_connector");
   });
 });

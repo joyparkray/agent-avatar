@@ -1,7 +1,6 @@
 import "./connectors.css";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { diagnosePrompt, diagnosisReasons } from "./connector-diagnosis";
+import { diagnosePrompt, diagnosisReasons, installPrompt } from "./connector-diagnosis";
 import { errorMessage } from "./errors";
 import type { Language } from "./prefs";
 
@@ -70,53 +69,47 @@ export function freshness(seconds: number, locale: Language): string {
 export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
   "zh-CN": {
     title: "接入你的 Agent",
-    hint: "选一个你在用的 agent，Agent Avatar 会自动下载并安装对应的 connector —— 不需要打开终端。",
+    hint: "选一个你在用的 agent，复制一段话贴给它 —— 装 connector 这件事由它来做。命令都是钉死的，你可以先读一遍再让它跑。",
     "link.missing": "插件未安装，需安装插件",
     "link.unconfigured": "插件已安装，需人工配置",
     "link.connected": "插件正常，已连通",
     "details.show": "安装说明", "details.steps": "还需要你做这几步：",
     "details.none": "装完即用，没有额外步骤。新开一个会话就会生效。",
     "details.stale": "如果它之前一直是好的，多半是系统清理了临时目录；新开一次会话就会恢复。",
+    "prompt.install": "复制安装提示词",
+    "prompt.reinstall": "复制重装提示词",
+    "prompt.copied": "已复制，贴给你的 agent 就行",
+    "prompt.copyFailed": "复制不了，请手动选中下面这段：",
     "diagnosis.title": "一直没通？可能是这些原因：",
     "diagnosis.ask": "复制排查提示词",
-    "diagnosis.copied": "已复制，贴给你的 agent 就行",
-    "diagnosis.copyFailed": "复制不了，请手动选中下面这段：",
-    install: "安装", reinstall: "重装", uninstall: "卸载", done: "完成",
-    "stage.download": "正在下载 connector…",
-    "stage.extract": "正在解压…",
-    "stage.install": "正在安装…",
-    "stage.ok": "安装完成",
+    uninstall: "卸载", done: "完成",
     "stage.removed": "已卸载",
     uninstallConfirm: "再点一次「确认卸载」就会删除插件目录：",
     uninstallAgain: "确认卸载",
     listFailed: "读不到接入状态：",
-    failed: "安装失败：",
     loading: "读取中…",
     skip: "以后再说",
   },
   en: {
     title: "Connect your agent",
-    hint: "Pick the agent you use. Agent Avatar downloads and installs its connector for you — no terminal needed.",
+    hint: "Pick the agent you use and copy a prompt for it — installing the connector is its job. The commands are fixed, so you can read them before letting it run.",
     "link.missing": "Plugin not installed — install it",
     "link.unconfigured": "Installed — needs manual setup",
     "link.connected": "Connected and working",
     "details.show": "Setup guide", "details.steps": "You still need to:",
     "details.none": "Nothing else to do. It takes effect in your next session.",
     "details.stale": "If it used to work, the temp directory was probably cleaned — start a new session to restore it.",
+    "prompt.install": "Copy install prompt",
+    "prompt.reinstall": "Copy reinstall prompt",
+    "prompt.copied": "Copied — paste it to your agent",
+    "prompt.copyFailed": "Couldn't copy. Select this text instead:",
     "diagnosis.title": "Still not connected? It could be:",
     "diagnosis.ask": "Copy a prompt for your agent",
-    "diagnosis.copied": "Copied — paste it to your agent",
-    "diagnosis.copyFailed": "Couldn't copy. Select this text instead:",
-    install: "Install", reinstall: "Reinstall", uninstall: "Uninstall", done: "Done",
-    "stage.download": "Downloading connector…",
-    "stage.extract": "Extracting…",
-    "stage.install": "Installing…",
-    "stage.ok": "Installed",
+    uninstall: "Uninstall", done: "Done",
     "stage.removed": "Uninstalled",
     uninstallConfirm: "Click Confirm again to remove the plugin directory for",
     uninstallAgain: "Confirm",
     listFailed: "Could not read connector status: ",
-    failed: "Installation failed: ",
     loading: "Loading…",
     skip: "Not now",
   },
@@ -153,10 +146,6 @@ export function postInstallSteps(harness: string, locale: Language): string[] {
 
 const tr = (locale: Language, key: string): string => CONNECTOR_TEXT[locale][key] ?? key;
 
-/** Rust 侧的三段进度。未知阶段照原样显示，不吞掉。 */
-export const progressText = (stage: string, locale: Language): string =>
-  CONNECTOR_TEXT[locale][`stage.${stage}`] ?? stage;
-
 /**
  * **失败不能当成「一家都没装」**：`list_connectors` 被拒（命令没登记进
  * `permissions/skin.toml` 就会这样）或出错时，原来的 `.catch(() => [])` 让界面把五家
@@ -168,10 +157,6 @@ const listConnectors = (): Promise<ConnectorState[]> => invoke<ConnectorState[]>
 /** 装/卸完成后要显示的一条提示。重画会把整棵 DOM 换掉，提示得跟着搬过去。 */
 interface Pending { harness: string; message: string; kind: "ok" | "error" }
 
-/** 进度事件是全局的：每个宿主只保留**最后一次**渲染的接收者，否则重画一次就叠一层。 */
-let subscribed = false;
-const sinks = new Map<HTMLElement, (payload: { harness: string; stage: string }) => void>();
-
 /**
  * 把五家渲染进 `host`。重复调用会重画（安装完刷新状态走的就是同一条路径）。
  *
@@ -179,21 +164,30 @@ const sinks = new Map<HTMLElement, (payload: { harness: string; stage: string })
  */
 export function renderConnectors(host: HTMLElement, locale: Language, onChange?: () => void, pending?: Pending): void {
   const text = (key: string) => tr(locale, key);
+  /**
+   * 复制一段提示词，并把原文摊在下面。
+   *
+   * **原文一定要摊开**，不只是为了剪贴板不可用时兜底（webview 里它确实不保证可用）：
+   * 这段话是要交给一个能执行命令的 agent 的，用户有权在按下去之前看清楚它写了什么。
+   */
+  const copyPrompt = (harness: string, prompt: string) => {
+    const box = prompts.get(harness);
+    if (box) { box.value = prompt; box.hidden = false; }
+    const done = () => say(harness, text("prompt.copied"), "ok");
+    const fallback = () => { box?.select(); say(harness, text("prompt.copyFailed"), "error"); };
+    try {
+      void navigator.clipboard.writeText(prompt).then(done, fallback);
+    } catch { fallback(); }
+  };
   host.textContent = text("loading");
   const rows = new Map<string, HTMLElement>();
+  const prompts = new Map<string, HTMLTextAreaElement>();
   const say = (harness: string, message: string, kind: "" | "ok" | "error" = "") => {
     const status = rows.get(harness);
     if (!status) return;
     status.textContent = message;
     status.className = `connector-status ${kind}`;
   };
-  if (!subscribed) {
-    subscribed = true;
-    void listen<{ harness: string; stage: string }>("connector-progress",
-      ({ payload }) => sinks.forEach(sink => sink(payload))).catch(console.error);
-  }
-  sinks.set(host, payload => say(payload.harness, progressText(payload.stage, locale)));
-
   void listConnectors().catch(error => {
     host.textContent = "";
     const failed = document.createElement("p");
@@ -254,22 +248,15 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
       const busy = (on: boolean) => actions.querySelectorAll("button").forEach(button => { button.disabled = on; });
       const redraw = (next: Pending) => { renderConnectors(host, locale, onChange, next); onChange?.(); };
 
+      // 🔴 **app 不装 connector。** 它给用户一段可粘贴的话，由用户的 agent 去执行。
+      // 那条路比 app 自己装干净得多：没有下载（也就没有 Mark of the Web）、
+      // 没有未签名脚本改配置（实机撞到过：卡巴斯基把安装脚本判成 PDM:Trojan.Win32.Generic
+      // 并直接删除），而且 agent 能做 app 做不了的事 —— 缺 Python 时它可以（在用户点头后）
+      // 装一个、看得懂报错、还能重试。
       const install = document.createElement("button");
-      install.type = "button";
-      // 只有「安装」是主行动。已经装好的那一行把「重装」涂成主色，等于把最显眼的位置
-      // 让给一个多数人不该点的按钮。
       if (!installed) install.className = "primary";
-      install.textContent = text(installed ? "reinstall" : "install");
-      install.addEventListener("click", () => {
-        busy(true);
-        say(harness, progressText("download", locale));
-        void invoke<{ log?: string }>("install_connector", { harness }).then(result => {
-          const detail = String(result?.log ?? "").trim();
-          if (detail) console.info(`connector:${harness}`, detail);
-          // 装完的手动步骤跟着重画一起显示：这时候不说，用户就再也不会主动去点开说明。
-          redraw({ harness, kind: "ok", message: [text("stage.ok"), ...steps.map(step => `· ${step}`)].join("\n") });
-        }).catch(error => { busy(false); say(harness, text("failed") + errorMessage(error, locale), "error"); });
-      });
+      install.textContent = text(installed ? "prompt.reinstall" : "prompt.install");
+      install.addEventListener("click", () => copyPrompt(harness, installPrompt(harness, locale)));
       actions.append(install);
 
       if (installed) {
@@ -300,6 +287,11 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
         });
         actions.append(remove);
       }
+      // 每一行都有一个提示词框：点「复制」时把原文摊在这里，用户按下去之前看得见它写了什么。
+      const prompt = document.createElement("textarea");
+      prompt.className = "connector-prompt"; prompt.hidden = true; prompt.readOnly = true; prompt.rows = 8;
+      prompts.set(harness, prompt);
+
       // 「装了但从没上报」这一档：光说「需人工配置」不够 —— 用户已经卡住了，
       // 他需要的是「可能是哪儿」和「怎么查」。杀软那一条尤其要写出来：
       // 文件被删掉之后，界面上只表现为「装了但不动」，普通用户永远想不到那儿去。
@@ -312,29 +304,13 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
         for (const reason of diagnosisReasons(harness, locale)) {
           const item = document.createElement("li"); item.textContent = reason; reasons.append(item);
         }
-        // 提示词里是**钉死的命令**，不是「去找找看」——用户本来就坐在一个能执行命令的 agent
-        // 面前，这是本产品独有的分发优势；但只有当那句话退化成确定的命令时，
-        // 用户和我们才都能确认它做了什么。
         const ask = document.createElement("button");
         ask.type = "button"; ask.className = "ghost"; ask.textContent = text("diagnosis.ask");
-        const prompt = document.createElement("textarea");
-        prompt.className = "connector-prompt"; prompt.hidden = true; prompt.readOnly = true;
-        prompt.rows = 8; prompt.value = diagnosePrompt(harness, locale);
-        ask.addEventListener("click", () => {
-          const copied = () => say(harness, text("diagnosis.copied"));
-          // 剪贴板在 webview 里不保证可用（非安全上下文 / 权限）。失败时把原文摊开
-          // 让用户自己选 —— 不能让一个「复制」按钮点了没反应。
-          const fallback = () => {
-            prompt.hidden = false; prompt.select();
-            say(harness, text("diagnosis.copyFailed"), "error");
-          };
-          try {
-            void navigator.clipboard.writeText(prompt.value).then(copied, fallback);
-          } catch { fallback(); }
-        });
-        diagnosis.append(title, reasons, ask, prompt);
+        ask.addEventListener("click", () => copyPrompt(harness, diagnosePrompt(harness, locale)));
+        diagnosis.append(title, reasons, ask);
       }
-      row.append(name, actions, link, status, details, diagnosis);
+
+      row.append(name, actions, link, status, details, diagnosis, prompt);
       host.append(row);
     }
     if (pending) say(pending.harness, pending.message, pending.kind);

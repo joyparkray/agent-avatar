@@ -91,7 +91,7 @@ describe("error codes stay in sync with the Rust side", () => {
       const found = rust.match(new RegExp(`pub const ${name}: &str = "([^"]+)"`));
       return found![1];
     });
-    expect(codes.length).toBeGreaterThan(10);
+    expect(codes.length).toBeGreaterThan(5);   // 只是防止正则一无所获，不是在数具体有几条
     expect([...ERROR_CODES].sort()).toEqual([...codes].sort());
   });
 

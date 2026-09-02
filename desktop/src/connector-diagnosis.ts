@@ -10,7 +10,16 @@ import type { Language } from "./prefs";
  * 🔴 这是三层诊断里的**第 3 层**（见 private/RELEASE-CONNECTOR-WIZARD-DESIGN.md
  * 「失效怎么被看见」）：插件根本没跑起来时我们的代码一行都没执行，写不了任何诊断文件，
  * 所以这一层只能由 app 从外面判断 —— `installed && lastSignal == null` 就是它。
+ *
+ * 装 connector 的提示词也在这里。app **不下载、不解压、不跑脚本**（那三步正是杀软误报的
+ * 来源，实机被卡巴删过文件）—— 它只把一段钉死的命令交给用户的 agent 去执行。
  */
+
+/**
+ * connector 的发布仓库。**必须与 connectors/build-marketplace.sh 里的 `REPO` 一致**
+ * （有测试盯着）—— 两处各写一份必然会漂，而漂了之后表现是「照提示词跑完，装的是另一个仓库」。
+ */
+export const MARKETPLACE_REPO = "joyparkray/agent-avatar-connectors";
 
 /** 各家的状态文件名。Hermes 沿用无后缀的老路径（已装好的用户不该因为改名就断掉）。 */
 export function stateFileName(harness: string): string {
@@ -107,4 +116,90 @@ export function diagnosePrompt(harness: string, locale: Language): string {
        "",
        "Report what you find. Don't change any configuration yet."];
   return lines.join("\n");
+}
+
+/** 这台机器要不要那一步「本地化」。只有 Windows 要 —— POSIX 上 `python3` 本来就是对的。 */
+export type Platform = "windows" | "posix";
+
+export function currentPlatform(): Platform {
+  return /win/i.test(navigator.userAgent) ? "windows" : "posix";
+}
+
+/** 各家用哪个 CLI 装。dsh 与 hermes 不走 marketplace，见下面的分支。 */
+const MARKETPLACE_CLI: Record<string, string> = {
+  "claude-code": "claude",
+  codex: "codex",
+  workbuddy: "codebuddy",
+};
+
+/**
+ * 装 connector 的提示词 —— 直接贴给 agent。
+ *
+ * 🔴 **里面必须是钉死的命令。** 提示词会被复制、转发、改写，别处流传的仿冒版本可以指向
+ * 任何地方；只有当它退化成「执行这几条确定的命令」时，用户和我们才都能确认它做了什么。
+ * 所以这里绝不写「帮我装一下 Agent Avatar」，而是写清楚仓库、命令、参数。
+ *
+ * 两条边界写进提示词本身：
+ * - **授信 / 登录这类要人点头的步骤不许代做**（Codex 的 `/hooks` 尤其）。它们存在的意义
+ *   就是「让人看一眼再点头」，让 agent 代做等于把这道防线拆了。
+ * - **装 Python 要先问用户**。在别人机器上装软件应当由机器的主人点头。
+ */
+export function installPrompt(harness: string, locale: Language, platform: Platform = currentPlatform()): string {
+  const zh = locale !== "en";
+  const cli = MARKETPLACE_CLI[harness];
+  const windows = platform === "windows";
+  const clone = [
+    `git clone https://github.com/${MARKETPLACE_REPO} agent-avatar-connectors`,
+    "cd agent-avatar-connectors",
+  ];
+  // Windows 上 `python3` 是 0 字节的应用商店存根，所以插件里那句 `python3` 必须先换成
+  // 本机解释器的绝对路径。这一步是**一条命令**，不是让 agent 逐字改 JSON ——
+  // 后者每次结果都可能不同，而这条链路上的错误是静默的。
+  const localize = `python localize.py ${harness}`;
+
+  let steps: string[];
+  if (cli) {
+    steps = windows
+      ? [...clone, localize, `${cli} plugin marketplace add .`, `${cli} plugin install agent-avatar@agent-avatar`]
+      : [`${cli} plugin marketplace add ${MARKETPLACE_REPO}`, `${cli} plugin install agent-avatar@agent-avatar`];
+  } else if (harness === "dsh") {
+    // dsh 没有「插件市场」式的安装命令给本地目录用，装法是往它的用户 patch 层加一条 insert。
+    // 那个文件被 dsh 的 HMR 监视着，正在跑的 dsh 会热加载。
+    steps = [...clone, ...(windows ? [localize] : []),
+      zh ? "把插件目录的绝对路径记下来（plugins/dsh/agent-avatar/index.mjs）"
+         : "Note the absolute path of plugins/dsh/agent-avatar/index.mjs",
+      zh ? "在 $DSH_HOME/cordis.patch.yml 末尾加一段（先备份），name 用上一步那个路径；Windows 上必须写成 file:/// 开头的 URL，否则 Node 会把盘符当成协议名："
+         : "Append this block to $DSH_HOME/cordis.patch.yml (back it up first), with name set to that path. On Windows it must be a file:/// URL, otherwise Node treats the drive letter as a scheme:",
+      ["- insert:", "    - id: agent-avatar", "      name: <上一步的路径>"].join("\n")];
+  } else {
+    // Hermes 是 in-process 的 Python 包，拷进插件目录再启用即可。五家里唯一不需要本地化的。
+    steps = [...clone,
+      zh ? "把 plugins/hermes/agent-avatar 整个目录拷到 $HERMES_HOME/plugins/agent-avatar（默认 ~/.hermes）"
+         : "Copy the whole plugins/hermes/agent-avatar directory to $HERMES_HOME/plugins/agent-avatar (default ~/.hermes)",
+      "hermes plugins enable agent-avatar"];
+  }
+
+  const verify = zh
+    ? `确认真的通了：跑一轮之后看 ${windows ? "%TEMP%\\" : "$TMPDIR/"}${stateFileName(harness)} 有没有出现、内容会不会随会话变化。**不要只看命令有没有报错** —— hook 的设计是永远 exit 0，退出码说明不了任何事。`
+    : `Verify it actually works: after one turn, check that ${windows ? "%TEMP%\\" : "$TMPDIR/"}${stateFileName(harness)} exists and changes as the session moves. **Don't just check that the commands succeeded** — the hook always exits 0 by design, so its exit code proves nothing.`;
+
+  const boundaries = [
+    zh ? "如果这台机器上没有可用的 Python，**先问我**再装（Windows: winget install Python.Python.3.13）。"
+       : "If this machine has no usable Python, **ask me first** before installing one (Windows: winget install Python.Python.3.13).",
+    ...(harness === "codex"
+      ? [zh ? "装完之后**不要替我授信**：Codex 的 /hooks 授信必须由我自己点，告诉我该去点什么就行。"
+            : "After installing, **do not trust the hooks for me**: the /hooks approval in Codex is mine to click — just tell me what to click."]
+      : []),
+  ];
+
+  return [
+    zh ? `帮我装 Agent Avatar 的 ${harness} connector（一个纯观察者插件：只读事件、写一个本地状态文件，不改变 agent 的行为）。按顺序执行：`
+       : `Install the Agent Avatar ${harness} connector for me (a pure observer plugin: it reads events and writes a local state file; it never changes the agent's behaviour). Run these in order:`,
+    "",
+    ...steps.map((step, index) => `${index + 1}) ${step}`),
+    "",
+    verify,
+    "",
+    ...boundaries,
+  ].join("\n");
 }

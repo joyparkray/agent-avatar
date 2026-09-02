@@ -1,45 +1,56 @@
-//! Agent connector（各家 harness 的插件）一键接入。
+//! Agent connector（各家 harness 的插件）的**检测与诊断**。
 //!
-//! **为什么在 app 里跑外部命令而不是让用户开终端**：接入 connector 原来的路子是
-//! 「去 Release 下 connectors.zip → 解压 → 在终端里跑 install-plugin.sh」。
-//! 这三步里每一步都能把非开发者用户挡在门外，而它们全都是机械动作 —— 应用自己做得了。
+//! 🔴 **这个模块不装任何东西。** 定案（见 private/RELEASE-CONNECTOR-WIZARD-DESIGN.md
+//! 「已定方案」）之后，装 connector 这件事交给用户的 agent 做 ——
+//! 用户本来就坐在一个能执行命令的 agent 面前，而那条路比 app 自己装干净得多：
 //!
-//! **为什么下载/解压用 `curl` / `unzip` 而不是引 crate**：两者都是 macOS 自带
-//! （`/usr/bin/curl`、`/usr/bin/unzip`），而引 reqwest + zip 会给一个 5MB 的桌宠
-//! 拖进上百个传递依赖。应用本来就已经在用 `Command`（见 config.rs 的 `open`）。
+//! - **没有下载**：harness 用自己的插件渠道去 clone，不经过我们。
+//!   app 下载的文件在 Windows 上会被打上 Mark of the Web，然后「未签名脚本改配置」
+//!   会被行为分析盯上 —— 实机撞到过：卡巴斯基把我们的安装脚本判成
+//!   `PDM:Trojan.Win32.Generic` 并**直接删除**。
+//! - **没有解压、没有执行脚本**：那两步一起消失了。
+//! - **agent 能做 app 做不了的事**：缺 Python 时它可以（在用户点头后）装一个，
+//!   看得懂报错，还能重试。
 //!
-//! **为什么必须整棵树解压**：`connectors/<harness>/install-plugin.sh` 内部用相对路径引
-//! `../assemble.sh` 与 `../../bridge/state_machine.py`。拆散目录 = 装完的插件缺 core，
-//! 而那种失败是静默的（hook 起不来，形象一直 idle）。所以 staging 目录里必须同时有
-//! `connectors/` 和 `bridge/` 两棵，且保持相对位置。
+//! 于是这里只剩两件事，也正是 app 唯一做得比 agent 好的两件事：
 //!
-//! 本模块**不改 connector 的安装脚本**：脚本是五家共用的单一真相，app 只是替用户按下回车。
+//! 1. **检测**——插件装没装（`plugin_dirs`），以及**有没有真的上报过**
+//!    （`hermes::last_signal_seconds`）。这两件事必须分开：目录在只说明文件拷过去了，
+//!    没 enable / 没授信 / 没重启时目录照样在，而用户看到的是「装好了但形象一直不动」。
+//! 2. **卸载**——删目录、清各家的注册项。这一步没有下载，也就没有上面那些问题。
+//!
+//! 提示词（装 / 排查）在前端 `src/connector-diagnosis.ts`。
 use crate::user_error;
 use serde_json::{json, Value};
 use std::{env, fs, path::{Path, PathBuf}, process::Command};
-use tauri::Emitter;
 
 /// 认得的 harness。**这是白名单**：名字会被拼进路径与命令行，不能让任意字符串进来。
 pub const HARNESSES: [&str; 5] = ["claude-code", "codex", "dsh", "hermes", "workbuddy"];
 
-/// 正式发布地址。`latest/download` 是 GitHub 的稳定别名，不需要在 app 里写死版本号。
-const RELEASE_URL: &str =
-    "https://github.com/joyparkray/agent-avatar/releases/latest/download/agent-avatar-connectors.zip";
-
-/// 本地联调用的覆盖项：指向一个已经构建好的 zip，跳过下载这一步。
-/// 仓库还没发布 Release 时（或想验证未发布的改动）用它。
-const LOCAL_ZIP_ENV: &str = "AGENT_AVATAR_CONNECTORS_ZIP";
-
-/// 从 Finder 启动的 app 只继承一份最小 PATH（`/usr/bin:/bin:/usr/sbin:/sbin`），
-/// 而安装脚本要调 `python3`、`node`、`codex`、`codebuddy` —— 后三个几乎都装在
-/// Homebrew / 用户目录下。不补这一段的话，用户从终端跑成功、从 app 里跑失败，
+/// 卸载时要调各家的 CLI（`codex plugin remove` / `codebuddy plugin uninstall`）。
+/// 从 Finder 或资源管理器启动的 app 只继承一份最小 PATH，而那几个 CLI 装在
+/// Homebrew / npm 的全局 bin 下 —— 不补这一段的话，用户从终端跑成功、从 app 里跑失败，
 /// 而错误信息只是「command not found」，完全指不到真正的原因。
+///
+/// 两个平台的分隔符和落点都不一样：POSIX 是 `:` 与 Homebrew，Windows 是 `;` 与
+/// npm 的全局 bin。照搬 POSIX 那套到 Windows 上等于**没补**。
 fn command_path() -> String {
-    let inherited = env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".to_owned());
-    let home = env::var("HOME").unwrap_or_default();
-    let extra = ["/opt/homebrew/bin", "/usr/local/bin", &format!("{home}/.local/bin"), &format!("{home}/bin")]
-        .join(":");
-    format!("{extra}:{inherited}")
+    let user = home();
+    let user = user.display().to_string();
+    #[cfg(windows)]
+    let (separator, extra) = (";", vec![
+        // npm 的全局 bin —— codebuddy / dsh 都装在这儿
+        format!(r"{user}\AppData\Roaming\npm"),
+        format!(r"{user}\.local\bin"),
+    ]);
+    #[cfg(not(windows))]
+    let (separator, extra) = (":", vec![
+        "/opt/homebrew/bin".to_owned(), "/usr/local/bin".to_owned(),
+        format!("{user}/.local/bin"), format!("{user}/bin"),
+    ]);
+    let fallback = if cfg!(windows) { String::new() } else { "/usr/bin:/bin:/usr/sbin:/sbin".to_owned() };
+    let inherited = env::var("PATH").unwrap_or(fallback);
+    format!("{}{separator}{inherited}", extra.join(separator))
 }
 
 /// 用户目录。**Windows 上没有 `HOME`** —— 那是 POSIX 与 Git Bash 的约定，
@@ -123,11 +134,6 @@ pub fn list_connectors() -> Vec<Value> {
     }).collect()
 }
 
-/// 下载/解压/执行三段各报一次。静默失败最难查 —— 用户只会看到「点了没反应」。
-fn progress(app: &tauri::AppHandle, harness: &str, stage: &str) {
-    let _ = app.emit("connector-progress", json!({ "harness": harness, "stage": stage }));
-}
-
 /// 外部命令的回显。stdout/stderr 都要 —— 安装脚本的后续步骤提示走 stdout，失败原因走 stderr。
 fn run(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
     let mut command = Command::new(program);
@@ -146,71 +152,6 @@ fn tail(text: &str, max: usize) -> String {
     // 不能从多字节字符中间切，否则中文回显会被切成乱码
     let start = (start..trimmed.len()).find(|index| trimmed.is_char_boundary(*index)).unwrap_or(trimmed.len());
     format!("…\n{}", &trimmed[start..])
-}
-
-/// 把 zip 弄到 staging 目录。`local` 有值时直接拷（本地联调），否则从 Release 下。
-fn fetch_zip(target: &Path, local: Option<&Path>) -> Result<(), String> {
-    if let Some(source) = local {
-        if !source.is_file() { return Err(format!("{}|{}", user_error::LOCAL_ZIP_MISSING, source.display())); }
-        fs::copy(source, target).map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-    // `--proto =https`：只允许 https，连重定向也不许降级到别的协议。
-    //
-    // **超时是必须的**：curl 默认没有总时限。断网 / 连上了但不发数据时它会一直挂着，
-    // 而界面上表现为「正在下载…」永远不结束、那一行的按钮永远是灰的 ——
-    // 用户既得不到错误也没法重试，只能重启应用。zip 只有 93KB，宁可早点报错让他再点一次。
-    run("/usr/bin/curl", &["-fsSL", "--proto", "=https", "--proto-redir", "=https",
-                           "--connect-timeout", "15", "--max-time", "120",
-                           "-o", &target.display().to_string(), RELEASE_URL], None)
-        .map(|_| ())
-        .map_err(|error| format!("{}|{error}", user_error::DOWNLOAD_FAILED))
-}
-
-/// 取回并解压整棵树，返回这家的 install-plugin.sh 路径。
-///
-/// **两棵树必须同时在、且保持相对位置**：install-plugin.sh 内部引 `../assemble.sh` 与
-/// `../../bridge/state_machine.py`。缺 core 时装出来的插件是坏的，而那种坏是静默的
-/// （hook 起不来，形象一直 idle），所以这里先验结构再交给脚本。
-/// `stage` 在每一段开始时回调 —— 进度必须在**做之前**报，做完再报等于全程只闪一下。
-fn prepare_staging(staging: &Path, harness: &str, local: Option<&Path>, stage: &dyn Fn(&str)) -> Result<PathBuf, String> {
-    let zip = staging.join("agent-avatar-connectors.zip");
-    stage("download");
-    fetch_zip(&zip, local)?;
-    stage("extract");
-    // 先清掉上一次解压的两棵树：`unzip -o` 只覆盖同名文件，被删掉的文件会留成幽灵。
-    for stale in ["connectors", "bridge"] { let _ = fs::remove_dir_all(staging.join(stale)); }
-    run("/usr/bin/unzip", &["-q", "-o", &zip.display().to_string(), "-d", &staging.display().to_string()], None)
-        .map_err(|error| format!("{}|{error}", user_error::EXTRACT_FAILED))?;
-    let script = staging.join("connectors").join(harness).join("install-plugin.sh");
-    if !script.is_file() || !staging.join("bridge/state_machine.py").is_file() {
-        return Err(user_error::BAD_ARCHIVE.to_owned());
-    }
-    Ok(script)
-}
-
-/// staging 根目录。放在 app 数据目录下，与模型同级 —— 不写 .app 自身（签名会失效）。
-fn staging_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = crate::config::data_dir(app)?.join("connectors-staging");
-    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    Ok(dir)
-}
-
-/// 一键接入：下载 → 解压 → 跑这家的 install-plugin.sh。
-///
-/// 返回安装脚本的回显 —— 各家脚本末尾都印了「接着做什么」，那正是用户需要看到的东西。
-#[tauri::command(async)]
-pub fn install_connector(app: tauri::AppHandle, harness: String) -> Result<Value, String> {
-    if !HARNESSES.contains(&harness.as_str()) { return Err(format!("{}|{harness}", user_error::UNKNOWN_HARNESS)); }
-    let staging = staging_dir(&app)?;
-    let local = env::var(LOCAL_ZIP_ENV).ok().filter(|value| !value.is_empty()).map(PathBuf::from);
-
-    let script = prepare_staging(&staging, &harness, local.as_deref(), &|stage| progress(&app, &harness, stage))?;
-
-    progress(&app, &harness, "install");
-    let log = run("/bin/sh", &[&script.display().to_string()], Some(&staging))
-        .map_err(|error| format!("{}|{error}", user_error::INSTALL_FAILED))?;
-    Ok(json!({ "harness": harness, "log": tail(&log, 2000) }))
 }
 
 /// dsh 的 patch 文件里由安装脚本托管的那一段。卸载要连它一起摘掉 ——
@@ -296,16 +237,9 @@ pub fn uninstall_connector(harness: String) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_path, home, plugin_dir, plugin_dirs, prepare_staging, strip_managed_block, tail,
+    use super::{command_path, home, plugin_dir, plugin_dirs, strip_managed_block, tail,
                 without_marketplace_entry, HARNESSES, LOCAL_MARKETPLACE};
-    use std::{env, fs, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
-
-    fn scratch(tag: &str) -> PathBuf {
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let dir = std::env::temp_dir().join(format!("agent-avatar-{tag}-{}-{nonce}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use std::{env, fs};
 
     #[test]
     fn every_harness_resolves_to_a_plugin_directory() {
@@ -376,44 +310,22 @@ mod tests {
     }
 
     #[test]
-    // Windows 上整条连接器链路（`command_path` 的 `:` 分隔符与 Homebrew 路径、`home()` 只读 HOME、
-    // 三条 `/usr/bin` 绝对路径）都还没做，属于 WP4。在那之前这条断言注定不成立 ——
-    // 显式 ignore 而不是删掉或改宽，是为了让它在测试输出里留一行可见的欠账。
-    #[cfg_attr(windows, ignore = "connector 链路尚未 Windows 化，见 WINDOWS-PORT.md WP4")]
-    fn command_path_adds_the_usual_install_locations() {
-        // 从 Finder 启动只继承最小 PATH，脚本要的 node/codex/codebuddy 都不在里面。
+    fn command_path_adds_where_the_harness_clis_actually_live() {
+        // 卸载时要调各家的 CLI（codex / codebuddy）。从 Finder 或资源管理器启动的 app
+        // 只继承一份最小 PATH，那几个都不在里面 —— 表现是「用户从终端跑成功、
+        // 从 app 里跑失败」，而错误只是 command not found，指不到真正的原因。
         let path = command_path();
-        assert!(path.contains("/opt/homebrew/bin"));
-        assert!(path.contains("/usr/local/bin"));
-        assert!(path.contains("/usr/bin"));
-    }
-
-    #[test]
-    fn staging_keeps_connectors_and_bridge_together() {
-        // install-plugin.sh 靠相对路径找 ../assemble.sh 与 ../../bridge/ —— 拆散就装出坏插件，
-        // 而那种坏是静默的（hook 起不来，形象一直 idle）。
-        let zip = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/agent-avatar-connectors.zip");
-        if !zip.is_file() {
-            println!("跳过：没有本地 release zip（{}），请先跑发布脚本", zip.display());
-            return;
+        #[cfg(not(windows))]
+        {
+            assert!(path.contains("/opt/homebrew/bin"), "{path}");
+            assert!(path.contains("/usr/local/bin"), "{path}");
         }
-        let dir = scratch("staging");
-        let script = prepare_staging(&dir, "claude-code", Some(&zip), &|_| {}).unwrap();
-        assert!(script.is_file(), "{}", script.display());
-        assert!(dir.join("bridge/state_machine.py").is_file(), "core 必须和 connectors/ 一起解出来");
-        assert!(dir.join("connectors/assemble.sh").is_file(), "五家共用的组装脚本也必须在");
-        // 重复安装是常见操作（重装按钮），不能因为目录已存在就失败
-        prepare_staging(&dir, "hermes", Some(&zip), &|_| {}).unwrap();
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn staging_reports_a_missing_local_zip_instead_of_installing_nothing() {
-        let dir = scratch("staging-missing");
-        let error = prepare_staging(&dir, "hermes", Some(Path::new("/nonexistent.zip")), &|_| {}).unwrap_err();
-        // 代号 + 细节：措辞在前端（见 lib.rs 的 user_error）
-        assert!(error.starts_with(&format!("{}|", crate::user_error::LOCAL_ZIP_MISSING)), "{error}");
-        fs::remove_dir_all(&dir).unwrap();
+        #[cfg(windows)]
+        {
+            // Windows 上 npm 的全局 bin 在 %APPDATA%\npm，那是 codebuddy / dsh 的落点
+            assert!(path.to_lowercase().contains("npm"), "{path}");
+            assert!(path.contains(';'), "Windows 的 PATH 用分号分隔：{path}");
+        }
     }
 
     #[test]
