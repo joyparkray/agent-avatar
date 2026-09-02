@@ -1,4 +1,4 @@
-import { actionLabel, actionsFor, CLICK, DBLCLICK, heldParameters, listActions, migrateTriggers, pickAction, shortcutsIn, type ActionItem, type SwitchTable, type Trigger } from "./actions";
+import { actionLabel, actionsFor, CLICK, DBLCLICK, defaultTriggers, heldParameters, listActions, migrateTriggers, pickAction, shortcutsIn, type ActionItem, type SwitchTable, type Trigger } from "./actions";
 import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 import "./style.css"; import "./state.css"; import { invoke } from "@tauri-apps/api/core"; import { getCurrentWindow } from "@tauri-apps/api/window";
 import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleActionPoolKey, heldActionPoolKey, aliasMapKey, hasStored, readStringMap, triggerMapKey, SHORTCUT_STATUS_EVENT, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, lipSensitivityPercent, mouthAmplitudePercent, readStateSource, writeStateSource, connectorWizardSeen, rememberConnectorWizardSeen, type Language, type StateSource, type SettingsChange } from "./prefs";
@@ -618,8 +618,10 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
   const actions = listActions(inventory, displayNames, switches);
   let triggers: Record<string, Trigger> = readStringMap(triggerMapKey(dir));
   if (!hasStored(triggerMapKey(dir))) {
-    // 1.0 的四个名单迁移一次；旧键留着不动，万一用户降级回去还在
-    triggers = migrateTriggers(actions, readPool(expressionPoolKey(dir)) ?? [], readPool(motionPoolKey(dir)) ?? []);
+    // 1.0 的名单迁移一次（旧键留着不动，万一用户降级回去还在）；从来没设过的模型给默认值
+    triggers = hasStored(expressionPoolKey(dir)) || hasStored(motionPoolKey(dir))
+      ? migrateTriggers(actions, readPool(expressionPoolKey(dir)) ?? [], readPool(motionPoolKey(dir)) ?? [])
+      : defaultTriggers(actions);
   }
   let aliases = readStringMap(aliasMapKey(dir));
   let idleActions: string[] = readPool(idleActionPoolKey(dir)) ?? actions.map(item => item.key);

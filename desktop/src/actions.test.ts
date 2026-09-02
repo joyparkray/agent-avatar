@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   acceleratorFromEvent, actionLabel, actionsFor, CLICK, DBLCLICK, isUsableShortcut,
-  groupActions, heldParameters, listActions, migrateTriggers, MOTION_GROUP, pickAction, shortcutsIn, type Trigger,
+  defaultTriggers, groupActions, heldParameters, listActions, migrateTriggers, MOTION_GROUP, pickAction, shortcutsIn, type Trigger,
 } from "./actions";
 import type { ModelInventory } from "./inventory";
 
@@ -174,5 +174,30 @@ describe("常驻", () => {
   it("作者没分类时就是一整块，不凭空造分类", () => {
     const flat = listActions({ expressions: ["a", "b"], motions: [] }, {}, { a: { param: "P1" }, b: { param: "P2" } });
     expect(groupActions(flat)).toHaveLength(1);
+  });
+});
+
+describe("默认触发", () => {
+  const switches = { Q: { param: "Param70", group: "隐藏" } };
+  const items = listActions(inventory, {}, switches);
+
+  /**
+   * 开关是外观状态，不是「你戳我一下」的回应。放进随机池的后果是点一下人物脑袋就没了 ——
+   * 1.0 的默认名单确实是这么干的，因为那时候还分不出开关和表情。
+   */
+  it("开关不进随机池，表情归单击、动作归双击", () => {
+    const out = defaultTriggers(items);
+    expect(out["expression:Q"]).toBeUndefined();
+    expect(out["expression:F1"]).toBe(CLICK);
+    expect(out["motion:TapBody:0"]).toBe(DBLCLICK);
+  });
+
+  it("迁移老名单时同样滤掉开关", () => {
+    expect(migrateTriggers(items, ["F1", "Q"], [])).toEqual({ "expression:F1": CLICK });
+  });
+
+  it("全是开关的模型默认一个都不绑 —— 不替用户决定点一下该发生什么", () => {
+    const allSwitches = listActions({ expressions: ["a", "b"], motions: [] }, {}, { a: { param: "P1" }, b: { param: "P2" } });
+    expect(defaultTriggers(allSwitches)).toEqual({});
   });
 });

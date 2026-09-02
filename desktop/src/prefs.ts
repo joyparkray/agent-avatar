@@ -170,8 +170,17 @@ export function readStateSource(): StateSource { return readChoice("stateSource"
 export function writeStateSource(value: StateSource): void { writeRaw("stateSource", value); }
 
 /** `file` 不持久化：它指向一个一次性挑的文件，重启后那个选择没有意义，回落到 `global`。 */
+/**
+ * 默认**不采集**。
+ *
+ * 原来默认是 `global`，于是程序一启动就打开了系统音频回环 —— 用户还没要求口型同步，
+ * 杀毒软件已经在报「这个程序在收集音频」了。那个提示本身没错，错的是我们没等用户开口。
+ * 采集只在用户到设置里选了音源之后才开始。
+ *
+ * 已经存过选择的用户不受影响：存的值优先，这里改的只是没存过时用什么。
+ */
 export function readAudioSource(): PersistedAudioSource {
-  const stored = readChoice("audioSource", AUDIO_SOURCES, "global");
+  const stored = readChoice("audioSource", AUDIO_SOURCES, "off");
   return stored === "file" ? "global" : stored;
 }
 export function writeAudioSource(value: PersistedAudioSource): void { writeRaw("audioSource", value); }

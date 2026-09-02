@@ -9,6 +9,9 @@ Windows support, and the model handling needed to make third-party models work t
 
 ### Windows
 
+- Fixed: launching the app also opened a console window that stayed for the whole session.
+  The Windows GUI subsystem was never declared — it had never been needed on macOS.
+
 - Runs on Windows 10 and later. The transparent, always-on-top window and hardware
   accelerated Live2D rendering coexist on WebView2 — verified on real hardware, not CI,
   which has no GPU.
@@ -51,6 +54,15 @@ Windows support, and the model handling needed to make third-party models work t
 - The table is grouped by the author's own categories from `.cdi3.json` — boy8 arrives
   sorted into 隐藏 / 表情 / 动作 — with everything else under one heading rather than an
   invented taxonomy.
+- **Lip sync no longer starts by itself.** The audio source defaulted to system audio, so
+  the app opened a loopback capture the moment it launched and antivirus software
+  reasonably announced that this program was recording audio — before the user had asked
+  for anything. The default is now off; pick a source in Settings → Behaviour and capture
+  starts then. An existing choice is untouched.
+- Appearance switches are no longer bound to click by default. They are state, not a
+  reaction, and putting them in the random click pool meant clicking the character could
+  hide its head. Real expressions still default to click and motions to double-click, so
+  the character still responds out of the box.
 - Fixed: the **Idle** column in Settings was written to the config but never read. Idle
   autonomy was actually drawing from the double-click pool, so turning entries off for
   idle did nothing. It now uses the column you set.

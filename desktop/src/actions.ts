@@ -166,13 +166,33 @@ export function migrateTriggers(
   dblclickMotions: readonly string[],
 ): Record<string, Trigger> {
   const out: Record<string, Trigger> = {};
+  const usable = (key: string) => items.some(item => item.key === key && !item.hold);
   for (const name of clickExpressions) {
     const key = expressionActionKey(name);
-    if (items.some(item => item.key === key)) out[key] = CLICK;
+    if (usable(key)) out[key] = CLICK;
   }
   for (const motion of dblclickMotions) {
     const key = `motion:${motion}`;
-    if (items.some(item => item.key === key)) out[key] = DBLCLICK;
+    if (usable(key)) out[key] = DBLCLICK;
+  }
+  return out;
+}
+
+/**
+ * 没有任何历史设置时给的默认触发。
+ *
+ * **开关一律留空。** 它们是外观状态（猫耳、上身、手里的杯子），不是「你戳我一下」的回应；
+ * 放进随机池的后果是点一下人物脑袋就没了 —— 1.0 的默认名单确实是这么干的，
+ * 因为那时候还分不出开关和表情。所以迁移那条路也一并把开关滤掉。
+ *
+ * 剩下的按老规矩：真正的表情（多参数的那种）归单击，动作归双击。这样开箱点一下有反应，
+ * 又不会随机改变人物的外观。
+ */
+export function defaultTriggers(items: readonly ActionItem[]): Record<string, Trigger> {
+  const out: Record<string, Trigger> = {};
+  for (const item of items) {
+    if (item.hold) continue;
+    out[item.key] = item.kind === "motion" ? DBLCLICK : CLICK;
   }
   return out;
 }

@@ -1,4 +1,4 @@
-import { acceleratorFromEvent, actionLabel, groupActions, isUsableShortcut, listActions, migrateTriggers, MOTION_GROUP, type ActionItem, type SwitchTable } from "./actions";
+import { acceleratorFromEvent, actionLabel, groupActions, isUsableShortcut, listActions, defaultTriggers, migrateTriggers, MOTION_GROUP, type ActionItem, type SwitchTable } from "./actions";
 import "./settings.css";
 import { invoke } from "@tauri-apps/api/core";
 import { openRawLevelFor } from "./audio-source";
@@ -133,8 +133,10 @@ function bindActions(dir: string, items: readonly ActionItem[], idleDefault: rea
   // 从 1.0 的两个名单迁移一次。判据是「有没有存过」而不是「存的是不是空的」——
   // 用户把所有触发都清空之后，不能下次打开设置又被旧名单迁移回来。
   if (!hasStored(triggerMapKey(dir))) {
-    Object.assign(triggers, migrateTriggers(items,
-      readPool(expressionPoolKey(dir)) ?? [], readPool(motionPoolKey(dir)) ?? []));
+    const hadOldPools = hasStored(expressionPoolKey(dir)) || hasStored(motionPoolKey(dir));
+    Object.assign(triggers, hadOldPools
+      ? migrateTriggers(items, readPool(expressionPoolKey(dir)) ?? [], readPool(motionPoolKey(dir)) ?? [])
+      : defaultTriggers(items));
     writeStringMap(triggerMapKey(dir), triggers);
   }
 
