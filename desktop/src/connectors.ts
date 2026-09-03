@@ -1,6 +1,6 @@
 import "./connectors.css";
 import { invoke } from "@tauri-apps/api/core";
-import { CONNECTOR_VERSION, diagnosePrompt, diagnosisReasons, installPrompt, isOutdated, uninstallPrompt } from "./connector-diagnosis";
+import { CONNECTOR_VERSION, diagnosePrompt, diagnosisReasons, installPrompt, isOutdated, uninstallPrompt, updatePrompt } from "./connector-diagnosis";
 import { errorMessage } from "./errors";
 import type { Language } from "./prefs";
 
@@ -41,7 +41,9 @@ export interface ConnectorState {
   /** hook 最后一次出错留下的记录（第 2 层诊断）。从没出过错 = null。 */
   diagnostic?: { at?: string; message?: string; python?: string } | null;
   /** 装机时那次验证的记录：`localize.py` 跑通冒烟自检才会有。不是「装没装」的证据。 */
-  installRecord?: { at?: string; smoke_test?: string; python?: string; connector_version?: string } | null;
+  installRecord?: { at?: string; smoke_test?: string; python?: string; connector_version?: string;
+                    /** 插件树的位置 —— 更新提示词靠它算出当初 clone 到哪儿了 */
+                    source?: string } | null;
   /** harness 账本里的安装时间（ISO 8601）。只有 Claude Code 系的账本带。 */
   installedAt?: string | null;
 }
@@ -288,7 +290,12 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
       if (!installed) install.className = "primary";
       install.textContent = text(outdated ? "prompt.update" : installed ? "prompt.reinstall" : "prompt.install");
       if (outdated) install.className = "primary";      // 这一行现在有事要做，让它看得出来
-      install.addEventListener("click", () => copyPrompt(harness, installPrompt(harness, locale)));
+      // 更新和首装是两段不同的话：更新那段第一步是 `git pull`，而首装那段是 `git clone` ——
+      // 目录已经存在时 clone 直接失败。装机记录里的 source 让它能直接 cd 过去，
+      // agent 不用猜用户当初 clone 到哪儿了。
+      install.addEventListener("click", () => copyPrompt(harness, outdated
+        ? updatePrompt(harness, locale, undefined, entry.installRecord?.source)
+        : installPrompt(harness, locale)));
       actions.append(install);
 
       if (installed) {

@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { CONNECTOR_VERSION, diagnosePrompt, diagnosisReasons, installPrompt, isOutdated, MARKETPLACE_REPO, stateFileName } from "./connector-diagnosis";
+import { CONNECTOR_VERSION, diagnosePrompt, diagnosisReasons, installPrompt, isOutdated, MARKETPLACE_REPO, stateFileName, uninstallPrompt, updatePrompt } from "./connector-diagnosis";
 import { CONNECTOR_HARNESSES, CONNECTOR_TEXT, freshness, HARNESS_LABELS, linkState, postInstallSteps, statusLabel } from "./connectors";
 
 describe("connector install wizard", () => {
@@ -120,6 +120,55 @@ describe("connector install wizard", () => {
           expect(prompt).toMatch(/新会话|new session/i);
         }
       }
+    }
+  });
+
+  it("never tells a user who is ahead to update", () => {
+    // app 不联网，它唯一知道的「新」就是自己构建时配套的版本。connector 和 app 分开发布，
+    // 所以用户完全可能装到比 app 还新的 —— 那时候提示更新等于催他装一个更旧的。
+    expect(isOutdated("0.9.0")).toBe(true);
+    expect(isOutdated(CONNECTOR_VERSION)).toBe(false);
+    expect(isOutdated("99.0.0")).toBe(false);
+    expect(isOutdated("1.0.1")).toBe(false);
+    // 没上报版本的（旧 connector 根本不写这个字段）恰恰最该更新
+    expect(isOutdated(null)).toBe(true);
+    // 认不出的版本串不该催错方向
+    expect(isOutdated("weird")).toBe(false);
+  });
+
+  it("updates with a pull, not a clone", () => {
+    // 🔴 2026-09-03 发现：「复制更新提示词」那个按钮给的是**安装**那段，
+    // 而它第一步是 git clone —— 目录已经存在，agent 一跑就失败。
+    const clone = "C:/Users/x/agent-avatar-connectors/plugins/claude-code/agent-avatar";
+    const windows = updatePrompt("claude-code", "zh-CN", "windows", clone);
+    expect(windows).toContain("git pull");
+    expect(windows).not.toContain("git clone");
+    // 装机记录里的 source 指到插件树，往上三层才是仓库根 —— agent 不用猜
+    expect(windows).toContain("cd C:/Users/x/agent-avatar-connectors");
+    expect(windows).toContain("python localize.py claude-code");
+    // 先卸再装：同名插件 install 只会说「已安装」，不刷新缓存里那份副本
+    expect(windows.indexOf("plugin uninstall")).toBeLessThan(windows.indexOf("plugin install"));
+    // 没有装机记录时不能编一个路径出来
+    expect(updatePrompt("claude-code", "zh-CN", "windows")).not.toContain("cd undefined");
+    // mac 那条不需要本地化，但要先刷新市场
+    const posix = updatePrompt("claude-code", "zh-CN", "posix");
+    expect(posix).not.toContain("localize.py");
+    expect(posix).toContain("marketplace update");
+    // Codex 升级后必须重新授信 —— 不说的话表现是「升级后失灵」
+    expect(updatePrompt("codex", "zh-CN", "posix")).toMatch(/重新授信/);
+  });
+
+  it("hands uninstall to the harness's own CLI", () => {
+    // app 那个卸载按钮曾经删掉零个文件却报告成功（2026-09-03 实测）——
+    // 因为插件实际在 harness 的缓存里，而我们删的是自己猜的目录。
+    for (const locale of ["zh-CN", "en"] as const) {
+      expect(uninstallPrompt("claude-code", locale)).toContain("claude plugin uninstall agent-avatar");
+      // 只 uninstall 会留下市场登记，下次装同名插件容易装到旧版上
+      expect(uninstallPrompt("claude-code", locale)).toContain("marketplace remove");
+      expect(uninstallPrompt("workbuddy", locale)).toContain("codebuddy plugin uninstall");
+      expect(uninstallPrompt("dsh", locale)).toContain("cordis.patch.yml");
+      // Windows 上 hermes plugins remove 只做一半，不交代用户会以为卸干净了
+      expect(uninstallPrompt("hermes", locale)).toMatch(/config\.yaml/);
     }
   });
 

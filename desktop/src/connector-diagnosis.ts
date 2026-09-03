@@ -31,9 +31,35 @@ export const MARKETPLACE_REPO = "joyparkray/agent-avatar-connectors";
  */
 export const CONNECTOR_VERSION = "1.0.0";
 
-/** 上报的版本和 app 配套的对不上时，该不该提示更新。没上报过版本的（旧 connector）也算。 */
+/**
+ * 该不该提示更新 connector。
+ *
+ * 🔴 **口径是「比这个 app 自带的那版旧」，不是「比 GitHub 上最新的旧」** ——
+ * app 不联网（那是刻意的：不下载任何东西，见模块头）。它唯一知道的「新」就是自己
+ * 构建时配套的那个版本号。connector 和 app 分开发布，所以用户完全可能装到一个**比 app 还新**
+ * 的 connector —— 那种情况**不提示**，否则等于催他去装一个更旧的。
+ *
+ * 没上报过版本的（旧 connector 根本不写这个字段）算旧：那种恰恰最该更新。
+ */
 export function isOutdated(reported: string | null | undefined): boolean {
-  return reported !== CONNECTOR_VERSION;
+  // 字段缺失 = 旧 connector（它们根本不写这个字段），那种恰恰最该更新
+  if (!reported) return true;
+  if (reported === CONNECTOR_VERSION) return false;
+  // 读不懂的版本串**不提示**：可能是将来的新命名，也可能是文件坏了 ——
+  // 两种情况催更新都是错的。真坏了自有诊断那条路去说。
+  if (!/^\d/.test(reported.trim())) return false;
+  return compareVersions(reported, CONNECTOR_VERSION) < 0;
+}
+
+/** 逐段比数字的版本比较。段里读不出数字就按 0 算（`1.0.0-rc1` 的 `0-rc1` 那种）。 */
+function compareVersions(left: string, right: string): number {
+  const parse = (value: string) => value.split(".").map(part => Number.parseInt(part, 10) || 0);
+  const a = parse(left), b = parse(right);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference !== 0) return difference < 0 ? -1 : 1;
+  }
+  return 0;
 }
 
 /** 各家的状态文件名。Hermes 沿用无后缀的老路径（已装好的用户不该因为改名就断掉）。 */
@@ -293,5 +319,63 @@ export function uninstallPrompt(harness: string, locale: Language): string {
        : "If it was installed from a local clone (the Windows route), delete that agent-avatar-connectors directory too.",
     zh ? "**只告诉我成功还是失败。** 不用解释过程。"
        : "**Just tell me whether it worked.** No explanation needed.",
+  ].join("\n");
+}
+
+/**
+ * 更新 connector 的提示词。
+ *
+ * 🔴 **不能复用安装那段**：Windows 那条路第一步是 `git clone`，而目录已经存在 ——
+ * agent 一跑就失败（2026-09-03 发现时，「复制更新提示词」按钮给的正是安装那段）。
+ * 更新要做的是 `git pull` + 重新本地化 + 重装，三件事都和首装不同。
+ *
+ * `clonePath` 来自装机记录里的 `source`（`localize.py` 写的那份）——
+ * 有它就能直接 `cd` 过去，agent 不用猜用户当初把仓库 clone 到哪儿了。
+ */
+export function updatePrompt(harness: string, locale: Language, platform: Platform = currentPlatform(),
+                             clonePath?: string | null): string {
+  const zh = locale !== "en";
+  const cli = MARKETPLACE_CLI[harness];
+  const windows = platform === "windows";
+  const steps: string[] = [];
+
+  if (windows && harness !== "hermes") {
+    // 装机记录里的 source 指到插件树（<clone>/plugins/<harness>/agent-avatar），
+    // 往上三层才是仓库根。拿不到就让 agent 去找 —— 但先给出它长什么样。
+    const root = clonePath?.replace(/[\/]plugins[\/][^\/]+[\/]agent-avatar[\/]?$/, "");
+    steps.push(root
+      ? `cd ${root}`
+      : (zh ? "进到当初 clone 出来的 agent-avatar-connectors 目录" : "cd into the agent-avatar-connectors directory you cloned earlier"));
+    steps.push("git pull");
+    steps.push(`python localize.py ${harness}`);
+  }
+
+  if (cli) {
+    // 先卸再装：装同一个插件名时 CLI 只会说「已安装」，**不会刷新缓存里那份副本**。
+    // 远程 marketplace 那条路 install 会先刷新市场，所以不必单独 update。
+    steps.push(`${cli} plugin uninstall agent-avatar`);
+    steps.push(windows ? `${cli} plugin install agent-avatar@agent-avatar`
+                       : `${cli} plugin marketplace update agent-avatar`);
+    if (!windows) steps.push(`${cli} plugin install agent-avatar@agent-avatar`);
+  } else if (harness === "dsh") {
+    steps.push(zh ? "确认 $DSH_HOME/cordis.patch.yml 里那一段还指向同一个路径（一般不用改）"
+                  : "Check that the block in $DSH_HOME/cordis.patch.yml still points at the same path (usually unchanged)");
+  } else {
+    steps.push(`hermes plugins install ${MARKETPLACE_REPO}/plugins/hermes/agent-avatar --enable --force`,
+      "hermes plugins doctor agent-avatar", "hermes gateway restart");
+  }
+
+  return [
+    zh ? `帮我把 Agent Avatar 的 ${harness} connector 更新到最新版。执行：`
+       : `Update the Agent Avatar ${harness} connector to the latest version. Run:`,
+    "",
+    ...steps.map((step, index) => `${index + 1}) ${step}`),
+    "",
+    zh ? "**只告诉我成功还是失败。** 更新后开一个新会话才会生效。"
+       : "**Just tell me whether it worked.** It takes effect in a new session.",
+    ...(harness === "codex"
+      ? [zh ? "⚠️ 更新后 **hooks 要重新授信**（Codex 按 hook 的内容哈希记忆信任）—— 那一步我自己点，你告诉我去点什么就行。"
+            : "⚠️ After an update the **hooks must be trusted again** (Codex keys trust to the hook's content hash) — that step is mine to click; just tell me what to click."]
+      : []),
   ].join("\n");
 }
