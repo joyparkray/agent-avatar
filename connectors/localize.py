@@ -352,9 +352,15 @@ def main():
     if python != sys.executable.replace("\\", "/"):
         print("  (the original path contains spaces; using the 8.3 short path on the command line)")
     print("rewrote %d command(s) -> %s" % (count, config))
-    print("OK: %s connector is installed and self-tested on this machine. "
-          "Start a new %s session and the avatar will follow along."
-          % (arguments.harness, arguments.harness))
+    # 🔴 Say only what this run actually proved. It used to claim the connector was
+    # "installed", but this step runs *before* the harness install command — so an agent
+    # told to relay this line would have pasted "installed" on top of a failed install.
+    # What is proven here: this machine's interpreter runs the hook and a real event
+    # reaches the state file. Whether the harness accepted the plugin is the next step's
+    # to report.
+    print("OK: %s connector is ready and self-tested on this machine. "
+          "Finish the remaining steps, then start a new %s session and the avatar will "
+          "follow along." % (arguments.harness, arguments.harness))
     return 0
 
 

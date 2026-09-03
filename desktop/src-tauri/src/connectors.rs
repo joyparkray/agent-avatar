@@ -100,18 +100,60 @@ fn hermes_homes() -> Vec<PathBuf> {
 /// 有它就能区分「刚装完，当然还没上报」和「装了一天还是没上报」——
 /// 后者才是故障。没有就返回 None，界面退回只说「还没上报过」。
 fn ledger_installed_at(harness: &str) -> Option<String> {
-    let ledger = match harness {
-        "claude-code" => harness_home("CLAUDE_CONFIG_DIR", ".claude").join("plugins/installed_plugins.json"),
-        "workbuddy" => harness_home("WORKBUDDY_HOME", ".workbuddy").join("plugins/installed_plugins.json"),
+    let ledgers: Vec<PathBuf> = match harness {
+        "claude-code" => vec![harness_home("CLAUDE_CONFIG_DIR", ".claude").join("plugins/installed_plugins.json")],
+        // 两个 home 都要看，理由同 `installed_by_record` —— 这里原来只看 `.workbuddy`，
+        // 于是用独立 CLI 装的用户拿不到装机时间，「刚装好」的宽限期直接失效。
+        "workbuddy" => vec![harness_home("WORKBUDDY_HOME", ".workbuddy").join("plugins/installed_plugins.json"),
+                            harness_home("CODEBUDDY_CONFIG_DIR", ".codebuddy").join("plugins/installed_plugins.json")],
         _ => return None,
     };
-    let document: Value = serde_json::from_str(&fs::read_to_string(ledger).ok()?).ok()?;
-    let plugins = document.get("plugins")?.as_object()?;
-    plugins.iter()
-        .filter(|(name, _)| name.starts_with("agent-avatar@"))
-        .filter_map(|(_, entries)| entries.as_array()?.first()?.get("installedAt")?.as_str())
-        .map(str::to_owned)
-        .next()
+    ledgers.into_iter().find_map(|ledger| {
+        let document: Value = serde_json::from_str(&fs::read_to_string(ledger).ok()?).ok()?;
+        let plugins = document.get("plugins")?.as_object()?;
+        plugins.iter()
+            .filter(|(name, _)| name.starts_with("agent-avatar@"))
+            .filter_map(|(_, entries)| entries.as_array()?.first()?.get("installedAt")?.as_str())
+            .map(str::to_owned)
+            .next()
+    })
+}
+
+/// 装机时间的兜底：插件目录自己的修改时间。
+///
+/// 🔴 **Hermes 没有别的来源。** 「刚装好，等第一个新会话」这个宽限期靠装机时间撑着，
+/// 而它有两个来源：`localize.py` 写的装机记录，和 harness 账本里的 `installedAt`。
+/// Hermes 两个都没有 —— 它的 CLI 直接从 git 装，不经过我们的本地化那一步（那一步要先
+/// clone，而不用 clone 正是 Hermes 这条路唯一的好处），账本里也不记时间。
+/// 结果是装完那一刻界面就摊开整张排查清单，而用户其实什么都没做错
+/// （2026-09-03 实机跑完 Hermes 安装当场看到）。
+///
+/// 目录时间不精确（之后动过插件文件就会变新），但它只用来回答「是不是刚装的」，
+/// 往新的方向偏一点只会让宽限期稍微长一些，不会把坏了的说成好的。
+fn dir_installed_at(harness: &str) -> Option<String> {
+    let modified = installed_dir(harness)?.metadata().ok()?.modified().ok()?;
+    let seconds = modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    Some(rfc3339(seconds))
+}
+
+/// `SystemTime` → `2026-09-03T04:21:07Z`，前端 `Date.parse` 认得的形状。
+///
+/// 自己算是因为这个 crate 没有 chrono/time 依赖，而为了一个时间戳引一整个日期库
+/// 不划算。算法是 Howard Hinnant 的 days-from-civil 的逆运算，闰年、世纪闰年都在内。
+fn rfc3339(seconds: u64) -> String {
+    let (days, rest) = ((seconds / 86_400) as i64, seconds % 86_400);
+    // 以 0000-03-01 为纪元（把闰日挪到年末，月份长度就有了规律）
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = era * 400 + yoe + if month <= 2 { 1 } else { 0 };
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            year, month, day, rest / 3_600, (rest % 3_600) / 60, rest % 60)
 }
 
 /// 首选位置（新布局）。卸载与「装到哪」的显示用它。
@@ -199,16 +241,27 @@ pub fn list_connectors() -> Vec<Value> {
             "installRecord": crate::hermes::install_record(harness),
             // 账本里的安装时间。mac 那条路不跑 localize，没有上面那条记录，
             // 但账本有时间戳 —— 「刚装完还没上报」在两个平台上都该说得出来。
-            "installedAt": ledger_installed_at(harness),
+            "installedAt": ledger_installed_at(harness).or_else(|| dir_installed_at(harness)),
         })
     }).collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{home, installed_by_record, installed_dir, plugin_dir, plugin_dirs,
+    use super::{home, installed_by_record, installed_dir, plugin_dir, plugin_dirs, rfc3339,
                 HARNESSES, LOCAL_MARKETPLACE};
     use std::{env, fs};
+
+    /// 手写的日期换算，闰年那几个坎必须钉住。前端拿它去 `Date.parse` 比「是不是刚装的」，
+    /// 算错一天，宽限期就会在错误的时刻开合。
+    #[test]
+    fn epoch_seconds_become_a_timestamp_the_frontend_can_parse() {
+        assert_eq!(rfc3339(0), "1970-01-01T00:00:00Z");
+        assert_eq!(rfc3339(951_782_400), "2000-02-29T00:00:00Z");   // 世纪闰年，是闰日
+        assert_eq!(rfc3339(1_709_164_800), "2024-02-29T00:00:00Z"); // 普通闰年
+        assert_eq!(rfc3339(4_107_542_400), "2100-03-01T00:00:00Z"); // 2100 不闰
+        assert_eq!(rfc3339(1_756_874_467), "2025-09-03T04:41:07Z"); // 带时分秒
+    }
 
     #[test]
     fn every_harness_resolves_to_a_plugin_directory() {
