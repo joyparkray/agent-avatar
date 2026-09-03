@@ -173,27 +173,38 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
   const localize = `python localize.py ${harness}`;
 
   let steps: string[];
-  if (cli) {
+  if (cli && !(windows && harness === "codex")) {
     steps = windows
       // `add ./` 而不是 `add .`：实测 `.` 被拒（Invalid marketplace source format，
       // 它要的是 owner/repo、https://… 或 ./path 三种形态之一）。差一个斜杠，整条路就断了。
       ? [...clone, localize, `${cli} plugin marketplace add ./`, `${cli} plugin install agent-avatar@agent-avatar`]
       : [`${cli} plugin marketplace add ${MARKETPLACE_REPO}`, `${cli} plugin install agent-avatar@agent-avatar`];
+  } else if (harness === "codex") {
+    // 🔴 Windows 的 ChatGPT app **不带 codex CLI**，`codex plugin …` 那两条在这儿根本跑不了。
+    // 它的真实登记处是 config.toml，所以让脚本把要加的两段算好、打印出来 ——
+    // 仍然是钉死的命令，agent 不需要自己拼路径。**只打印不写**：那是用户自己的主配置文件。
+    steps = [...clone, localize, `python localize.py codex --print-registration`,
+      zh ? "把上一步打印出来的两段追加到它指出的那个 config.toml 里（先备份）"
+         : "Append the two blocks it printed to the config.toml it names (back it up first)",
+      zh ? "**完全退出 ChatGPT app 再打开** —— 插件在启动时才被发现，而且 app 运行时也会写 config.toml"
+         : "**Fully quit and reopen the ChatGPT app** — plugins are discovered at startup, and the app writes config.toml while running"];
   } else if (harness === "dsh") {
     // dsh 没有「插件市场」式的安装命令给本地目录用，装法是往它的用户 patch 层加一条 insert。
     // 那个文件被 dsh 的 HMR 监视着，正在跑的 dsh 会热加载。
-    steps = [...clone, ...(windows ? [localize] : []),
-      zh ? "把插件目录的绝对路径记下来（plugins/dsh/agent-avatar/index.mjs）"
-         : "Note the absolute path of plugins/dsh/agent-avatar/index.mjs",
-      zh ? "在 $DSH_HOME/cordis.patch.yml 末尾加一段（先备份），name 用上一步那个路径；Windows 上必须写成 file:/// 开头的 URL，否则 Node 会把盘符当成协议名："
-         : "Append this block to $DSH_HOME/cordis.patch.yml (back it up first), with name set to that path. On Windows it must be a file:/// URL, otherwise Node treats the drive letter as a scheme:",
-      ["- insert:", "    - id: agent-avatar", "      name: <上一步的路径>"].join("\n")];
+    // 同样让脚本把那一段算好 —— Windows 上 name 必须是 file:/// URL，
+    // 手拼的话十有八九会写成 `C:/…`，而 Node 会把盘符当成协议名。
+    steps = [...clone, ...(windows ? [localize] : []), `python localize.py dsh --print-registration`,
+      zh ? "把上一步打印出来的那一段追加到它指出的 cordis.patch.yml 里（先备份）"
+         : "Append the block it printed to the cordis.patch.yml it names (back it up first)"];
   } else {
-    // Hermes 是 in-process 的 Python 包，拷进插件目录再启用即可。五家里唯一不需要本地化的。
-    steps = [...clone,
-      zh ? "用 hermes plugins install <仓库地址> 装（Hermes 自己有插件 CLI，会跑一遍安全扫描）；它的 home 在 Windows 上是 %LOCALAPPDATA%\hermes，不是 ~/.hermes"
-         : "Install with hermes plugins install <repo> (Hermes has its own plugin CLI and runs a security scan); its home is %LOCALAPPDATA%\hermes on Windows, not ~/.hermes",
-      "hermes plugins enable agent-avatar"];
+    // Hermes 有自己的插件 CLI，只认 git 来源，还能钉死 commit SHA。
+    // 它装完会跑一遍安全扫描 —— 被拦下时**由用户决定**要不要放行，不要替他 --force。
+    // Hermes 只认 git 来源，但支持 `owner/repo/子目录` —— 我们的插件在树里的
+    // plugins/hermes/agent-avatar 下，所以要带上那一段路径。
+    steps = [`hermes plugins install ${MARKETPLACE_REPO}/plugins/hermes/agent-avatar --enable`,
+      zh ? "它会跑一遍安全扫描。**被拦下就停下来告诉我**，让我自己决定要不要放行 —— 别替我加 --force。"
+         : "It runs a security scan. **If it blocks, stop and tell me** — let me decide whether to override; don't pass --force for me.",
+      "hermes plugins doctor agent-avatar"];
   }
 
   const verify = zh

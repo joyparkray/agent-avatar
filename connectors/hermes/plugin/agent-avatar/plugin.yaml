@@ -3,7 +3,12 @@ version: "1.0.0"
 description: "把 Hermes 的会话/工具/子代理事件聚合成语义状态，供 Agent Avatar 形象读取。纯观察者：不改变 Hermes 任何行为。"
 author: "Agent Avatar"
 
-hooks:
+# 键名是 `provides_hooks` —— 与 Hermes 自带插件的 `provides_*` 约定一致。
+# 写成 `hooks:` 时 `hermes plugins doctor` 会对每一条报
+# 「registration adds hook 'X' not listed in provides_hooks」（2026-09-03 实测）：
+# 插件照样能用（注册来自 __init__.py 的 HOOKS），但清单和实际注册对不上，
+# 而 doctor 是我们让用户拿来验收的那条命令 —— 它不该一装完就刷十条警告。
+provides_hooks:
   - on_session_start
   - on_session_reset
   - pre_llm_call

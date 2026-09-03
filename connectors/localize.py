@@ -33,6 +33,7 @@ POSIX 上那就是对的，装完直接能用。**Windows 上 `python3` 不是 P
 import argparse
 import json
 import os
+import pathlib
 import subprocess
 import sys
 import tempfile
@@ -159,6 +160,50 @@ def smoke_test(root, harness):
     return layout["state"]
 
 
+def print_registration(harness, root=None):
+    """打印要登记的那几行配置 —— **只打印，不碰任何文件**。
+
+    为什么不直接写：这两家要改的都是**用户自己的配置文件**（Codex 的 `config.toml`
+    里有模型、notify、mcp_servers；dsh 的 patch 里可能有 `!!js` 表达式）。
+    让脚本去动它们，一是风险，二是那正是杀软盯上的行为形状（未签名脚本改别家配置，
+    实机被卡巴删过文件）。打印出来由 agent 追加，用户在按下去之前看得见要加什么。
+
+    仍然是「钉死的命令」：路径、格式、内容全都算好了，agent 不需要自己拼任何东西 ——
+    而这条链路上最容易错的就是拼路径（Windows 上还得是 file:/// URL）。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    if harness == "codex":
+        # Codex 的 marketplace 根是**含 .agents/ 的那一层**，也就是这棵树的根。
+        # Windows 的 ChatGPT app 不带 CLI，所以只能手工登记进 config.toml；
+        # `source` 用 TOML 的字面量字符串（单引号），反斜杠在里面不转义。
+        config = os.path.join(os.environ.get("USERPROFILE") or os.path.expanduser("~"), ".codex", "config.toml")
+        print("# 追加到 %s（先备份）：" % config)
+        print()
+        print("[marketplaces.agent-avatar]")
+        print('source_type = "local"')
+        print("source = '%s'" % here)
+        print()
+        print('[plugins."agent-avatar@agent-avatar"]')
+        print("enabled = true")
+        return 0
+    if harness == "dsh":
+        entry = os.path.join(root or os.path.join(here, "plugins", "dsh", "agent-avatar"), "index.mjs")
+        # 🔴 dsh 把这个字符串当 ESM specifier 直接 import()，而 Node 会把 `C:/…` 解析成
+        # scheme 为 `c:` 的 URL（ERR_UNSUPPORTED_ESM_URL_SCHEME）。必须是 file:/// URL。
+        url = pathlib.Path(os.path.abspath(entry)).as_uri()
+        print("# 追加到 $DSH_HOME/cordis.patch.yml（默认 %s，先备份）：" % os.path.join("~", ".dsh"))
+        print("# 文件里如果只有一行 `[]`，把那一行删掉 —— 空数组后面再跟条目是非法 YAML。")
+        print()
+        print("# >>> agent-avatar (managed) >>>")
+        print("- insert:")
+        print("    - id: agent-avatar")
+        print("      name: %s" % url)
+        print("# <<< agent-avatar (managed) <<<")
+        return 0
+    print("%s 不需要额外登记：它自己的 CLI 就能装（见 README）" % harness)
+    return 0
+
+
 def main():
     # Windows 上 stdout 默认按系统代码页编码（简中机器是 cp936），而这条命令的输出
     # 正是要给 agent 读的 —— 管道那头拿到的会是乱码。钉成 UTF-8。
@@ -171,7 +216,12 @@ def main():
     parser = argparse.ArgumentParser(description="把插件树本地化到这台机器（Windows 需要）")
     parser.add_argument("harness", choices=HARNESSES)
     parser.add_argument("--root", help="插件树的根，默认 plugins/<harness>/agent-avatar")
+    parser.add_argument("--print-registration", action="store_true",
+                        help="只打印要登记的那几行配置，不改任何文件（codex / dsh 用）")
     arguments = parser.parse_args()
+
+    if arguments.print_registration:
+        return print_registration(arguments.harness, arguments.root)
 
     here = os.path.dirname(os.path.abspath(__file__))
     root = arguments.root or os.path.join(here, "plugins", arguments.harness, "agent-avatar")

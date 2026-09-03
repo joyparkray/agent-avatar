@@ -115,21 +115,46 @@ describe("connector install wizard", () => {
     // Windows 上不跑那一步，装到的插件指向一个 0 字节的商店存根，而且**没有任何声音**。
     for (const harness of ["claude-code", "codex", "workbuddy", "dsh"]) {
       expect(installPrompt(harness, "zh-CN", "windows")).toContain(`python localize.py ${harness}`);
-      expect(installPrompt(harness, "zh-CN", "posix")).not.toContain("localize.py");
+      // POSIX 上不该有「本地化」那一步（`--print-registration` 不是本地化，是打印要登记的内容）
+      const posix = installPrompt(harness, "zh-CN", "posix");
+      // 「本地化」那一步的形状是行尾就是 `localize.py <harness>`；
+      // `--print-registration` 不是本地化，是打印要登记的内容，POSIX 上也需要。
+      expect(posix.split("\n").some(line => line.trim().endsWith(`localize.py ${harness}`))).toBe(false);
     }
     // Hermes 是 in-process 的 Python 包，两个平台都不需要本地化
     expect(installPrompt("hermes", "zh-CN", "windows")).not.toContain("localize.py");
   });
 
-  it("uses the path form the CLI actually accepts", () => {
+  it("uses the path form the CLI actually accepts — where there is a CLI at all", () => {
     // 实测：`claude plugin marketplace add .` 被拒 —— Invalid marketplace source format，
     // 它要 owner/repo、https://… 或 **./path**。差一个斜杠整条路就断了，
     // 而这种错只有真跑一遍才发现得了。
-    for (const harness of ["claude-code", "codex", "workbuddy"]) {
+    for (const harness of ["claude-code", "workbuddy"]) {
       const windows = installPrompt(harness, "zh-CN", "windows");
       expect(windows).toContain("plugin marketplace add ./");
       expect(windows).not.toMatch(/marketplace add \.$/m);
     }
+    // 🔴 Codex 在 Windows 上**没有 CLI**（ChatGPT app 不带），所以那两条命令在这儿根本
+    // 跑不了 —— 它的真实登记处是 config.toml。提示词里出现 `codex plugin` 就是把用户送进死路。
+    const codexWindows = installPrompt("codex", "zh-CN", "windows");
+    expect(codexWindows).not.toContain("codex plugin");
+    expect(codexWindows).toContain("--print-registration");
+    expect(codexWindows).toContain("config.toml");
+    // POSIX 上有 CLI，走正常那条
+    expect(installPrompt("codex", "zh-CN", "posix")).toContain("codex plugin marketplace add");
+  });
+
+  it("does not let the agent hand-write the fiddly bits", () => {
+    // dsh 的 name 在 Windows 上**必须是 file:/// URL**（Node 会把 `C:/…` 的盘符当协议名，
+    // 报 ERR_UNSUPPORTED_ESM_URL_SCHEME）。让模型自己拼十有八九拼错，而错了是静默的。
+    for (const platform of ["windows", "posix"] as const) {
+      expect(installPrompt("dsh", "zh-CN", platform)).toContain("localize.py dsh --print-registration");
+    }
+    // Hermes 的扫描器会拦（sudo 那条误报）——**放不放行是用户的决定**，不能让 agent 代按
+    const hermes = installPrompt("hermes", "zh-CN", "posix");
+    expect(hermes).toContain("hermes plugins install");
+    expect(hermes).toMatch(/别替我加 --force|don't pass --force/i);
+    expect(hermes).toContain("hermes plugins doctor");
   });
 
   it("keeps the human steps human", () => {
