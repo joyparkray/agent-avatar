@@ -207,13 +207,34 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
       "hermes plugins doctor agent-avatar"];
   }
 
-  const verify = zh
-    ? `确认真的通了：跑一轮之后看 ${windows ? "%TEMP%\\" : "$TMPDIR/"}${stateFileName(harness)} 有没有出现、内容会不会随会话变化。**不要只看命令有没有报错** —— hook 的设计是永远 exit 0，退出码说明不了任何事。`
-    : `Verify it actually works: after one turn, check that ${windows ? "%TEMP%\\" : "$TMPDIR/"}${stateFileName(harness)} exists and changes as the session moves. **Don't just check that the commands succeeded** — the hook always exits 0 by design, so its exit code proves nothing.`;
+  // 🔴 **只说结论，不要展示证明过程。**
+  //
+  // 原来这里写的是「不要只看命令有没有报错 —— hook 永远 exit 0，退出码说明不了任何事，
+  // 你去看状态文件」。那是写给开发者的认识论，而且等于向 agent 下战书：一个称职的 agent
+  // 会真去证明给你看 —— 三条独立证据、md5、排除假阳性（2026-09-03 实机就是这样）。
+  // 它做得没错，是我们要错了东西：**装 connector 的用户多半不是开发者**，
+  // 那一大段只会让他犯嘀咕「到底成了没有」。
+  //
+  // 验证照做（`localize.py` 装机时就喂过一条真事件、验到状态文件落盘），但**结论由命令
+  // 给出**，agent 只负责转述那一行。真出问题时它自然会带着上下文来找你，
+  // 而详细信息就在那条命令的前几行。
+  // Windows 上结论来自 `localize.py` 那一步（它跑完冒烟自检才会打那一行），不是最后一条命令。
+  const verdictStep = windows && harness !== "hermes"
+    ? (zh ? `（\`localize.py ${harness}\` 那一步的最后一行就是结论，原样贴过来即可）`
+          : ` (the last line of the \`localize.py ${harness}\` step is the verdict — paste it verbatim)`)
+    : "";
+  const report = zh
+    ? `**只告诉我成功还是失败**；失败的话说清卡在哪一步。不用解释你是怎么验证的，也不用贴中间过程。${verdictStep}`
+    : `**Just tell me whether it worked**, and if not, which step it stopped at. No explanation of how you verified it, no intermediate output.${verdictStep}`;
+
+  const next = zh
+    ? "装好之后开一个新会话，形象就会跟着动 —— 已经在跑的会话不会加载新插件。"
+    : "Start a new session afterwards and the avatar will follow along — a session that is already running will not pick up a new plugin.";
 
   const boundaries = [
-    zh ? "如果这台机器上没有可用的 Python，**先问我**再装（Windows: winget install Python.Python.3.13）。"
-       : "If this machine has no usable Python, **ask me first** before installing one (Windows: winget install Python.Python.3.13).",
+    // 装 Python 这类事要用户点头；给的命令也得是这台机器上真能跑的那条
+    zh ? `如果这台机器上没有可用的 Python，**先问我**再装（${windows ? "winget install Python.Python.3.13" : "macOS: xcode-select --install"}）。`
+       : `If this machine has no usable Python, **ask me first** before installing one (${windows ? "winget install Python.Python.3.13" : "macOS: xcode-select --install"}).`,
     ...(harness === "codex"
       ? [zh ? "装完之后**不要替我授信**：Codex 的 /hooks 授信必须由我自己点，告诉我该去点什么就行。"
             : "After installing, **do not trust the hooks for me**: the /hooks approval in Codex is mine to click — just tell me what to click."]
@@ -226,7 +247,8 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
     "",
     ...steps.map((step, index) => `${index + 1}) ${step}`),
     "",
-    verify,
+    report,
+    next,
     "",
     ...boundaries,
   ].join("\n");

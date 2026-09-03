@@ -101,6 +101,28 @@ describe("connector install wizard", () => {
     expect(JSON.parse(manifest).version).toBe(CONNECTOR_VERSION);
   });
 
+  it("asks the agent for a verdict, not for a proof", () => {
+    // 2026-09-03 实机：提示词原来在这儿解释「hook 永远 exit 0、退出码说明不了任何事、
+    // 你去看状态文件」—— 那是写给开发者的认识论，等于向 agent 下战书。
+    // 它照做了：三条独立证据、md5、排除假阳性。做得没错，但**装 connector 的用户
+    // 多半不是开发者**，那一大段只会让他犯嘀咕「到底成了没有」。
+    for (const locale of ["zh-CN", "en"] as const) {
+      for (const harness of CONNECTOR_HARNESSES) {
+        for (const platform of ["windows", "posix"] as const) {
+          const prompt = installPrompt(harness, locale, platform);
+          // 不再要求 agent 自己去证明
+          expect(prompt).not.toContain(stateFileName(harness));
+          expect(prompt).not.toMatch(/永远 exit 0|always exits 0/);
+          // 改成明确要求「只报结论」
+          expect(prompt).toMatch(/告诉我|tell me|Relay that one line/i);
+          expect(prompt).toMatch(/不用解释|No explanation/i);
+          // 下一步仍然要说 —— 否则用户装完会以为没生效
+          expect(prompt).toMatch(/新会话|new session/i);
+        }
+      }
+    }
+  });
+
   it("does not accuse a fresh install of being broken", () => {
     // 「装了但从没上报」在刚装完的几分钟里是**正常的**（还没开新会话），过了一天才是故障。
     // 两者给同一段排查清单，等于告诉刚装完的人「你可能哪儿都错了」——而他什么都没做错。
@@ -180,9 +202,6 @@ describe("connector install wizard", () => {
       for (const harness of CONNECTOR_HARNESSES) {
         // 在别人机器上装软件应当由机器的主人点头
         expect(installPrompt(harness, locale, "windows")).toMatch(/先问我|ask me first/i);
-        // 验收标准写进提示词本身：看状态文件，不看退出码
-        expect(installPrompt(harness, locale, "windows")).toContain(stateFileName(harness));
-        expect(installPrompt(harness, locale, "posix")).toMatch(/永远 exit 0|always exits 0/);
       }
     }
   });

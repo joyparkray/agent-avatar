@@ -335,14 +335,26 @@ def main():
         count = rewrite_hooks_json(config, python, arguments.harness)
 
     state = smoke_test(root, arguments.harness)
-    recorded = record_install(arguments.harness, root, python, state)
+    record_install(arguments.harness, root, python, state)
+    # Details first, verdict last — and **the verdict is one line**.
+    #
+    # Why that matters: whoever runs this is usually an agent installing on a user's
+    # behalf, and the user is not a developer. An earlier version of the install prompt
+    # explained our epistemics here ("the exit code proves nothing, go and check the
+    # state file yourself"), which a capable agent answers by *proving* it — three
+    # independent lines of evidence, md5 sums, ruled-out false positives. All correct,
+    # and all noise to somebody who just wants to know whether it worked.
+    #
+    # So the tool states the conclusion and the prompt tells the agent to relay this
+    # line and nothing else. The detail above stays for the case that actually needs
+    # it: when something failed.
     print("interpreter: %s" % python)
     if python != sys.executable.replace("\\", "/"):
         print("  (the original path contains spaces; using the 8.3 short path on the command line)")
     print("rewrote %d command(s) -> %s" % (count, config))
-    print("smoke test passed: one event wrote %s" % state)
-    if recorded:
-        print("recorded the verification -> %s" % recorded)
+    print("OK: %s connector is installed and self-tested on this machine. "
+          "Start a new %s session and the avatar will follow along."
+          % (arguments.harness, arguments.harness))
     return 0
 
 
