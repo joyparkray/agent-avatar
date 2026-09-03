@@ -84,10 +84,9 @@ fn cli_candidates(harness: &str) -> Vec<PathBuf> {
 
     // npm 全局装的两家
     let npm_dirs: Vec<PathBuf> = if cfg!(windows) {
-        vec![env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| home().join("AppData/Roaming")).join("npm")]
+        vec![joined(&env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| joined(&home(), "AppData/Roaming")), "npm")]
     } else {
-        vec![PathBuf::from("/usr/local/bin"), PathBuf::from("/opt/homebrew/bin"),
-             home().join(".npm-global/bin"), home().join(".local/bin")]
+        node_bin_dirs()
     };
     for dir in npm_dirs {
         for suffix in exe_suffixes() {
@@ -109,6 +108,45 @@ fn cli_candidates(harness: &str) -> Vec<PathBuf> {
     found
 }
 
+/// POSIX 上 node 的全局 bin 可能在的地方。
+///
+/// 🔴 **不能指望 PATH。** macOS 上从 Finder / Dock 启动的进程**不继承用户 shell 的 PATH** ——
+/// 那是 `.zshrc` 里配的，而 GUI 进程根本没跑过它。而 Claude Code 和 CodeBuddy 都是 npm
+/// 全局装的，于是「用户明明装了，app 说找不到」在 mac 上会是默认结果。
+///
+/// 版本管理器（nvm / fnm / volta / asdf）把 node 装在带版本号的目录里，所以那几处要枚举。
+/// nvm 尤其常见，而它的 bin 目录长 `~/.nvm/versions/node/v22.3.0/bin` 这样。
+fn node_bin_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+        joined(&home(), ".npm-global/bin"),
+        joined(&home(), ".local/bin"),
+        joined(&home(), ".volta/bin"),
+        joined(&home(), ".bun/bin"),
+        joined(&home(), ".asdf/shims"),
+    ];
+    // 版本管理器：枚举出来按新旧排，新的在前
+    for versioned in [joined(&home(), ".nvm/versions/node"), joined(&home(), ".local/share/fnm/node-versions")] {
+        let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+        if let Ok(entries) = fs::read_dir(&versioned) {
+            for entry in entries.flatten() {
+                let bin = entry.path().join("bin");
+                // fnm 的布局多一层 `installation/`
+                let bin = if bin.is_dir() { bin } else { entry.path().join("installation").join("bin") };
+                if bin.is_dir() {
+                    let stamp = entry.metadata().and_then(|meta| meta.modified())
+                        .unwrap_or(std::time::UNIX_EPOCH);
+                    found.push((stamp, bin));
+                }
+            }
+        }
+        found.sort_by(|left, right| right.0.cmp(&left.0));
+        dirs.extend(found.into_iter().map(|(_, path)| path));
+    }
+    dirs
+}
+
 /// Windows 上一个名字对应几种后缀：npm 装出来的是 `.cmd` 垫片，不是 `.exe`。
 fn exe_suffixes() -> &'static [&'static str] {
     if cfg!(windows) { &[".cmd", ".exe", ".bat", ""] } else { &[""] }
@@ -125,9 +163,9 @@ fn exe_suffixes() -> &'static [&'static str] {
 fn newest_codex() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Ok(local) = env::var("LOCALAPPDATA") {
-        roots.push(PathBuf::from(local).join("OpenAI/Codex/bin"));
+        roots.push(joined(&PathBuf::from(local), "OpenAI/Codex/bin"));
     }
-    roots.push(home().join(".codex/bin"));
+    roots.push(joined(&home(), ".codex/bin"));
 
     let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     for root in roots {
@@ -353,7 +391,11 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let target = to.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        // 🔴 用 `path().is_dir()`（会跟随符号链接）而不是 `file_type().is_dir()`（不跟随）。
+        // 打包进来的 macOS 解释器里有符号链接，其中指向目录的那种在后者眼里既不是目录、
+        // 又会被当成文件去 `fs::copy` —— 那一步直接报错，安装当场失败。
+        // 跟随会把链接指向的内容复制一份（多占一点空间），但结果是对的。
+        if entry.path().is_dir() {
             copy_tree(&entry.path(), &target)?;
         } else {
             fs::copy(entry.path(), &target)?;
@@ -440,9 +482,10 @@ fn prune_old_versions(root: &Path, keep: &str) {
 /// 正斜杠：Windows API 两种分隔符都收，但 Claude Code 在 Windows 上默认用 Git Bash，
 /// 而 bash 会把反斜杠当转义（`C:\Python\python.exe` 变成 `C:Pythonpython.exe`）。
 ///
-/// 不能有空格：命令行里解释器那一段**不能加引号**（PowerShell 会把带引号的首 token 当成
-/// 字符串表达式然后报错），所以带空格的路径根本表达不出来。而 app 装在
-/// `C:\Program Files\…` 下正好带空格 —— 这时换成 8.3 短路径，它没有空格，两个 shell 都认。
+/// 空格只在 **Windows** 上是问题：那里命令行的解释器那一段**不能加引号**（PowerShell 会把
+/// 带引号的首 token 当成字符串表达式然后报错），所以带空格的路径根本表达不出来 ——
+/// 换成 8.3 短路径，它没有空格，两个 shell 都认。POSIX 的 shell 没有这个毛病，
+/// 那边直接加引号（见 `interpreter_token`）。
 fn command_line_path(path: &Path) -> String {
     let text = path.to_string_lossy().to_string();
     if !text.contains(' ') {
@@ -473,6 +516,21 @@ fn short_path(long: &str) -> Option<String> {
     }
     buffer.truncate(written as usize);
     Some(std::ffi::OsString::from_wide(&buffer).to_string_lossy().to_string())
+}
+
+/// 解释器在命令行里的那一段 —— **Windows 不加引号，POSIX 加**。
+///
+/// 🔴 「不能加引号」是 **PowerShell 的毛病**，不是通则，而代码一度无条件照做。
+/// macOS 上这条会直接把链路打断：解释器住在
+/// `~/Library/Application Support/<bundle id>/…`，**那里就带空格**，而 macOS 没有
+/// 8.3 短路径可退 —— 不加引号的话，shell 在 `Application` 和 `Support` 之间就断开了。
+/// POSIX 的 sh/bash/zsh 对带引号的首 token 没有任何意见，加上就好。
+fn interpreter_token(python: &str) -> String {
+    if cfg!(windows) || !python.contains(' ') {
+        python.to_string()
+    } else {
+        format!("\"{python}\"")
+    }
 }
 
 /// 改写 hooks.json 里每一条命令的解释器。
@@ -518,7 +576,7 @@ fn rewrite_hooks_json(path: &Path, python: &str, harness: &str) -> Result<usize,
                             None => format!("\"{tail}\""),
                         }
                     };
-                    hook[field] = Value::String(format!("{python} {tail}"));
+                    hook[field] = Value::String(format!("{} {tail}", interpreter_token(python)));
                     rewritten += 1;
                 }
             }
@@ -1014,9 +1072,9 @@ mod tests {
         }
     }
 
-    /// 命令行里解释器那一段**不能有空格、不能有反斜杠**：不能加引号（PowerShell 会把带引号的
-    /// 首 token 当字符串表达式），而 Claude Code 在 Windows 上默认用 Git Bash，反斜杠会被当转义。
-    /// app 装在 `C:\Program Files\…` 下正好带空格，所以这条不是假设性的。
+    /// Windows 上解释器那一段**不能有空格、不能有反斜杠**：不能加引号（PowerShell 会把带引号
+    /// 的首 token 当字符串表达式），而 Claude Code 在 Windows 上默认用 Git Bash，反斜杠会被
+    /// 当转义。app 装在 `C:\Program Files\…` 下正好带空格，所以这条不是假设性的。
     #[test]
     fn the_interpreter_path_is_expressible_on_a_command_line() {
         let plain = command_line_path(&PathBuf::from("C:/Python314/python.exe"));
@@ -1253,6 +1311,38 @@ mod tests {
                 "{}", joined(&base, "a/b").display());
         assert_eq!(joined(&base, "one"), base.join("one"));
         assert_eq!(joined(&base, ""), base);
+    }
+
+    /// 🔴 macOS 上解释器住在 `~/Library/Application Support/…` —— **带空格**，而那边没有
+    /// 8.3 短路径可退。不加引号的话 shell 会在 `Application` 和 `Support` 之间断开，
+    /// 表现还是那个老形状：装好了，形象不动。
+    ///
+    /// 「不能加引号」是 PowerShell 的毛病，我们一度把它当成了通则。
+    #[test]
+    fn a_path_with_spaces_is_quoted_where_the_shell_allows_it() {
+        use super::interpreter_token;
+        assert_eq!(interpreter_token("/usr/bin/python3"), "/usr/bin/python3");
+        let spaced = "/Users/x/Library/Application Support/app/python3";
+        if cfg!(windows) {
+            // Windows 走短路径那条，到这里时已经没有空格了
+            assert_eq!(interpreter_token(spaced), spaced);
+        } else {
+            assert_eq!(interpreter_token(spaced), format!("\"{spaced}\""));
+        }
+    }
+
+    /// macOS 上 GUI 进程不继承 shell 的 PATH，而 Claude Code / CodeBuddy 都是 npm 全局装的 ——
+    /// 只认 PATH 的话，「用户明明装了，app 说找不到」在 mac 上会是默认结果。
+    /// 版本管理器（nvm / fnm / volta / asdf）还会把 node 藏在带版本号的目录里。
+    #[test]
+    #[cfg(not(windows))]
+    fn it_looks_where_node_actually_lives_on_posix() {
+        use super::node_bin_dirs;
+        let dirs = node_bin_dirs();
+        let text: Vec<String> = dirs.iter().map(|d| d.to_string_lossy().to_string()).collect();
+        for expected in ["/usr/local/bin", "/opt/homebrew/bin", ".volta/bin", ".asdf/shims"] {
+            assert!(text.iter().any(|d| d.contains(expected)), "缺 {expected}：{text:?}");
+        }
     }
 
     /// 五家的插件树位置是一张表，改布局就要改它 —— 对不上的症状是「装好了，什么也不发生」。

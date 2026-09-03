@@ -28,6 +28,15 @@ set -eu
 WINDOWS_VERSION=3.13.7
 WINDOWS_URL="https://www.python.org/ftp/python/$WINDOWS_VERSION/python-$WINDOWS_VERSION-embed-amd64.zip"
 
+# macOS 没有官方的 embeddable 包，用 astral-sh/python-build-standalone 的 install_only
+# 那一档（PyTauri 用的也是它）。两个数字都要钉死：发布 tag 和 Python 版本 —— 它们是一对，
+# 换任何一个都可能 404。2026-09-03 两个架构都用 HEAD 验过，各 24 MB 左右。
+#
+# 与 Windows 那份的补丁号不同（3.13.7 vs 3.13.15）是无所谓的：connector 只用标准库，
+# 而两边都是 3.13。硬要对齐反而会让某一边取不到。
+MACOS_TAG=20260901
+MACOS_VERSION=3.13.15
+
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 out=${1:-$here/../desktop/src-tauri/resources/connectors}
 mkdir -p "$out"
@@ -75,31 +84,43 @@ PY
     "$target/python.exe" -c "import json,os,sys,time,tempfile,shlex,re,datetime,msvcrt,pathlib,subprocess,io; print('bundled python', sys.version.split()[0], 'stdlib OK')"
     ;;
   macos)
-    # 🔴 **还没实现，而且是故意显式失败的** —— 不能悄悄退回系统那个解释器，
-    # 因为 macOS 上 `/usr/bin/python3` 正是我们要消灭的那个占位程序（没装 Xcode 命令行
-    # 工具时它会弹安装框），静默退回等于把这个脚本存在的理由抵消掉。
-    #
-    # 方案定了：astral-sh/python-build-standalone 的 install_only 包（PyTauri 用的就是它）。
-    # 命名规则已经实测过（2026-09-03，用一个已知的老版本验的，返回 200）：
-    #
-    #   https://github.com/astral-sh/python-build-standalone/releases/download/<TAG>/
-    #     cpython-<版本>+<TAG>-<aarch64|x86_64>-apple-darwin-install_only.tar.gz
-    #
-    #   （URL 里那个 `+` 要写成 %2B）
-    #
-    # 在 Mac 上补完它要做三件事：
-    #
-    #   1. 挑一对确实存在的 <TAG>/<版本>，用 HEAD 请求验一下：
-    #        curl -sIL -o /dev/null -w '%{http_code}' "<上面那个 URL>"    # 期望 200
-    #      **必须钉死**，不能用 latest —— 解释器一换，就等于改了我们已经写进五家 harness
-    #      配置里的每一条 hook 命令行。
-    #   2. 两个架构都要（Apple Silicon 与 Intel），或者只出 universal 的那份。
-    #   3. 跟 app 一起签名公证。**这一条不能漏**：没公证的解释器在别人机器上跑不起来，
-    #      而症状还是那个老形状 —— 装好了，形象不动。
-    #
-    # 做完之后照 Windows 那一支的样子跑一遍自检（import 一遍我们用到的标准库）。
-    echo "macOS interpreter bundling is not implemented yet — see the recipe in this script" >&2
-    exit 2
+    # 架构要跟**构建目标**走，不是跟这台机器走 —— Apple Silicon 和 Intel 是分开出包的。
+    # 交叉构建时用 AGENT_AVATAR_PYTHON_ARCH 指定。
+    arch=${AGENT_AVATAR_PYTHON_ARCH:-$(uname -m 2>/dev/null || echo arm64)}
+    case "$arch" in
+      arm64|aarch64) arch=aarch64 ;;
+      x86_64|amd64)  arch=x86_64 ;;
+      *) echo "不认得的架构：$arch（用 AGENT_AVATAR_PYTHON_ARCH 指定 aarch64 或 x86_64）" >&2; exit 1 ;;
+    esac
+    # `+` 在 URL 里要写成 %2B，否则会被当成空格
+    url="https://github.com/astral-sh/python-build-standalone/releases/download/$MACOS_TAG/cpython-$MACOS_VERSION%2B$MACOS_TAG-$arch-apple-darwin-install_only.tar.gz"
+    archive=$out/.python-macos.tar.gz
+    echo "fetching $url"
+    command -v curl >/dev/null 2>&1 || { echo "need curl to fetch the interpreter" >&2; exit 1; }
+    curl -fsSL -o "$archive" "$url"
+
+    # 包里最外层就叫 `python/`，正好是我们要的目录名，所以解到上一层再让它落位。
+    rm -rf "$target"
+    staging=$out/.python-staging
+    rm -rf "$staging"; mkdir -p "$staging"
+    tar -xzf "$archive" -C "$staging"
+    [ -d "$staging/python" ] || { echo "解出来的结构和预期不符（没有 python/）" >&2; exit 1; }
+    mv "$staging/python" "$target"
+    rm -rf "$staging" "$archive"
+
+    # 🔴 **签名。** 这份解释器是下载来的，没有我们的签名；Gatekeeper 不会让一个没签过的
+    # 可执行文件在别人机器上跑起来，而症状还是那个老形状 —— 装好了，形象不动。
+    # app 的公证会覆盖它，但前提是它先被**逐个二进制**签过（hardened runtime）。
+    if [ "${AGENT_AVATAR_CODESIGN_IDENTITY:-}" != "" ]; then
+      echo "codesigning the bundled interpreter"
+      find "$target" -type f \( -name '*.dylib' -o -name '*.so' -o -perm -u+x \) -print0 2>/dev/null |
+        xargs -0 -I{} codesign --force --timestamp --options runtime \
+          --sign "$AGENT_AVATAR_CODESIGN_IDENTITY" {} >/dev/null
+    else
+      echo "⚠️  未签名：设 AGENT_AVATAR_CODESIGN_IDENTITY 后重跑，否则打出来的包在别人机器上跑不起来" >&2
+    fi
+
+    "$target/bin/python3" -c "import json,os,sys,time,tempfile,shlex,re,datetime,fcntl,pathlib,subprocess,io; print('bundled python', sys.version.split()[0], 'stdlib OK')"
     ;;
   *)
     echo "unknown platform: $platform" >&2; exit 1 ;;
