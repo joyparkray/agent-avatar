@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { emotionForSemantic, mapHookState, SemanticDriver } from "./semantic";
+import { emotionForSemantic, mapHookState, SemanticDriver, type StateSnapshot } from "./semantic";
 
 describe("six-state semantics", () => {
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -47,5 +47,46 @@ describe("six-state semantics", () => {
     const driver = new SemanticDriver(async () => (index++ === 0 ? { state: "executing" } : null), state => states.push(state), 10, 10);
     driver.start(); await vi.advanceTimersByTimeAsync(60); driver.stop();
     expect(states).toEqual(["executing", "idle"]);
+  });
+});
+
+/**
+ * 状态栏第二行「它具体在干嘛」。
+ *
+ * 去重键是**值本身**，不是 sequence：同一个工具的 pre/post 会连着报两次同样的详情，
+ * 跟着 sequence 走就会让状态栏每两百毫秒重画一次。
+ */
+describe("详情那一行", () => {
+  const drive = (snapshots: (StateSnapshot | null)[]) => {
+    const said: string[] = [];
+    let i = 0;
+    const driver = new SemanticDriver(
+      async () => snapshots[Math.min(i++, snapshots.length - 1)],
+      () => {}, 1, 1, () => {}, doing => said.push(doing),
+    );
+    return { driver, said };
+  };
+
+  it("值变了才派发一次", async () => {
+    const { driver, said } = drive([
+      { state: "executing", doing: "Run tests" },
+      { state: "executing", doing: "Run tests" },
+      { state: "researching", doing: "main.ts" },
+    ]);
+    for (let round = 0; round < 3; round += 1) await (driver as never as { tick(): Promise<void> }).tick();
+    expect(said).toEqual(["Run tests", "main.ts"]);
+  });
+
+  // 🔴 回落 idle 时详情必须跟着清 —— 空闲的人物身上挂着一句「Run tests」看起来像卡住了
+  it("读不到状态而回落 idle 时，详情清空", async () => {
+    const { driver, said } = drive([{ state: "executing", doing: "Run tests" }, null, null, null, null]);
+    for (let round = 0; round < 5; round += 1) await (driver as never as { tick(): Promise<void> }).tick();
+    expect(said.at(-1)).toBe("");
+  });
+
+  it("没有 doing 字段的老快照当作没有详情", async () => {
+    const { driver, said } = drive([{ state: "executing", doing: "x" }, { state: "executing" }]);
+    for (let round = 0; round < 2; round += 1) await (driver as never as { tick(): Promise<void> }).tick();
+    expect(said).toEqual(["x", ""]);
   });
 });

@@ -1,7 +1,7 @@
 import { actionLabel, actionsFor, CLICK, DBLCLICK, defaultTriggers, heldParameters, listActions, migrateTriggers, pickAction, shortcutsIn, type ActionItem, type SwitchTable, type Trigger } from "./actions";
 import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 import "./style.css"; import "./state.css"; import { invoke } from "@tauri-apps/api/core"; import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleActionPoolKey, heldActionPoolKey, aliasMapKey, hasStored, readStringMap, triggerMapKey, SHORTCUT_STATUS_EVENT, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, readStateExpressions, readStateLabels, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, lipSensitivityPercent, mouthAmplitudePercent, readStateSource, writeStateSource, connectorWizardSeen, rememberConnectorWizardSeen, type Language, type StateSource, type SettingsChange } from "./prefs";
+import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleActionPoolKey, heldActionPoolKey, aliasMapKey, hasStored, readStringMap, triggerMapKey, SHORTCUT_STATUS_EVENT, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, readStateExpressions, readStateLabels, readActivityDetail, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, lipSensitivityPercent, mouthAmplitudePercent, readStateSource, writeStateSource, connectorWizardSeen, rememberConnectorWizardSeen, type Language, type StateSource, type SettingsChange } from "./prefs";
 import { stateLabel } from "./state-labels";
 import type { ModelChoice } from "./native-menu";
 import type { ModelSource } from "./prefs";
@@ -263,6 +263,9 @@ const ACTIVITY_LABELS: Record<Language, { expression: string; motion: string }> 
 let uiLanguage: Language = "zh-CN";
 /** 用户给状态起的显示名。与 uiLanguage 同理：只存「哪一份」，拼字符串在 renderStatus 里。 */
 let stateLabels: Partial<Record<SemanticState, string>> = {};
+/** 「它具体在干嘛」的一行。空 = 不显示第二行。 */
+let doing = "";
+let detailEnabled = readActivityDetail();
 let lastSnapshot: Readonly<AvatarState> | undefined;
 
 function stateText(): string {
@@ -274,7 +277,15 @@ function stateText(): string {
 function renderStatus(): void {
   currentState = stateText();
   const warning = notice ? UNSUPPORTED_CUBISM_TEXT[uiLanguage] : "";
-  status.textContent = [currentState, manualActivity(), warning, clickThroughHint ? CLICK_THROUGH_HINT[uiLanguage] : ""].filter(Boolean).join(" · ");
+  const first = [currentState, manualActivity(), warning, clickThroughHint ? CLICK_THROUGH_HINT[uiLanguage] : ""].filter(Boolean).join(" · ");
+  // 🔴 详情自己一行。挤在第一行里放不下：实测 description 中位 32 字符、90% 分位 45，
+  // 而一行的预算约 46 个拉丁字符 —— 再叠上用户自定义的状态显示名（上限 24）就必然折行。
+  // 用两个子节点而不是拼一个字符串：第二行要能单独设样式（更小、更淡），也要能整行省略。
+  status.textContent = "";
+  status.append(Object.assign(document.createElement("span"), { className: "status-line", textContent: first }));
+  if (doing) status.append(Object.assign(document.createElement("span"), { className: "status-doing", textContent: doing }));
+  // 标题只带状态：任务栏/程序坞上那一行更短，而详情每几秒就变一次，
+  // 让窗口标题跟着抖等于让整个任务栏跟着抖。
   void getCurrentWindow().setTitle(`Agent Avatar${currentState ? ` · ${currentState}` : ""}`).catch(console.error);
 }
 /** 与手动触发同一行显示的一次性提示。同样只存「哪条」，语言在渲染时才解析。 */
@@ -502,7 +513,9 @@ log({ event: "endpoint:discovered", url: discovered?.url ?? null, hasToken: Bool
         if (found) await audio.retarget({ ...found, path });
       }
       return snapshot;
-    }, s => { director.setSemantic(s); if (s !== "idle") notifyIdleBusy(); }, 200, 2000, reaction => director.setReaction(reaction)).start(); log({ event: "semantic:started" });
+    }, s => { director.setSemantic(s); if (s !== "idle") notifyIdleBusy(); }, 200, 2000,
+      reaction => director.setReaction(reaction),
+      next => { doing = detailEnabled ? next : ""; renderStatus(); }).start(); log({ event: "semantic:started" });
     await installMenu(model, audio, avatarSource, source => { stateSource = source; });
     // 模型已经在动了，接下来才轮到「接上你的 agent」——
     // 两张卡片同时糊在脸上没人看得懂先做哪一件。
@@ -758,6 +771,12 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
     if (payload.stateExpressions) model.setSemanticExpressions(payload.stateExpressions);
     // 状态栏此刻显示的就是上一个状态的名字 —— 改完不重画，用户要等下一次状态变化才看得到
     if (payload.stateLabels) { stateLabels = payload.stateLabels; renderStatus(); }
+    // 关掉时立刻把已经显示着的那一行也抹掉 —— 等下一次状态变化才消失，看起来像没生效
+    if (payload.activityDetail !== undefined) {
+      detailEnabled = payload.activityDetail;
+      if (!detailEnabled) doing = "";
+      renderStatus();
+    }
     if (payload.language) { uiLanguage = payload.language; renderStatus(); }
     if (payload.hiddenModels) hiddenModels = payload.hiddenModels;
     log({ event: "settings:applied", keys: Object.keys(payload) });

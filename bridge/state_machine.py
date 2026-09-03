@@ -47,7 +47,7 @@ STATE_SCHEMA_VERSION = 2
 #
 # **Must match the version in all five plugin.json / plugin.yaml manifests** —
 # build-bundle.sh compares them one by one and fails the build if they differ.
-CONNECTOR_VERSION = "1.0.0"
+CONNECTOR_VERSION = "1.1.0"
 # How long a reaction signal stays in the snapshot: the skin polls every 200 ms, so
 # 2 s is enough for it to read the signal and fire it once (deduplicated by `at`).
 REACTION_HOLD_SECONDS = 2.0
@@ -79,6 +79,72 @@ DETAIL_PREDICATE = {
 
 def detail_for(state, label):
     return label + " " + DETAIL_PREDICATE[state]
+
+
+# ---------------------------------------------------------------------------
+# "What exactly is it doing" — one short line, from the payload we already have
+# ---------------------------------------------------------------------------
+
+# The status pill is ~280 px wide at 12 px, which is about 46 latin characters. The
+# state label takes the line above, so the whole budget is this line's — but a search
+# query can be 75 characters, so cap it here rather than letting the UI clip it.
+ACTIVITY_LIMIT = 40
+
+# 带详情的那几档。idle / writing / awaiting 没有工具在跑，挂着上一个只会误导。
+ACTIVITY_STATES = frozenset({"executing", "researching", "reviewing", "syncing", "error"})
+
+# 🔴 **A whitelist, not a blocklist.** `tool_input` also carries `content` (a whole
+# file body), `new_string`, and `command` — a command line can hold an auth header or a
+# token, and it is the one field a user would never expect to see on screen. So this
+# names the four things that are *about* the action rather than the material of it:
+# the agent's own one-line description, which file, which host, what was searched.
+#
+# Keyed on **fields, not tool names**: the five harnesses name their tools differently
+# (Bash / terminal / exec_command), but the input field that carries the human-readable
+# part is the same. Order is priority — `description` beats a path because the agent
+# wrote it for a human to read.
+ACTIVITY_FIELDS = ("description", "file_path", "url", "query", "pattern")
+
+
+def _shorten(text):
+    text = " ".join(str(text).split())          # newlines would break the one-line pill
+    return text[:ACTIVITY_LIMIT - 1] + "…" if len(text) > ACTIVITY_LIMIT else text
+
+
+def activity_from(payload):
+    """The one line to show under the state, or None.
+
+    Never raises: an unexpected shape costs the detail, not the event.
+    """
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    for field in ACTIVITY_FIELDS:
+        value = tool_input.get(field)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        if field == "file_path":
+            value = os.path.basename(value.rstrip("/\\")) or value
+        elif field == "url":
+            # Host only. A full URL is mostly query string, and that is where the
+            # identifying parts of a link live.
+            without_scheme = value.split("://", 1)[-1]
+            value = without_scheme.split("/", 1)[0] or value
+        return _shorten(value)
+    return None
+
+
+def options_path():
+    return os.path.join(os.path.dirname(os.path.abspath(state_path())), "agent-avatar-options.json")
+
+
+def activity_allowed():
+    """Off is a **choice the app writes down**; absent means on.
+
+    Gated here rather than in the skin: with it off, nothing about the tool is written
+    to disk at all. Costs one small read per event (usually ENOENT).
+    """
+    return read_json(options_path(), {}).get("activity") is not False
 
 
 # The vocabulary has to cover both Hermes's tool names (terminal, exec_command,
@@ -692,6 +758,9 @@ def update(payload, label, audio=None, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDES
         sequence = previous.get("sequence", 0)
         if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 0:
             sequence = 0
+        # 只在忙的时候带详情：idle 还挂着一句 "npm test" 看起来像卡住了，而 writing 本来就
+        # 没有工具在跑。error 带上，因为那时候「是哪个工具错了」正是唯一想知道的事。
+        doing = activity_from(payload) if state in ACTIVITY_STATES and activity_allowed() else None
         snapshot = {
             "state": state,
             "detail": detail_for(state, label),
@@ -712,6 +781,8 @@ def update(payload, label, audio=None, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDES
                 snapshot["reaction"] = {"kind": reaction["kind"], "sequence": int(reaction.get("sequence", 0)), "at": at}
             else:
                 data.pop("reaction", None)
+        if doing:
+            snapshot["doing"] = doing
         carried = audio if audio else previous.get("audio")
         if isinstance(carried, dict) and carried:
             snapshot["audio"] = carried

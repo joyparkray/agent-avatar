@@ -28,7 +28,12 @@ fn normalize_semantic_state(value: &Value) -> Option<Value> {
         let at = r.get("at").and_then(Value::as_f64).unwrap_or(0.0);
         Some(serde_json::json!({ "kind": kind, "sequence": sequence, "at": at }))
     });
-    Some(serde_json::json!({ "state": state, "sequence": sequence, "token": token, "reaction": reaction }))
+    // 「它具体在干嘛」的一行。挑白名单是 Python 侧的事（见 state_machine.activity_from），
+    // 这里只负责**别让它无限长** —— 这个字段最终会被贴进状态栏，而状态栏没有宽度上限。
+    // 上游已经截到 40 字符，这条是防「快照被手改过 / 版本不一致」的第二道。
+    let doing = value.get("doing").and_then(Value::as_str)
+        .map(|text| text.chars().take(80).collect::<String>());
+    Some(serde_json::json!({ "state": state, "sequence": sequence, "token": token, "reaction": reaction, "doing": doing }))
 }
 /// 忙态快照多久算过期。与上游 hook 的会话过期口径一致。
 const STATE_STALE_SECONDS: u64 = 300;
@@ -152,6 +157,28 @@ fn candidates(name: &str) -> Vec<PathBuf> {
     paths.push(PathBuf::from("/tmp").join(name));
     paths.dedup();
     paths
+}
+
+/// 详情那一行的开关，**写给 hook 看**。
+///
+/// 🔴 开关不能只做在界面上。关掉的时候我们要的是「工具信息根本不被写进磁盘」，而写文件的
+/// 是 hook（一个独立的 Python 进程，读不到 app 的配置）。所以约定一个它认得的文件：
+/// 没有这个文件 = 开着；`{"activity": false}` = 关。对应 `state_machine.activity_allowed()`。
+///
+/// 写到**每一个候选临时目录**：hook 与 app 算出的 tmp 未必是同一个（`candidates` 那段注释
+/// 讲了为什么），只写一个的话开关可能对某些 harness 无效 —— 而那种失效是完全静默的。
+#[tauri::command(async)]
+pub fn set_activity_detail(enabled: bool) -> Result<(), String> {
+    let body = serde_json::json!({ "activity": enabled }).to_string();
+    let mut wrote = 0usize;
+    let mut last = String::new();
+    for path in candidates("agent-avatar-options.json") {
+        match fs::write(&path, &body) {
+            Ok(()) => wrote += 1,
+            Err(error) => last = format!("{}: {error}", path.display()),
+        }
+    }
+    if wrote > 0 { Ok(()) } else { Err(format!("写不进开关文件（{last}）")) }
 }
 
 /// `(async)`：Tauri 的同步 command 在**主线程**执行（官方文档：「Commands without the async

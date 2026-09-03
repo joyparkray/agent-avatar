@@ -42,6 +42,8 @@ export interface SettingsChange {
   idleExpressions?: string[];
   /** 键 → 触发方式（`click` / `dblclick` / 快捷键）。见 actions.ts。 */
   triggers?: Record<string, string>;
+  /** 状态栏第二行的开关。 */
+  activityDetail?: boolean;
   /** 语义状态 → 用户起的显示名。空表示恢复内置文案。 */
   stateLabels?: Partial<Record<SemanticState, string>>;
   /** 语义状态 → 表情名。用户没配的状态回落到模型清单里作者写的那个。 */
@@ -185,6 +187,18 @@ export function readUpdateCheck(): boolean {
   return raw === undefined || raw === null ? true : Boolean(raw);
 }
 export function writeUpdateCheck(value: boolean): void { writeRaw("updateCheck", value); }
+
+/**
+ * 状态栏第二行：显示 agent 具体在做什么。默认开。
+ *
+ * 这一份只管**界面显不显示**；真正决定「工具信息写不写进磁盘」的是 hook 那边读的开关文件，
+ * 由 `set_activity_detail` 命令写。两处要一起改，否则会出现「界面关了但文件里还在写」。
+ */
+export function readActivityDetail(): boolean {
+  const raw = readRaw("activityDetail");
+  return raw === undefined || raw === null ? true : Boolean(raw);
+}
+export function writeActivityDetail(value: boolean): void { writeRaw("activityDetail", value); }
 
 /** 上次自动检查的时间戳。手动点「检查更新」不写它 —— 那不该影响自动检查的节奏。 */
 export function readLastUpdateCheck(): number | null {

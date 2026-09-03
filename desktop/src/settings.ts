@@ -20,6 +20,7 @@ import {
   currentModelSource, language, LANGUAGES, modelBaseUrl, readStateMotions, rememberLanguage, rememberStateMotions,
   readHiddenModels, writeHiddenModels, readUpdateCheck, writeUpdateCheck,
   readStateExpressions, rememberStateExpressions, readStateLabels, rememberStateLabels,
+  readActivityDetail, writeActivityDetail,
   readLastUpdateCheck, writeLastUpdateCheck, SETTINGS_EVENT, SHORTCUT_STATUS_EVENT, type Language, type SettingsChange, type StatusPosition,
 } from "./prefs";
 import { SEMANTIC_STATES, type SemanticState } from "./types";
@@ -39,7 +40,7 @@ const TEXT: Record<Language, Record<string, string>> = {
     "general.language": "语言", "general.interfaceLanguage": "界面语言", "general.languageHint": "语言切换会立即应用到设置窗口。", "general.statusBar": "状态栏", "general.statusHint": "显示 Agent 当前在做什么，并可调整到不遮挡模型的位置。", "general.position": "位置",
     "general.about": "关于", "general.updateCheck": "自动检查更新", "general.updateHint": "只查一个版本号，不会下载或安装任何东西。查不到时（离线、代理、网络限制）不会有任何提示。", "general.checkNow": "检查更新", "general.checking": "查询中…", "general.upToDate": "已是最新版本。", "general.unreachable": "这会儿查不到（离线或网络受限），不影响使用。", "general.newVersion": "有新版本 {version}", "general.applyUpdate": "去下载",
     "video.display": "显示", "video.scale": "缩放", "video.opacity": "透明度", "video.focus": "聚焦范围：显示顶部", "video.focusHint": "仅在右键菜单启用聚焦模式时生效。", "video.rendering": "渲染", "video.renderHint": "降低画质通常比降低帧率更省 GPU。", "video.quality": "画质", "video.fps": "帧率",
-    "agent.connectors": "接入", "agent.connectorsHint": "选一个你在用的 agent，点「安装」就行。连接器和它需要的运行环境都在这个应用里，不联网、不下载；装完如果还需要你做点什么，会显示在下面。", "agent.mapping": "状态与动作", "agent.mappingHint": "「显示名」是状态栏上写的那几个字，改成你喜欢的说法就行（留空恢复默认）。动作和表情两者会同时生效，留「模型默认」就用模型作者在 avatar.json 里写的那一份。"
+    "agent.connectors": "接入", "agent.connectorsHint": "选一个你在用的 agent，点「安装」就行。连接器和它需要的运行环境都在这个应用里，不联网、不下载；装完如果还需要你做点什么，会显示在下面。", "agent.detail": "显示它具体在做什么", "agent.detailHint": "状态栏下面多一行，写它这一步在跑什么、改哪个文件。只取工具自带的那句说明、文件名、域名和搜索词 —— 命令行和文件内容不会显示。关掉之后连接器也不再把这些写进状态文件。", "agent.mapping": "状态与动作", "agent.mappingHint": "「显示名」是状态栏上写的那几个字，改成你喜欢的说法就行（留空恢复默认）。动作和表情两者会同时生效，留「模型默认」就用模型作者在 avatar.json 里写的那一份。"
     , "agent.colLabel": "显示名", "agent.colMotion": "动作", "agent.colExpression": "表情", "agent.default": "模型默认",
     "agent.removeAll": "移除所有连接器", "agent.removeAllHint": "删除本应用之前先点一下：它会把五家里的登记收回来。不这么做的话，那些登记会留在你的 agent 里，指向一个已经不存在的程序。",
     "agent.removeAgain": "确认移除", "agent.removeConfirm": "再点一次「确认移除」，会把五家里的登记全部收回。",
@@ -55,7 +56,7 @@ const TEXT: Record<Language, Record<string, string>> = {
     "general.language": "Language", "general.interfaceLanguage": "Interface language", "general.languageHint": "Language changes apply to this settings window immediately.", "general.statusBar": "Status bar", "general.statusHint": "Show what the agent is doing and place the label where it does not cover the avatar.", "general.position": "Position",
     "general.about": "About", "general.updateCheck": "Check for updates automatically", "general.updateHint": "It reads a version number and nothing else — no download, no install. If it cannot reach the network, it says nothing.", "general.checkNow": "Check for updates", "general.checking": "Checking…", "general.upToDate": "You are on the latest version.", "general.unreachable": "Can't reach it right now (offline or restricted). Nothing is affected.", "general.newVersion": "Version {version} is available", "general.applyUpdate": "Download",
     "video.display": "Display", "video.scale": "Scale", "video.opacity": "Opacity", "video.focus": "Focus crop: show top", "video.focusHint": "Only applies when Focus Mode is enabled from the context menu.", "video.rendering": "Rendering", "video.renderHint": "Lowering quality usually saves more GPU power than lowering frame rate.", "video.quality": "Quality", "video.fps": "Frame rate",
-    "agent.connectors": "Connectors", "agent.connectorsHint": "Pick the agent you use and press Install. The connector and the runtime it needs are inside this app — nothing is downloaded. Any remaining manual step is shown below.", "agent.mapping": "Agent state and motion", "agent.mappingHint": "Shown as is the wording in the status bar — put whatever you like there (empty restores the default). The motion and the expression are both applied; leave either on Model default to use what the model author put in avatar.json."
+    "agent.connectors": "Connectors", "agent.connectorsHint": "Pick the agent you use and press Install. The connector and the runtime it needs are inside this app — nothing is downloaded. Any remaining manual step is shown below.", "agent.detail": "Show what it is doing", "agent.detailHint": "Adds a line under the status bar naming what this step is running or which file it touches. It takes only the tool’s own one-line description, the file name, the host and the search term — never a command line or file contents. Turning it off also stops the connector writing them to the state file.", "agent.mapping": "Agent state and motion", "agent.mappingHint": "Shown as is the wording in the status bar — put whatever you like there (empty restores the default). The motion and the expression are both applied; leave either on Model default to use what the model author put in avatar.json."
     , "agent.colLabel": "Shown as", "agent.colMotion": "Motion", "agent.colExpression": "Expression", "agent.default": "Model default",
     "agent.removeAll": "Remove all connectors", "agent.removeAllHint": "Press this before deleting the app: it takes back the registrations in all five harnesses. Otherwise they stay in your agents, pointing at a program that no longer exists.",
     "agent.removeAgain": "Confirm removal", "agent.removeConfirm": "Press \"Confirm removal\" again to take back the registrations in all five harnesses.",
@@ -812,6 +813,18 @@ async function boot(): Promise<void> {
   const idleDefault = actions.map(item => item.key);
 
   guard("state-motions", () => bindStateActions(dir, actions));
+  guard("activity-detail", () => {
+    const box = $<HTMLInputElement>('[data-act="activity-detail"]');
+    box.checked = readActivityDetail();
+    box.addEventListener("change", () => {
+      writeActivityDetail(box.checked);
+      announce({ activityDetail: box.checked });
+      // 界面开关之外还要告诉 hook —— 关掉的时候我们要的是「根本不写进磁盘」，
+      // 而写文件的是另一个进程，读不到 app 的配置。写不进去就把原话说出来。
+      void invoke("set_activity_detail", { enabled: box.checked })
+        .catch(error => console.error("set_activity_detail", error));
+    });
+  });
 
   guard("actions", () => bindActions(dir, actions, idleDefault));
 }

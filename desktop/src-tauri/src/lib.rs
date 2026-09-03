@@ -428,6 +428,6 @@ pub fn run() {
             spawn_hit_test(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![log_event, hermes::read_semantic_state, hermes::discover_audio_endpoint, config::read_config, config::write_config, config::install_model, config::delete_model, config::list_installed_models, config::list_model_issues, connectors::list_connectors, connector_install::install_connector, connector_install::uninstall_connector, connector_install::reconcile_connectors, connector_install::app_versions, connector_install::remove_all_connectors, open_tool_window, set_hit_region, open_in_browser, start_global_audio, stop_global_audio])
+        .invoke_handler(tauri::generate_handler![log_event, hermes::read_semantic_state, hermes::set_activity_detail, hermes::discover_audio_endpoint, config::read_config, config::write_config, config::install_model, config::delete_model, config::list_installed_models, config::list_model_issues, connectors::list_connectors, connector_install::install_connector, connector_install::uninstall_connector, connector_install::reconcile_connectors, connector_install::app_versions, connector_install::remove_all_connectors, open_tool_window, set_hit_region, open_in_browser, start_global_audio, stop_global_audio])
         .run(tauri::generate_context!()).expect("error while running Agent Avatar");
 }

@@ -1,6 +1,6 @@
 {
   "name": "agent-avatar",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Aggregates Codex session, tool and subagent events into a semantic state for the Agent Avatar desktop companion to read. A pure observer: it changes nothing about Codex and takes no part in permission decisions.",
   "author": {
     "name": "Agent Avatar"

@@ -13,6 +13,8 @@ export function emotionForSemantic(state: SemanticState): EmotionCue { return EM
 
 export interface StateSnapshot {
   state?: string; sequence?: number;
+  /** 「它具体在干嘛」的一行（工具的 description / 文件名 / 域名 / 搜索词）。空 = 没有。 */
+  doing?: string | null;
   reaction?: { kind?: string; sequence?: number; at?: number } | null;
 }
 
@@ -20,13 +22,14 @@ export interface StateSnapshot {
 const MISSES_BEFORE_IDLE = 3;
 
 export class SemanticDriver {
-  private timer?: number; private lastState?: SemanticState; private lastReactionKey?: string; private idleRounds = 0; private misses = 0;
+  private timer?: number; private lastState?: SemanticState; private lastReactionKey?: string; private lastDoing = ""; private idleRounds = 0; private misses = 0;
   constructor(
     private readonly read: () => Promise<StateSnapshot | null>,
     private readonly emit: (state: SemanticState) => void,
     private readonly intervalMs = 200,
     private readonly maxIntervalMs = 2000,
     private readonly emitReaction: (reaction: Reaction) => void = () => {},
+    private readonly emitDoing: (doing: string) => void = () => {},
   ) {}
   start(): void { void this.tick(); this.schedule(this.intervalMs); }
   private schedule(delay: number): void {
@@ -36,6 +39,8 @@ export class SemanticDriver {
   private nextDelay(): number { return Math.min(this.maxIntervalMs, this.intervalMs * 2 ** Math.min(this.idleRounds, 4)); }
   stop(): void { if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
   private emitChanged(state: SemanticState): void { if (state !== this.lastState) { this.lastState = state; this.emit(state); } }
+  /** 详情跟着值变，不跟着 sequence —— 同一个工具连着报两次不该让状态栏闪。 */
+  private emitDoingChanged(doing: string): void { if (doing !== this.lastDoing) { this.lastDoing = doing; this.emitDoing(doing); } }
   /**
    * 去重键是 hook 的单调时间戳 `at`，不是 `sequence`。
    *
@@ -55,7 +60,7 @@ export class SemanticDriver {
   /** 读不到状态：连续 MISSES_BEFORE_IDLE 次才回落，避免一次抖动就掉表情。 */
   private miss(): void {
     this.idleRounds++;
-    if (++this.misses >= MISSES_BEFORE_IDLE) this.emitChanged("idle");
+    if (++this.misses >= MISSES_BEFORE_IDLE) { this.emitChanged("idle"); this.emitDoingChanged(""); }
   }
   private async tick(): Promise<void> {
     try {
@@ -63,6 +68,7 @@ export class SemanticDriver {
       if (!snapshot) return this.miss();
       this.idleRounds = 0; this.misses = 0;
       this.emitChanged(mapHookState(snapshot.state));
+      this.emitDoingChanged(typeof snapshot.doing === "string" ? snapshot.doing : "");
       this.emitSnapshotReaction(snapshot.reaction);
     } catch { this.miss(); }
   }

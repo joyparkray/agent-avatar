@@ -1,5 +1,5 @@
 name: agent-avatar
-version: "1.0.0"
+version: "1.1.0"
 description: "Aggregates Hermes session, tool and subagent events into a semantic state for the Agent Avatar mascot to read. A pure observer: it changes nothing about Hermes."
 author: "Agent Avatar"
 
