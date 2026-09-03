@@ -114,8 +114,8 @@ describe("connector install wizard", () => {
           expect(prompt).not.toContain(stateFileName(harness));
           expect(prompt).not.toMatch(/永远 exit 0|always exits 0/);
           // 改成明确要求「只报结论」
-          expect(prompt).toMatch(/告诉我|tell me|Relay that one line/i);
-          expect(prompt).toMatch(/不用解释|No explanation/i);
+          expect(prompt).toMatch(/只回一句|reply with one line/i);
+          expect(prompt).toMatch(/不用贴过程|No transcript/i);
           // 下一步仍然要说 —— 否则用户装完会以为没生效
           expect(prompt).toMatch(/新会话|new session/i);
         }
@@ -251,8 +251,13 @@ describe("connector install wizard", () => {
   it("does not let the agent hand-write the fiddly bits", () => {
     // dsh 的 name 在 Windows 上**必须是 file:/// URL**（Node 会把 `C:/…` 的盘符当协议名，
     // 报 ERR_UNSUPPORTED_ESM_URL_SCHEME）。让模型自己拼十有八九拼错，而错了是静默的。
+    // 2026-09-03：原来这里是「脚本打印那一段、你把它粘进 cordis.patch.yml」。
+    // 粘贴本身就是 agent 在手写那些讲究的东西 —— 而且粘错了没有任何声音
+    // （dsh 把插件的 stderr 丢弃）。现在脚本自己写那个文件。
     for (const platform of ["windows", "posix"] as const) {
-      expect(installPrompt("dsh", "zh-CN", platform)).toContain("localize.py dsh --print-registration");
+      const dsh = installPrompt("dsh", "zh-CN", platform);
+      expect(dsh).toContain("localize.py dsh --register");
+      expect(dsh).not.toMatch(/追加|Append|粘/);
     }
     // Hermes 的扫描器会拦（sudo 那条误报）——**放不放行是用户的决定**，不能让 agent 代按
     const hermes = installPrompt("hermes", "zh-CN", "posix");
@@ -266,10 +271,13 @@ describe("connector install wizard", () => {
     for (const locale of ["zh-CN", "en"] as const) {
       const codex = installPrompt("codex", locale, "posix");
       expect(codex).toMatch(/不要替我授信|do not trust the hooks for me/i);
-      for (const harness of CONNECTOR_HARNESSES) {
-        // 在别人机器上装软件应当由机器的主人点头
+      // 在别人机器上装软件应当由机器的主人点头
+      for (const harness of CONNECTOR_HARNESSES.filter(name => name !== "hermes")) {
         expect(installPrompt(harness, locale, "windows")).toMatch(/先问我|ask me first/i);
       }
+      // Hermes 不问 Python —— 它**本身就是 Python**，跑得起来就说明有。
+      // 它那道人工闸口在别处：安全扫描拦下时，放不放行是用户的决定。
+      expect(installPrompt("hermes", locale, "windows")).toMatch(/停下来告诉我|stop and tell me/i);
     }
   });
 

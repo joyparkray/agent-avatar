@@ -48,6 +48,9 @@ import tempfile
 from datetime import datetime, timezone
 
 HARNESSES = ("claude-code", "codex", "workbuddy", "dsh", "hermes")
+# Written into config files that other tools parse; pinned so the result does not
+# depend on the platform this happens to run on.
+NEWLINE = "\n"
 
 # Entry point and state-file name per harness. Change the layout and this table has
 # to follow, otherwise the symptom is "installed, but nothing happens".
@@ -237,6 +240,120 @@ def connector_version(root):
     return None
 
 
+DSH_BEGIN = "# >>> agent-avatar (managed) >>>"
+DSH_END = "# <<< agent-avatar (managed) <<<"
+
+
+def dsh_patch_file():
+    home = os.environ.get("DSH_HOME") or os.path.join(
+        os.environ.get("USERPROFILE") or os.path.expanduser("~"), ".dsh")
+    return os.path.join(home, "cordis.patch.yml")
+
+
+def dsh_block(root=None):
+    """The managed block that registers the plugin with dsh."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    entry = os.path.join(root or os.path.join(here, "plugins", "dsh", "agent-avatar"), "index.mjs")
+    # dsh imports this string as an ESM specifier, and Node parses `C:/...` as a URL
+    # whose scheme is `c:` (ERR_UNSUPPORTED_ESM_URL_SCHEME). It must be a file:/// URL.
+    url = pathlib.Path(os.path.abspath(entry)).as_uri()
+    return NEWLINE.join([DSH_BEGIN, "- insert:", "    - id: agent-avatar",
+                         "      name: %s" % url, DSH_END])
+
+
+def without_dsh_block(text):
+    """Everything except our own entry, marked or not.
+
+    Dropping the marked block is the easy half. The other half matters more: every user
+    who installed with an earlier prompt has an **unmarked** entry, because that prompt
+    told the agent to paste the block in by hand and a hand-paste loses the marker
+    comments as easily as it keeps them. If those were invisible to us, `--register`
+    would register a second copy on top of the first, and `--unregister` would report
+    success while leaving one behind.
+
+    So an entry is ours if it says `id: agent-avatar`, however it got there. The file is
+    a small hand-edited list, so this walks it line by line rather than pulling in a YAML
+    parser (this script is stdlib-only by design — it runs before anything is installed).
+    """
+    kept, skipping = [], False
+    item, in_item = [], False
+
+    def flush():
+        if item and not any("id: agent-avatar" in line for line in item):
+            kept.extend(item)
+        item.clear()
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == DSH_BEGIN:
+            flush(); in_item = False
+            skipping = True
+            continue
+        if stripped == DSH_END:
+            skipping = False
+            continue
+        if skipping:
+            continue
+        # A new top-level list item ends the previous one
+        if line.startswith("- "):
+            flush()
+            in_item = True
+        elif in_item and stripped and not line.startswith((" ", "	")):
+            flush()
+            in_item = False
+        (item if in_item else kept).append(line)
+    flush()
+    return kept
+
+
+def edit_dsh_registration(root=None, remove=False):
+    """Write (or remove) the dsh registration in cordis.patch.yml.
+
+    This is the one place an install step touches a file outside the plugin tree, and
+    it is deliberate. Registering dsh used to be "the script prints a block, the agent
+    appends it by hand", and that hand-append was the most error-prone step of all five
+    harnesses: YAML is indentation-sensitive, the entry has to be a file:/// URL, and an
+    existing `[]` line has to go or the file stops parsing. Nothing checks any of it,
+    and a malformed patch file fails **silently** (this path discards the plugin's
+    stderr).
+
+    Codex's config.toml stays print-only, and the difference is what the file *is*:
+    cordis.patch.yml is dsh's plugin-registration mechanism and often does not exist
+    until a plugin is registered, whereas config.toml carries the user's model, notify
+    and mcp_servers settings **and is rewritten by the running ChatGPT app**.
+
+    Safeguards: the previous contents are backed up next to the file, the block is
+    delimited and removed before being re-added (repeats do not stack up), and the
+    replacement is written atomically.
+    """
+    path = dsh_patch_file()
+    existing = ""
+    if os.path.isfile(path):
+        existing = io.open(path, encoding="utf-8").read()
+        io.open(path + ".agent-avatar-backup", "w", encoding="utf-8",
+                newline=NEWLINE).write(existing)
+
+    lines = without_dsh_block(existing)
+    # An empty patch list is written as a bare `[]`; left above real entries it is
+    # invalid YAML, so it goes when ours arrives.
+    lines = [line for line in lines if line.strip() != "[]"]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not remove:
+        lines.append(dsh_block(root))
+
+    body = NEWLINE.join(lines)
+    if body:
+        body += NEWLINE
+    directory = os.path.dirname(path)
+    if directory and not os.path.isdir(directory):
+        os.makedirs(directory)
+    temporary = path + ".tmp"
+    io.open(temporary, "w", encoding="utf-8", newline=NEWLINE).write(body)
+    os.replace(temporary, path)
+    return path
+
+
 def print_registration(harness, root=None):
     """Print the configuration lines to register — **print only, touch no files**.
 
@@ -270,21 +387,12 @@ def print_registration(harness, root=None):
         print("enabled = true")
         return 0
     if harness == "dsh":
-        entry = os.path.join(root or os.path.join(here, "plugins", "dsh", "agent-avatar"), "index.mjs")
-        # 🔴 dsh imports this string as an ESM specifier, and Node parses `C:/…` as a
-        # URL whose scheme is `c:` (ERR_UNSUPPORTED_ESM_URL_SCHEME). It must be a
-        # file:/// URL.
-        url = pathlib.Path(os.path.abspath(entry)).as_uri()
-        print("# Append to $DSH_HOME/cordis.patch.yml (defaults to %s; back it up first):"
-              % os.path.join("~", ".dsh"))
-        print("# If the file contains just a line with `[]`, delete that line — an empty")
+        print("# Append to %s (back it up first):" % dsh_patch_file())
+        print("# If the file contains just a line with `[]`, delete that line - an empty")
         print("# array followed by entries is invalid YAML.")
+        print("# (Or let this script do it: `python localize.py dsh --register`.)")
         print()
-        print("# >>> agent-avatar (managed) >>>")
-        print("- insert:")
-        print("    - id: agent-avatar")
-        print("      name: %s" % url)
-        print("# <<< agent-avatar (managed) <<<")
+        print(dsh_block(root))
         return 0
     print("%s needs no extra registration: its own CLI installs the plugin (see the README)" % harness)
     return 0
@@ -305,7 +413,21 @@ def main():
     parser.add_argument("--root", help="plugin tree root; defaults to plugins/<harness>/agent-avatar")
     parser.add_argument("--print-registration", action="store_true",
                         help="only print the configuration lines to register, change no files (codex / dsh)")
+    parser.add_argument("--register", action="store_true",
+                        help="dsh only: write the registration into cordis.patch.yml (backs it up first)")
+    parser.add_argument("--unregister", action="store_true",
+                        help="dsh only: remove that registration again")
     arguments = parser.parse_args()
+
+    # Registration runs after localisation, so `--register` on its own does both: one
+    # command is one thing that can fail, and the agent has one line to report.
+    if arguments.unregister:
+        if arguments.harness != "dsh":
+            raise SystemExit("--unregister is dsh-only")
+        print("removed agent-avatar from %s" % edit_dsh_registration(arguments.root, remove=True))
+        return 0
+    if arguments.register and arguments.harness != "dsh":
+        raise SystemExit("--register is dsh-only; for %s use --print-registration" % arguments.harness)
 
     if arguments.print_registration:
         return print_registration(arguments.harness, arguments.root)
@@ -352,15 +474,24 @@ def main():
     if python != sys.executable.replace("\\", "/"):
         print("  (the original path contains spaces; using the 8.3 short path on the command line)")
     print("rewrote %d command(s) -> %s" % (count, config))
+    if arguments.register:
+        print("registered agent-avatar in %s" % edit_dsh_registration(arguments.root))
     # 🔴 Say only what this run actually proved. It used to claim the connector was
     # "installed", but this step runs *before* the harness install command — so an agent
     # told to relay this line would have pasted "installed" on top of a failed install.
     # What is proven here: this machine's interpreter runs the hook and a real event
     # reaches the state file. Whether the harness accepted the plugin is the next step's
     # to report.
-    print("OK: %s connector is ready and self-tested on this machine. "
-          "Finish the remaining steps, then start a new %s session and the avatar will "
-          "follow along." % (arguments.harness, arguments.harness))
+    if arguments.register:
+        # dsh has no plugin CLI: this command *is* the whole install, so unlike the
+        # other harnesses there is no later step whose success is the real verdict.
+        print("OK: %s connector is installed and self-tested on this machine. "
+              "Start a new %s session and the avatar will follow along."
+              % (arguments.harness, arguments.harness))
+    else:
+        print("OK: %s connector is ready and self-tested on this machine. "
+              "Finish the remaining steps, then start a new %s session and the avatar will "
+              "follow along." % (arguments.harness, arguments.harness))
     return 0
 
 

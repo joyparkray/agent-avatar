@@ -230,9 +230,10 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
   // 用哪个名字调 Python **交给 agent 判断**：Windows 上 `python3` 是 0 字节存根，
   // 而 macOS 上通常只有 `python3`。这一处让它判断是安全的 —— 挑错了会立刻失败
   // （存根打印 "Python was not found" 就退出），不会静默走下去。
-  const localize = (extra = "") => (zh
-    ? `用这台机器上的 Python 跑：python localize.py ${harness}${extra}（macOS/Linux 上通常写 python3）`
-    : `Run with this machine's Python: python localize.py ${harness}${extra} (usually python3 on macOS/Linux)`);
+  // `python` 与 `python3` 的取舍**说一次就够**（放在下面的边界里）。原来每条 localize 步骤
+  // 都带一句「macOS/Linux 上通常写 python3」，dsh 那份因此重复了两遍 —— 提示词是给人看的，
+  // 同一句话出现两次，读的人会以为那是两件不同的事。
+  const localize = (extra = "") => `python localize.py ${harness}${extra}`;
 
   let steps: string[];
   if (cli && !(windows && harness === "codex")) {
@@ -250,13 +251,15 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
       zh ? "**完全退出 ChatGPT app 再打开** —— 插件在启动时才被发现，而且 app 运行时也会写 config.toml"
          : "**Fully quit and reopen the ChatGPT app** — plugins are discovered at startup, and the app writes config.toml while running"];
   } else if (harness === "dsh") {
-    // dsh 没有「插件市场」式的安装命令给本地目录用，装法是往它的用户 patch 层加一条 insert。
-    // 那个文件被 dsh 的 HMR 监视着，正在跑的 dsh 会热加载。
-    // 同样让脚本把那一段算好 —— Windows 上 name 必须是 file:/// URL，
-    // 手拼的话十有八九会写成 `C:/…`，而 Node 会把盘符当成协议名。
-    steps = [...clone, localize(), localize(" --print-registration"),
-      zh ? "把上一步打印出来的那一段追加到它指出的 cordis.patch.yml 里（先备份）"
-         : "Append the block it printed to the cordis.patch.yml it names (back it up first)"];
+    // dsh 没有「插件市场」式的安装命令给本地目录用，装法是往它的用户 patch 层加一条 insert
+    // （那个文件被 dsh 的 HMR 监视着，正在跑的 dsh 会热加载）。
+    //
+    // 🔴 这一段原来是**三步**：本地化、打印登记段、让 agent 把它粘进 cordis.patch.yml。
+    // 那个手工粘贴是五家里最容易出错的一步 —— YAML 缩进敏感、name 必须是 file:/// URL
+    // （手拼十有八九写成 `C:/…`，而 Node 会把盘符当协议名）、文件里原有的 `[]` 还得删掉，
+    // 而且**粘错了没有任何声音**（dsh 把插件的 stderr 丢弃）。现在脚本自己写，
+    // 一条命令就是整个安装。
+    steps = [...clone, localize(" --register")];
   } else {
     // Hermes 是唯一的例外：它自己的 CLI 只认 git 来源、支持 `owner/repo/子目录`、
     // 还能钉死 commit SHA —— 它自己就是「钉死的命令」，不需要我们 clone。
@@ -288,54 +291,44 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
   // `localize.py` 跑在**装进 harness 之前**，所以它那行只证明「这台机器跑得起来」，
   // 证明不了「harness 收下了」。原来这里写「那一行就是结论」，于是最后一步失败时，
   // agent 仍会把带 "installed" 的那行贴出来 —— 那一行现在也改成了 "ready"。
-  const verdictStep = harness !== "hermes"
-    ? (zh ? `（结论 = 最后一步是否成功；\`localize.py ${harness}\` 那行原样贴过来当佐证）`
-          : ` (the verdict is whether the last step succeeded; paste the \`localize.py ${harness}\` line verbatim alongside it)`)
-    : "";
+  // 🔴 **提示词会自己长胖。** 每修一个坑就往后面挂一句，几轮下来正文 5 步、后面跟 4 段说明 ——
+  // 每一句都有来历，合在一起却是一堵墙，而它的读者是个刚要装东西的普通用户。
+  // 所以固定成三块：**做什么**（编号步骤）、**怎么回话**（一句）、**边界**（要点式）。
+  // 新的教训往这三块里合并，不再往末尾追加第四块。
   const report = zh
-    ? `**只告诉我成功还是失败**；失败的话说清卡在哪一步。不用解释你是怎么验证的，也不用贴中间过程。${verdictStep}`
-    : `**Just tell me whether it worked**, and if not, which step it stopped at. No explanation of how you verified it, no intermediate output.${verdictStep}`;
-
-  // 插件是从 clone 出来的那个目录跑的，不是从 harness 的缓存副本 —— 删掉它等于卸载，
-  // 而且是**不声不响**的那种卸载。这一句是说给用户听的，所以放在「开新会话」旁边。
-  const keep = harness === "hermes" ? [] : [
-    zh ? "`~/agent-avatar-connectors` 这个目录**别删** —— 插件是从那儿跑的（要删请用卸载提示词）。"
-       : "Do **not** delete `~/agent-avatar-connectors` — the plugin runs from there (use the uninstall prompt if you want it gone).",
-    // 家目录在多数 agent 的沙箱工作区之外。2026-09-03 实机：dsh 的 headless 会话在第 3 步被
-    // 文件沙箱拦住（工作区只读到 cwd），而它当时没有审批通道，只能放弃。
-    // 目录仍然要钉死在 $HOME —— 稳定性值这一次授权，而且这种失败是**响亮**的（它报了
-    // 确切原因），比 clone 到临时目录、几天后静默失效好得多。这句是让 agent 直接开口要授权，
-    // 而不是先撞墙。
-    zh ? "这个目录在你的工作区之外，如果沙箱拦住了写入，**跟我要一次授权**就行 —— 别改到别的位置去。"
-       : "That directory is outside your workspace; if your sandbox blocks writing there, **just ask me to approve it** — don't relocate the clone.",
-  ];
+    ? "做完只回一句话：成功，或者失败卡在第几步。不用贴过程。"
+    : "When you are done, reply with one line: it worked, or which step it failed at. No transcript.";
 
   const next = zh
-    ? "装好之后开一个新会话，形象就会跟着动 —— 已经在跑的会话不会加载新插件。"
-    : "Start a new session afterwards and the avatar will follow along — a session that is already running will not pick up a new plugin.";
+    ? "（装好后要**开一个新会话**才生效 —— 已经在跑的会话不会加载新插件。）"
+    : "(It takes effect in a **new session** — sessions already running will not pick up a new plugin.)";
 
   const boundaries = [
-    // 装 Python 这类事要用户点头。两条命令都给出来、由 agent 按平台挑 ——
-    // 这样两个平台的提示词逐字一致，少一个会漂的分支。
-    zh ? "如果这台机器上没有可用的 Python，**先问我**再装（Windows: winget install Python.Python.3.13；macOS: xcode-select --install）。"
-       : "If this machine has no usable Python, **ask me first** before installing one (Windows: winget install Python.Python.3.13; macOS: xcode-select --install).",
+    // Hermes 那条路不 clone、也不跑 localize.py，这两条对它都不适用。
+    ...(harness === "hermes" ? [] : [
+      // 两条原本分开的目录说明合成一条：它们讲的是同一个目录的同一件事 ——
+      // 位置固定、不可移动、不可删除。分开写的时候，agent 会把「别删」和「别换位置」
+      // 当成两条独立约束去分别权衡；合起来它就是一条。
+      zh ? "`$HOME/agent-avatar-connectors` 位置固定：插件是从那儿跑的，所以**别删也别挪**。它在你的工作区之外，被沙箱拦住就跟我要一次授权。"
+         : "`$HOME/agent-avatar-connectors` is fixed: the plugin runs from there, so **do not delete or relocate it**. It sits outside your workspace — if your sandbox blocks it, ask me to approve.",
+      zh ? "`python` 还是 `python3` 你自己判断。没有可用的 Python **先问我**（Windows: winget install Python.Python.3.13；macOS: xcode-select --install）。"
+         : "Decide yourself whether it is `python` or `python3` here. If there is no usable Python, **ask me first** (Windows: winget install Python.Python.3.13; macOS: xcode-select --install).",
+    ]),
     ...(harness === "codex"
-      ? [zh ? "装完之后**不要替我授信**：Codex 的 /hooks 授信必须由我自己点，告诉我该去点什么就行。"
-            : "After installing, **do not trust the hooks for me**: the /hooks approval in Codex is mine to click — just tell me what to click."]
+      ? [zh ? "**不要替我授信**：Codex 的 /hooks 授信只能我自己点，告诉我去点什么就行。"
+            : "**Do not trust the hooks for me**: the /hooks approval in Codex is mine to click — just tell me what to click."]
       : []),
   ];
 
   return [
-    zh ? `帮我装 Agent Avatar 的 ${harness} connector（一个纯观察者插件：只读事件、写一个本地状态文件，不改变 agent 的行为）。按顺序执行：`
-       : `Install the Agent Avatar ${harness} connector for me (a pure observer plugin: it reads events and writes a local state file; it never changes the agent's behaviour). Run these in order:`,
+    zh ? `帮我装 Agent Avatar 的 ${harness} connector（纯观察者插件：只读事件、写一个本地状态文件，不改变你的行为）。按顺序执行：`
+       : `Install the Agent Avatar ${harness} connector for me (a pure observer plugin: it reads events and writes a local state file; it never changes your behaviour). Run these in order:`,
     "",
     ...steps.map((step, index) => `${index + 1}) ${step}`),
     "",
-    report,
-    next,
-    ...keep,
+    `${report} ${next}`,
     "",
-    ...boundaries,
+    ...boundaries.map(line => `- ${line}`),
   ].join("\n");
 }
 
@@ -359,8 +352,9 @@ export function uninstallPrompt(harness: string, locale: Language): string {
     // 下次装同名插件时它还在，容易装到旧版上。
     steps = [`${cli} plugin uninstall agent-avatar`, `${cli} plugin marketplace remove agent-avatar`];
   } else if (harness === "dsh") {
-    steps = [zh ? "从 $DSH_HOME/cordis.patch.yml 里删掉 `# >>> agent-avatar (managed) >>>` 到 `# <<< agent-avatar (managed) <<<` 之间那一段（含这两行），其余原样保留"
-                : "Delete the block between `# >>> agent-avatar (managed) >>>` and `# <<< agent-avatar (managed) <<<` (inclusive) from $DSH_HOME/cordis.patch.yml, leaving everything else untouched"];
+    // 同样由脚本来删：它认得**没有标记**的旧条目（按旧提示词手工粘贴进去的那种），
+    // 而让 agent 照着标记去删的话，那些条目会被漏掉、卸载报成功却还留着。
+    steps = [`cd "$HOME/agent-avatar-connectors"`, "python localize.py dsh --unregister"];
   } else {
     // ⚠️ Windows 上 `hermes plugins remove` 只做一半：目录改名后删不掉（git 的 pack 是只读的），
     // 而 config.yaml 里还留着 enabled —— 列表显示启用、实际加载不到。所以要交代收尾。
@@ -389,32 +383,28 @@ export function uninstallPrompt(harness: string, locale: Language): string {
     "",
     ...steps.map((step, index) => `${index + 1}) ${step}`),
     "",
-    // 🔴 **这个目录可能是几家共用的。** 路径钉死之后，装第二家时同一份 clone 会被复用
-    // （2026-09-03 实机就是这样：claude-code 和 workbuddy 都从这里跑）。原来这里直接让
-    // agent 删掉它 —— 那会把还装着的另外几家**静默**弄废：账本上还写着已安装，插件却
-    // 再也跑不起来，正是最难查的那一类。那次是 agent 自己起疑停下来问才没删成，
-    // 靠的是运气不是设计。
+    // 与安装提示词同一个形状：步骤 / 一句汇报要求（含判据）/ 要点式边界。
+    // 两边口径不一致的话，同一个 agent 在装和卸时会给出两种粒度的回话。
     //
-    // 与其让 agent 去判断「还有没有别家在用」，不如让留着成为默认：一个几 MB 的目录，
-    // 删错的代价远大于留着的代价。
-    // Hermes 从 git 直装，没有 clone 目录；那条 SessionEnd 红字也是本地 marketplace 这条路
-    // 才有的现象。给它看不适用的收尾说明，只会让「成功还是失败」更难回答。
+    // 🔴 判据不能省。卸载有好几步，有的会半路失败、有的本来就该跳过，
+    // 所以「成功还是失败」本身是个没法回答的问题 —— 2026-09-03 实机，Hermes 那次的
+    // 原话是「调用成功，插件已卸载。」紧接着一句「失败。」，两句都对
+    // （第 1 步成了、收尾没成），拼在一起对小白就是天书。
+    (zh ? "做完只回一句话：成功，或者失败卡在第几步。不用贴过程。"
+        : "When you are done, reply with one line: it worked, or which step it failed at. No transcript.")
+      + " " + verdictCheck,
+    "",
+    // 🔴 **这个目录可能是几家共用的。** 路径钉死之后，装第二家时同一份 clone 会被复用
+    // （claude-code 和 workbuddy 实机就是共用的）。原来这里直接让 agent 删掉它 ——
+    // 那会把还装着的另外几家**静默**弄废：账本上还写着已安装，插件却再也跑不起来。
+    // 那次是 agent 自己起疑停下来问才没删成，靠的是运气不是设计。
+    // Hermes 从 git 直装，没有这个目录，那条 SessionEnd 红字也只出现在本地 marketplace 这条路上。
     ...(harness === "hermes" ? [] : [
-      zh ? "`~/agent-avatar-connectors` 这个目录：只有在你没给别的 agent 装 Agent Avatar 的情况下才删；**不确定就留着**（几 MB 而已，几家是共用同一份的）。"
-         : "About `~/agent-avatar-connectors`: delete it only if no other agent still has Agent Avatar installed; **if unsure, leave it** (a few MB, and the harnesses share one copy).",
-      // 卸载时**正在跑的那个会话**已经把插件加载在内存里了，目录一删，它在结束时会红字报
-      // "SessionEnd hook failed: Plugin directory does not exist"。无害，但和「成功」自相矛盾，
-      // 小白会以为卸坏了 —— 2026-09-03 实机跑卸载提示词时原样出现过。先说在前头。
-      zh ? "当前这个会话结束时可能会报一句 “Plugin directory does not exist” —— 那是正常的（插件已经从内存里卸不掉了），忽略即可。"
-         : "This session may print \"Plugin directory does not exist\" when it ends — that is expected (the plugin is already loaded in memory) and harmless.",
+      zh ? "- `$HOME/agent-avatar-connectors`：只有在你没给别的 agent 装过 Agent Avatar 时才删，**不确定就留着**（几家共用同一份）。"
+         : "- `$HOME/agent-avatar-connectors`: delete it only if no other agent has Agent Avatar installed — **if unsure, leave it** (the harnesses share one copy).",
+      zh ? "- 当前会话结束时可能会报一句 “Plugin directory does not exist”，那是正常的（插件已经在内存里了），忽略即可。"
+         : "- This session may print \"Plugin directory does not exist\" when it ends; that is expected (the plugin is already in memory), ignore it.",
     ]),
-    // 🔴 卸载**必须给出判据**，否则「成功还是失败」是没法回答的问题：卸载有好几步，
-    // 有的会半路失败、有的本来就该跳过。2026-09-03 实机，Hermes 那次的原话是
-    // 「调用成功，插件已卸载。」紧接着一句「失败。」—— 两句都对（第 1 步成了、收尾没成），
-    // 拼在一起对小白就是天书。判据只有一条：**这家自己的插件列表里还有没有它。**
-    verdictCheck,
-    zh ? "**只告诉我成功还是失败**（按上面那条判据）。不用解释过程。"
-       : "**Just tell me whether it worked** (by that check). No explanation needed.",
   ].join("\n");
 }
 
@@ -454,8 +444,8 @@ export function updatePrompt(harness: string, locale: Language, platform: Platfo
     steps.push(`${cli} plugin uninstall agent-avatar`);
     steps.push(`${cli} plugin install agent-avatar@agent-avatar`);
   } else if (harness === "dsh") {
-    steps.push(zh ? "确认 $DSH_HOME/cordis.patch.yml 里那一段还指向同一个路径（一般不用改）"
-                  : "Check that the block in $DSH_HOME/cordis.patch.yml still points at the same path (usually unchanged)");
+    // 重新登记是幂等的（脚本先删旧条目再写新的），所以更新不需要单独一步去核对路径。
+    steps.push("python localize.py dsh --register");
   } else {
     steps.push(`hermes plugins install ${MARKETPLACE_REPO}/plugins/hermes/agent-avatar --enable --force`,
       "hermes plugins doctor agent-avatar", "hermes gateway restart");
