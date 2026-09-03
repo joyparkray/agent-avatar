@@ -1,22 +1,27 @@
-"""Agent Avatar 的 Hermes 插件 —— 纯观察者，只写状态文件，不改变 Hermes 任何行为。
+"""Agent Avatar's Hermes plugin — a pure observer: it writes a state file and
+changes nothing about how Hermes behaves.
 
-**这是默认接入方式。** 相比 shell hook：不改用户的 `config.yaml`（YAML 是 user-owned）、
-不需要 shell-hook allowlist、不需要 `hooks_auto_accept: true`
-（那是给 CI/headless 用的全局开关，会让**所有**未见过的 shell hook 免确认）。
-安装见 `docs/HERMES-SETUP.md`。
+**This is the default way to connect.** Compared with the shell hook, it does not
+touch the user's `config.yaml` (YAML is user-owned), does not need a shell-hook
+allowlist, and does not need `hooks_auto_accept: true` (a global switch meant for
+CI/headless that would silently accept **every** unseen shell hook).
+Installation: see `docs/HERMES-SETUP.md`.
 
-状态机与 shell hook 入口共用（`state_machine.py`，安装时一并拷进本目录）。
-`_payload()` 复刻 `agent/shell_hooks.py:_serialize_payload()` 的翻译，
-两条入口喂给状态机的 payload 因此是**同一个形状**——不必为插件写第二套分支。
+The state machine is shared with the shell-hook entry point (`state_machine.py`,
+copied into this directory at install time). `_payload()` mirrors the translation
+in `agent/shell_hooks.py:_serialize_payload()`, so both entry points hand the
+state machine **the same shape** — no second code path just for the plugin.
 """
 
 from .state_machine import update
 
 LABEL = "Hermes"
 
-# 只注册纯观察类事件。**这是白名单，不是「能注册的都注册上」**：Hermes 的
-# `pre_tool_call` / `pre_verify` 等 hook 的返回值会被解释成 block/approve 指令，
-# 观察者插件绝不能出现在决策链路上。我们的回调一律返回 None（无指令）。
+# Only pure-observation events are registered. **This is an allowlist, not
+# "register everything we can"**: the return value of Hermes hooks such as
+# `pre_tool_call` and `pre_verify` is interpreted as a block/approve decision, and
+# an observer must never sit in the decision path. All our callbacks return None
+# (no instruction).
 HOOKS = (
     "on_session_start",
     "on_session_reset",
@@ -30,8 +35,8 @@ HOOKS = (
     "on_session_finalize",
 )
 
-# 与 agent/shell_hooks.py 的 _TOP_LEVEL_PAYLOAD_KEYS 一致：这几个键被提到顶层，
-# 其余 kwargs 原样进 `extra`。
+# Matches _TOP_LEVEL_PAYLOAD_KEYS in agent/shell_hooks.py: these keys are lifted
+# to the top level, everything else in kwargs goes into `extra` untouched.
 _TOP_LEVEL_KEYS = frozenset({"tool_name", "args", "session_id", "parent_session_id"})
 
 
@@ -40,7 +45,8 @@ def _payload(event, kwargs):
         "hook_event_name": event,
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
-        # subagent_stop 只带 parent_session_id，没有 session_id —— 与 shell hook 同口径回落。
+        # subagent_stop carries only parent_session_id, no session_id — fall back
+        # exactly the way the shell hook does.
         "session_id": kwargs.get("session_id") or kwargs.get("parent_session_id") or "",
         "extra": {key: value for key, value in kwargs.items() if key not in _TOP_LEVEL_KEYS},
     }
@@ -48,23 +54,27 @@ def _payload(event, kwargs):
 
 def _make_callback(event):
     def callback(**kwargs):
-        # Hermes 的 invoke_hook 已经包了 try/except，但它**没有超时** —— 卡住就是卡住
-        # agent 主循环。所以真正的防线在 state_machine.update()：非阻塞锁 + 有界重试。
-        # 这里再兜一层异常，纯粹是为了不往 agent.log 刷 warning。
+        # Hermes's invoke_hook already wraps us in try/except, but it has **no
+        # timeout** — blocking here blocks the agent's main loop. The real defence
+        # is therefore in state_machine.update(): a non-blocking lock with bounded
+        # retries. This extra catch exists purely to keep warnings out of agent.log.
         try:
             update(_payload(event, kwargs), LABEL, _audio())
         except Exception:
             pass
-        return None  # 观察者：永不返回指令
+        return None  # observer: never returns an instruction
     callback.__name__ = "agent_avatar_" + event
     return callback
 
 
 def _audio():
-    """把 Hermes 的会话 token 带给皮肤（音频链路鉴权，见 docs/HERMES-STATE-TAXONOMY.md）。
+    """Pass Hermes's session token to the skin (audio-link auth, see
+    docs/HERMES-STATE-TAXONOMY.md).
 
-    拿不到时返回 None —— 状态机会沿用上一次的值而不是覆盖成空。
-    gateway / cron 会话不是 desktop 后代，环境里本来就没有这个变量。
+    Returns None when there is nothing to pass — the state machine then keeps the
+    previous value instead of overwriting it with an empty one. Gateway and cron
+    sessions are not descendants of the desktop process, so the variable is simply
+    absent in their environment.
     """
     import os
     token = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN", "").strip()

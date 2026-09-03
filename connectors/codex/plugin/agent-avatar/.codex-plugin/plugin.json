@@ -1,7 +1,7 @@
 {
   "name": "agent-avatar",
   "version": "1.0.0",
-  "description": "把 Codex 的会话/工具/子代理事件聚合成语义状态，供 Agent Avatar 桌面形象读取。纯观察者：不改变 Codex 任何行为，不参与权限决策。",
+  "description": "Aggregates Codex session, tool and subagent events into a semantic state for the Agent Avatar desktop companion to read. A pure observer: it changes nothing about Codex and takes no part in permission decisions.",
   "author": {
     "name": "Agent Avatar"
   },
@@ -15,15 +15,15 @@
   "hooks": "./hooks.json",
   "interface": {
     "displayName": "Agent Avatar",
-    "shortDescription": "让桌面形象跟着 Codex 的状态变表情",
-    "longDescription": "观察 Codex 的生命周期事件（提问 / 调工具 / 派子代理 / 收尾），聚合成一个互斥的语义状态写进本地状态文件，Agent Avatar 桌面形象据此切换表情与动作。只读不写：从不返回任何指令，不拦工具、不参与审批。",
+    "shortDescription": "Let a desktop mascot follow your Codex session",
+    "longDescription": "Watches Codex's lifecycle events (prompting, running tools, delegating to subagents, wrapping up) and aggregates them into one mutually exclusive semantic state written to a local state file, which the Agent Avatar desktop mascot uses to switch expressions and motions. Read-only: it never returns an instruction, never blocks a tool and never takes part in approvals.",
     "developerName": "Agent Avatar",
     "category": "Productivity",
     "capabilities": [
       "Read"
     ],
     "defaultPrompt": [
-      "让桌面形象跟着当前任务的状态变表情"
+      "Make the desktop mascot follow what this task is doing"
     ]
   }
 }

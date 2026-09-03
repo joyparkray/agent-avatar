@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Claude Code 系事件词表的共用翻译层（stdlib only）。
+"""Shared translation layer for the Claude Code family of event vocabularies (stdlib only).
 
-**四家共用**：Claude Code、Codex、DeepSeek Harness、WorkBuddy。
-它们的事件名、stdin 字段名、注册结构高度同构（`hook_event_name` / `session_id` /
-`tool_use_id` / `agent_id` 都是公共字段），差异小到可以用一张配置表表达 ——
-所以这里是一个翻译函数 + 每家一份配置，不是四份复制粘贴的脚本。
+**Shared by four harnesses**: Claude Code, Codex, DeepSeek Harness and WorkBuddy.
+Their event names, stdin field names and registration structures are highly
+isomorphic (`hook_event_name`, `session_id`, `tool_use_id` and `agent_id` are all
+common fields), and the differences are small enough to express as a config
+table — hence one translation function plus one config per harness, rather than
+four copy-pasted scripts.
 
-契约来源：各家官方文档 + 实机抓取（Claude Code 2.1.212 用隔离 --settings 取样器抓过
-完整两轮，含子代理；见 docs/DESIGN-M3-MULTI-HARNESS.md §2.6/§2.8）。
+Where the contract comes from: each vendor's own documentation plus captures on
+real hardware (two full turns including subagents were captured from Claude Code
+2.1.212 with an isolated --settings sampler; see docs/DESIGN-M3-MULTI-HARNESS.md
+§2.6/§2.8).
 """
 
-# 共用的事件映射。每家按自己支持的事件裁剪 —— 映射表里查不到就忽略，
-# 所以「这家少发某个事件」不需要任何额外处理。
+# Shared event map. Each harness trims it to what it actually emits — anything not
+# found in the map is ignored, so "this harness doesn't send that event" needs no
+# special handling at all.
 _BASE_EVENTS = {
     "UserPromptSubmit": "pre_llm_call",
     "PreToolUse": "pre_tool_call",
@@ -25,50 +30,57 @@ _BASE_EVENTS = {
 CLAUDE_CODE = {
     "id": "claude-code",
     "label": "Claude Code",
-    # 实测：同一轮内从 UserPromptSubmit 到 Stop 全程不变，下一轮换新值，session_id 不变。
+    # Measured: constant from UserPromptSubmit through Stop within one turn, a new
+    # value on the next turn, while session_id stays the same.
     "turn_fields": ("prompt_id",),
-    # 只有这两个 source 是「开新的一局」。resume/compact/fork 是同一局的延续 ——
-    # 当成全量重置会清掉还活着的子代理和在跑的工具。
+    # Only these two sources mean "a new session begins". resume/compact/fork are
+    # continuations of the same one — treating them as a full reset would wipe out
+    # live subagents and running tools.
     "reset_sources": ("startup", "clear"),
     "events": dict(_BASE_EVENTS,
-                   # CC 把工具失败做成独立事件，比从返回值反推更明确
+                   # Claude Code has a dedicated event for tool failure, which is
+                   # more explicit than inferring it from a return value
                    PostToolUseFailure="post_tool_call",
-                   # 被动的「已被拒」，不是阻塞式的 PermissionRequest
+                   # The passive "was denied", not the blocking PermissionRequest
                    PermissionDenied="post_tool_call"),
 }
 
 CODEX = {
     "id": "codex",
     "label": "Codex",
-    # Codex 直接给 turn_id（官方：turn-scoped hooks 都带）。
+    # Codex gives turn_id directly (per its docs, every turn-scoped hook carries it).
     "turn_fields": ("turn_id",),
-    # 官方 source 只有 startup/resume/clear/compact，没有 CC 的 fork。
+    # Its documented sources are only startup/resume/clear/compact — no fork like CC.
     "reset_sources": ("startup", "clear"),
-    # 没有 PostToolUseFailure（错误从 tool_response 反推），
-    # 没有 PermissionDenied（只有阻塞式的 PermissionRequest —— 绝不注册，见下）。
+    # No PostToolUseFailure (errors are inferred from tool_response) and no
+    # PermissionDenied (only the blocking PermissionRequest — never registered, see below).
     "events": dict(_BASE_EVENTS),
 }
 
-# 🔴 **绝不映射、绝不注册**的事件，以及原因：
-# - PermissionRequest：阻塞式决策 hook。CC 那边有过真实故障 —— 接收端不在时
-#   直接拒绝工具调用而不是回落到确认框（anthropics/claude-code#46193）。
-#   表情系统绝不进权限决策链路。
-# - WorktreeCreate：要求往 stdout 打印新 worktree 路径，被动 hook 会让 `claude -w` 报错。
-# - PreCompact / PostToolBatch / TaskCreated / ...：无新信息，白名单原则。
+# 🔴 Events we **never map and never register**, and why:
+# - PermissionRequest: a blocking decision hook. It caused a real outage in Claude
+#   Code — with no receiver present it denied the tool call outright instead of
+#   falling back to the confirmation dialog (anthropics/claude-code#46193).
+#   An expression system must never enter the permission decision path.
+# - WorktreeCreate: expects the new worktree path on stdout; a passive hook makes
+#   `claude -w` fail.
+# - PreCompact / PostToolBatch / TaskCreated / ...: no new information; allowlist principle.
 _NEVER = frozenset({"PermissionRequest", "WorktreeCreate", "PreCompact", "PostCompact",
                     "PostToolBatch", "TaskCreated", "TaskCompleted", "TeammateIdle",
                     "UserPromptExpansion", "ConfigChange", "Elicitation", "ElicitationResult"})
 
 
 def translate(payload, harness):
-    """harness 的 payload → 状态机 payload。返回 None 表示这条事件不该驱动形象。"""
+    """Harness payload → state-machine payload. None means this event must not drive the avatar."""
     event = payload.get("hook_event_name")
     if event in _NEVER:
         return None
 
-    # 子代理内部的事件带 agent_id，且带的是**父会话的** session_id（CC 实测确认，
-    # Codex 官方字段相同）。放行会让子代理的一个工具报错把 Echo 顶成 error，
-    # 而父会话其实好好的。SubagentStart/Stop 本身也带 agent_id，但那是父会话的记账。
+    # Events from inside a subagent carry agent_id — and carry the **parent's**
+    # session_id (confirmed on real Claude Code hardware; Codex documents the same
+    # fields). Letting them through would let one failing tool inside a subagent
+    # push the avatar into `error` while the parent session is perfectly fine.
+    # SubagentStart/Stop also carry agent_id, but those are the parent's bookkeeping.
     if payload.get("agent_id") and event not in ("SubagentStart", "SubagentStop"):
         return None
 
@@ -81,8 +93,9 @@ def translate(payload, harness):
         if internal is None:
             return None
 
-    # stop_hook_active = 这条 Stop 是别的 hook 阻止停止后的续跑，不是真的回合结束。
-    # 当成回合结束会让形象闪一下 idle 再跳回去。
+    # stop_hook_active means this Stop is a continuation after another hook blocked
+    # stopping — not a real end of turn. Treating it as one makes the avatar blink
+    # to idle and jump straight back.
     if event in ("Stop", "SubagentStop") and payload.get("stop_hook_active") is True:
         if event == "Stop":
             return None
@@ -90,12 +103,16 @@ def translate(payload, harness):
     out = {
         "hook_event_name": internal,
         "session_id": payload.get("session_id") or "",
-        # 回合 id 的字段名各家不同（CC 是 prompt_id，Codex 是 turn_id）。按顺序取第一个有值的，
-        # **一个都没有就退回 session_id**：WorkBuddy 两个字段都没有（实测 + 其 CLI 里
-        # `prompt_id` / `turn_id` 字符串出现 0 次），而 turn_id 为空时状态机根本不记回合 ——
-        # 表现是整轮没有 `writing`、工具之间闪回 idle（实测就是这样）。
-        # 退回 session 是安全的：这些 harness 一个会话同一时刻只跑一个回合，
-        # 回合边界由 UserPromptSubmit / Stop 给出，而它们本来就带 session_id。
+        # The turn-id field is named differently per harness (prompt_id in CC,
+        # turn_id in Codex). Take the first one that has a value, and **fall back to
+        # session_id when none does**: WorkBuddy has neither (measured, and its CLI
+        # contains zero occurrences of the strings `prompt_id` / `turn_id`), and an
+        # empty turn_id means the state machine does no turn bookkeeping at all —
+        # which shows up as no `writing` for the whole turn and a blink back to idle
+        # between tools (exactly what we observed).
+        # Falling back to the session is safe: these harnesses run only one turn at a
+        # time per session, and the turn boundaries come from UserPromptSubmit / Stop,
+        # which carry session_id anyway.
         "turn_id": next((str(payload[key]) for key in harness["turn_fields"]
                          if payload.get(key)), "") or str(payload.get("session_id") or ""),
         "tool_name": payload.get("tool_name"),
@@ -103,42 +120,49 @@ def translate(payload, harness):
         "tool_use_id": payload.get("tool_use_id"),
     }
 
-    # 子代理身份是 agent_id，不是 Hermes 的 child_session_id。转成状态机认识的键。
+    # Subagent identity is agent_id here, not Hermes's child_session_id. Convert it
+    # to the key the state machine knows.
     if event in ("SubagentStart", "SubagentStop"):
         out["child_session_id"] = payload.get("agent_id")
 
-    # Codex 没有 PostToolUseFailure，错误只能从工具返回值反推 —— 交给状态机的
-    # has_error()（它会解析 result 里的 error / is_error / success / exit_code）。
-    # CC 也带 tool_response，一并透传：即使用户漏注册了 PostToolUseFailure 也还有兜底。
+    # Codex has no PostToolUseFailure, so an error can only be inferred from the
+    # tool's return value — that is what the state machine's has_error() is for (it
+    # parses error / is_error / success / exit_code out of the result). CC carries
+    # tool_response too, so pass it through for both: even if a user forgot to
+    # register PostToolUseFailure, there is still a fallback.
     if "tool_response" in payload:
         out["result"] = payload["tool_response"]
     if event == "PostToolUseFailure":
         out["status"] = "error"
-    # 被拒 = blocked 叠加反应（不改基态），与 Hermes 的 status="blocked" 同口径。
+    # Denied = a `blocked` overlay reaction (the base state does not change), the
+    # same convention as Hermes's status="blocked".
     if event == "PermissionDenied":
         out["status"] = "blocked"
     return out
 
 
-# WorkBuddy 的 agent core 就是随 app 分发的 CodeBuddy Code CLI（实机 v2.115.0），
-# hook 词表与 Claude Code **完全一致** —— 含 PostToolUseFailure / PermissionDenied /
-# SubagentStart / SubagentStop。原来这里写的「能力更少」三条全是错的（照兼容声明猜的）。
-# 唯一的真差别：**没有回合字段**（`prompt_id` / `turn_id` 都不存在），走上面的 session 回落。
-# 配置在 `~/.workbuddy-ai/settings.json`（旧路径 `~/.workbuddy/settings.json` 仅作回退）。
-#
-# ⚠️ **未实机验证**：本机没装 WorkBuddy，事件集来自其 Claude Code 兼容声明。
-# 回合字段两个都试 —— 猜错的后果是 turn 记账全空、工具之间闪 idle。
+# WorkBuddy's agent core is the CodeBuddy Code CLI shipped inside the app (v2.115.0
+# on the machine we tested), and its hook vocabulary is **identical** to Claude
+# Code's — including PostToolUseFailure, PermissionDenied, SubagentStart and
+# SubagentStop. The three "fewer capabilities" claims that used to be written here
+# were all wrong (guessed from its compatibility statement).
+# The one real difference: **no turn field at all** (neither `prompt_id` nor
+# `turn_id` exists), so it uses the session fallback above.
+# Config lives in `~/.workbuddy-ai/settings.json` (the older `~/.workbuddy/settings.json`
+# is only a fallback).
 WORKBUDDY = {
     "id": "workbuddy",
     "label": "WorkBuddy",
-    # 实测：两个候选字段一个都不存在，靠 session 回落
+    # Measured: neither candidate field exists, so the session fallback carries it
     "turn_fields": (),
-    # ⚠️ **不含 startup**（与 CC 相反）。实抓的真实顺序是
-    # `UserPromptSubmit → SessionStart(startup) → PreToolUse → …` ——
-    # WorkBuddy 的 SessionStart **晚于**回合开始。把它当重置会清掉刚开的回合，
-    # 于是 display_state 认为工具「所属 turn 已收尾」而跳过它：整轮没有 executing，
-    # 只剩 writing 再掉回 idle（实测就是这个形状）。
-    # startup 时会话本来就是新的，不重置没有任何损失；真正需要重置的是 clear。
+    # ⚠️ **Does not include startup** (the opposite of CC). The real captured order is
+    # `UserPromptSubmit → SessionStart(startup) → PreToolUse → …` — WorkBuddy's
+    # SessionStart arrives **after** the turn has begun. Treating it as a reset wipes
+    # the turn that just started, so display_state decides the tool's "owning turn is
+    # already finished" and skips it: no executing for the whole turn, just writing
+    # dropping back to idle (exactly the shape we measured).
+    # At startup the session is new anyway, so not resetting costs nothing; the source
+    # that genuinely needs a reset is clear.
     "reset_sources": ("clear",),
     "events": dict(_BASE_EVENTS,
                    PostToolUseFailure="post_tool_call",

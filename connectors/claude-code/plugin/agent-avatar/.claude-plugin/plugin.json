@@ -1,8 +1,10 @@
 {
   "name": "agent-avatar",
-  "description": "把 Claude Code 的会话/工具/子代理事件聚合成语义状态，供 Agent Avatar 桌面形象读取。需要先安装 Agent Avatar 桌面应用；纯观察者，不改变 Claude Code 的行为。",
+  "description": "Aggregates Claude Code session, tool and subagent events into a semantic state for the Agent Avatar desktop companion to read. Requires the Agent Avatar desktop app. A pure observer: it never changes Claude Code's behaviour.",
   "version": "1.0.0",
-  "author": { "name": "Agent Avatar" },
+  "author": {
+    "name": "Agent Avatar"
+  },
   "homepage": "https://github.com/joyparkray/agent-avatar",
   "repository": "https://github.com/joyparkray/agent-avatar",
   "license": "MIT"

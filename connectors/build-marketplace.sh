@@ -71,7 +71,7 @@ cp "$here/localize.py" "$out/localize.py"
 # 三份清单
 # ---------------------------------------------------------------------------
 
-description='把 agent 的会话/工具/子代理事件聚合成语义状态，供 Agent Avatar 桌面形象读取。纯观察者：不改变 agent 的行为，不参与权限决策。'
+description='Aggregates your agent'"'"'s session, tool and subagent events into a semantic state for the Agent Avatar desktop companion to read. A pure observer: it changes nothing about the agent and takes no part in permission decisions.'
 
 # Claude Code：`source` 是相对 marketplace 根的路径。
 # **不写 version** —— 官方：清单与 plugin.json 都写时以 plugin.json 为准且不告警，
@@ -80,7 +80,7 @@ mkdir -p "$out/.claude-plugin"
 cat > "$out/.claude-plugin/marketplace.json" <<JSON
 {
   "name": "agent-avatar",
-  "description": "Agent Avatar connectors — 让桌面形象跟着你的 agent 变表情",
+  "description": "Agent Avatar connectors — let a desktop mascot follow along with your agent",
   "owner": { "name": "Agent Avatar", "url": "https://github.com/joyparkray/agent-avatar" },
   "plugins": [
     {
@@ -117,7 +117,7 @@ mkdir -p "$out/.codebuddy-plugin"
 cat > "$out/.codebuddy-plugin/marketplace.json" <<JSON
 {
   "name": "agent-avatar",
-  "description": "Agent Avatar connectors — 让桌面形象跟着你的 agent 变表情",
+  "description": "Agent Avatar connectors — let a desktop mascot follow along with your agent",
   "owner": { "name": "Agent Avatar" },
   "metadata": { "version": "$version" },
   "plugins": [
@@ -163,6 +163,10 @@ PY
 # 用户看到的第一份东西就是它，所以内容单独放一个模板文件，别埋在 heredoc 里 ——
 # 埋在里面的话每加一段反引号都要转义，改起来没人愿意改，而这份指引恰恰要经常改
 # （每次实机撞到新坑都该往「装了却一直不动」那节里加一条）。
-sed -e "s|{{VERSION}}|$version|g" -e "s|{{REPO}}|$REPO|g"     "$here/marketplace-README.md" > "$out/README.md"
+# English is the primary README; the Chinese one is one click away (same convention
+# as the app repo). Both come from templates so the substitutions stay identical.
+for language in "" ".zh"; do
+  sed -e "s|{{VERSION}}|$version|g" -e "s|{{REPO}}|$REPO|g"       "$here/marketplace-README$language.md" > "$out/README$language.md"
+done
 
 echo "marketplace v$version -> $out"

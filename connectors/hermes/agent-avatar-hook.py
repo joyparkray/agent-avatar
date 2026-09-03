@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""Hermes 适配层 —— shell hook 入口（fail-open，stdlib only）。
+"""Hermes adapter — shell hook entry point (fail-open, stdlib only).
 
-**默认接入方式是 Hermes 插件**（`plugin/agent-avatar/`，见 `docs/HERMES-SETUP.md`）：
-它不需要改用户的 `config.yaml`、不需要 allowlist、不需要 `hooks_auto_accept`。
-本文件是插件不可用时的退路，行为与插件完全一致 —— 两者共用
-`../../bridge/state_machine.py`，看到的 payload 也是同一个形状。
+**The default way to connect Hermes is the plugin** (`plugin/agent-avatar/`, see
+`docs/HERMES-SETUP.md`): it needs no edits to the user's `config.yaml`, no
+allowlist and no `hooks_auto_accept`. This file is the fallback for when the
+plugin is not available, and behaves identically — both share
+`../../bridge/state_machine.py` and see the same payload shape.
 
-这一层只做两件 Hermes 专属的事：
-1. Hermes 的事件名**就是**状态机的内部词表，无需翻译（见 core 的模块注释）；
-2. 顺带把 `HERMES_DASHBOARD_SESSION_TOKEN` 带出给皮肤（音频链路鉴权）。
+This layer only does the two things that are specific to Hermes:
+1. Hermes's event names **are** the state machine's internal vocabulary, so no
+   translation is needed (see the core module docstring);
+2. it passes `HERMES_DASHBOARD_SESSION_TOKEN` through to the skin (used to
+   authenticate the audio link).
 """
 
 import json
 import os
 import sys
 
-# 同一份脚本要在两种布局下都能跑：仓库里（模块在 ../../bridge）与组装后的插件目录（模块在同级）。
+# One script has to run under two layouts: inside the repo (modules live in
+# ../../bridge) and inside an assembled plugin directory (modules sit alongside).
 _here = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [_here, os.path.join(_here, "..", "..", "bridge")]
 from state_machine import diagnostic, update  # noqa: E402
@@ -24,10 +28,12 @@ LABEL = "Hermes"
 
 
 def audio_block():
-    """把 Hermes 的会话 token 带给皮肤（见 docs/HERMES-STATE-TAXONOMY.md）。
+    """Pass Hermes's session token to the skin (see docs/HERMES-STATE-TAXONOMY.md).
 
-    拿不到时返回 None —— core 会沿用上一次的值而不是覆盖成空。
-    gateway / cron 会话不是 desktop 后代，环境里本来就没有这个变量。
+    Returns None when there is nothing to pass — the core then keeps the previous
+    value instead of overwriting it with an empty one. Gateway and cron sessions
+    are not descendants of the desktop process, so the variable is simply absent
+    in their environment.
     """
     token = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN", "").strip()
     return {"token": token} if token else None
@@ -35,9 +41,11 @@ def audio_block():
 
 def main():
     try:
-        # Windows：stdin 不一定是 UTF-8（Python 按系统代码页解码），
-        # 而 PowerShell 管道还会在开头塞一个 BOM。直接读字节自己解码，两颗雷一次拆掉；
-        # 坏字节换成替换符而不是抛异常 —— 解码失败不该让一整条事件丢掉。
+        # Windows: stdin is not necessarily UTF-8 (Python decodes it using the
+        # system code page), and a PowerShell pipe prepends a BOM on top of that.
+        # Read raw bytes and decode them ourselves to defuse both at once; bad
+        # bytes become replacement characters rather than an exception — a decode
+        # failure should not cost us the whole event.
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8-sig", "replace"))
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")

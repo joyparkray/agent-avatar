@@ -1,20 +1,27 @@
 /**
- * DeepSeek Harness 适配层 —— cordis 插件（in-process）。
+ * DeepSeek Harness adapter — cordis plugin (in-process).
  *
- * dsh **不是** Claude Code 系：事件名、载荷、注册方式全不同（`core/pascal_events.py`
- * 那张表在这里用不上）。它的事件是 cordis 事件，语义流全在 `session/event` 里。
+ * dsh is **not** part of the Claude Code family: event names, payloads and the
+ * registration model all differ (the table in `core/pascal_events.py` is of no
+ * use here). Its events are cordis events, and the whole semantic stream arrives
+ * inside `session/event`.
  *
- * 🔴 **只订阅 `@mode emit` 的事件**（.d.ts 里有标注）。dsh 的 `tools/pre-execute` /
- * `tools/execute` / `agent/pre-step` 是 **waterfall**、`agent/turn-stopping` 是
- * **serial** —— 那些在决策链路上，监听器的返回值会改变 harness 行为。观察者绝不进去
- * （BRIDGE-PROTOCOL §7.2）。emit 是纯通知，返回值不参与任何判定。
+ * 🔴 **Only subscribe to `@mode emit` events** (they are annotated in the .d.ts).
+ * dsh's `tools/pre-execute`, `tools/execute` and `agent/pre-step` are
+ * **waterfall**, and `agent/turn-stopping` is **serial** — those sit in the
+ * decision path, where a listener's return value changes what the harness does.
+ * An observer never goes there (BRIDGE-PROTOCOL §7.2). `emit` events are pure
+ * notifications: the return value takes part in no decision.
  *
- * 事件翻译在这里做，**状态机仍然只有一份**（`state_machine.py`）：本插件把内部词表的
- * payload 喂给同级的 `agent-avatar-hook.py`。为此每个事件起一个 python 子进程 ——
- * 与 CC / Codex 的 shell hook 是同一个量级（一个回合 6~10 条），
- * 但**必须串行**：并发子进程会让 pre_tool_call / post_tool_call 乱序到达状态机。
+ * Event translation happens here, and **there is still exactly one state
+ * machine** (`state_machine.py`): this plugin feeds internal-vocabulary payloads
+ * to the sibling `agent-avatar-hook.py`. That means one python subprocess per
+ * event — the same order of magnitude as the shell hooks in Claude Code and Codex
+ * (6–10 per turn) — but they **must be serialised**: concurrent subprocesses would
+ * let pre_tool_call and post_tool_call reach the state machine out of order.
  *
- * 实机抓取（2026-08-28，dsh 0.1.1-rc.2 headless + `sleep 4`）确认的时序：
+ * Timing confirmed by capture on real hardware (2026-08-28, dsh 0.1.1-rc.2
+ * headless running `sleep 4`):
  *   session/created → turn/start(turn=1) → step/start → tool/call(callId,name)
  *   → tool/result(message.source.callId, content[].isError) → step/end
  *   → step/start → step/end → turn/end(reason.kind)
@@ -28,15 +35,18 @@ export const name = "agent-avatar";
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), "agent-avatar-hook.py");
 
 /**
- * 解释器。**安装脚本会把下面这一行的默认值改成本机实测可用的绝对路径**
- * （Windows 上 `python3` 解析到一个 0 字节的应用商店存根：能启动、打印
- * 「Python was not found」、以 9009 退出 —— 而 stderr 在下面被 ignore、
- * `error` 事件只在 spawn 失败时触发，所以这种坏法**一点声音都没有**）。
- * 环境变量优先，便于用户临时换一个解释器而不用重装。
+ * The interpreter. **The installer rewrites the default on the line below to an
+ * absolute path that was verified to work on this machine.** On Windows,
+ * `python3` resolves to a 0-byte Microsoft Store stub: it starts, prints "Python
+ * was not found" and exits with 9009 — and since stderr is `ignore`d below and the
+ * `error` event only fires when the spawn itself fails, that failure mode makes
+ * **no sound at all**. The environment variable wins, so a user can point at a
+ * different interpreter without reinstalling.
  */
 const PYTHON = process.env.AGENT_AVATAR_PYTHON || "python3";
 
-/** 串行队列：保证事件按发生顺序抵达状态机。永不 reject，观察者不该产生未处理拒绝。 */
+/** Serial queue: events reach the state machine in the order they happened.
+ *  Never rejects — an observer must not produce unhandled rejections. */
 let queue = Promise.resolve();
 
 function emit(payload) {
@@ -45,16 +55,17 @@ function emit(payload) {
     const finish = () => { if (!done) { done = true; resolve(); } };
     try {
       const child = spawn(PYTHON, [HOOK], { stdio: ["pipe", "ignore", "ignore"] });
-      child.on("error", finish);      // 解释器不存在等：静默放弃这一条
+      child.on("error", finish);        // no such interpreter, etc.: drop this event quietly
       child.on("close", finish);
-      child.stdin.on("error", finish);  // 子进程先退出会让写 stdin 报 EPIPE
+      child.stdin.on("error", finish);  // a child that exits first makes the stdin write EPIPE
       child.stdin.end(JSON.stringify(payload));
     } catch { finish(); }
   })).catch(() => {});
   return queue;
 }
 
-/** 子代理的会话 id：它们的事件不该驱动形象（子代理报错时父会话好好的）。 */
+/** Subagent session ids: their events must not drive the avatar (when a subagent
+ *  errors, the parent session is perfectly fine). */
 const childSessions = new Set();
 
 export function apply(ctx) {
@@ -81,40 +92,50 @@ export function apply(ctx) {
         return void emit({ hook_event_name: "pre_tool_call", session_id: id, turn_id: String(data.turn),
                           tool_use_id: data.callId, tool_name: data.name });
       case "tool/result": {
-        // 配对键在 message.source.callId（tool/result 的 data 顶层没有 callId —— 实机确认）
+        // The pairing key lives in message.source.callId — tool/result has no
+        // callId at the top level of data (confirmed on real hardware).
         const message = data.message ?? {};
         const failed = (message.content ?? []).some(part => part?.isError);
         return void emit({ hook_event_name: "post_tool_call", session_id: id, turn_id: String(data.turn),
                            tool_use_id: message.source?.callId, status: failed ? "error" : "ok" });
       }
       default:
-        return;   // assistant/chunk 等一律忽略（一轮几十条，且不含状态信息）
+        return;   // ignore assistant/chunk and friends (dozens per turn, no state in them)
     }
   });
 
   /**
-   * 子代理：**只用来把它的会话挡在门外，不做 awaiting 记账**。两条实测理由：
+   * Subagents: **used only to keep their sessions out, never to account for an
+   * "awaiting" state.** Two measured reasons:
    *
-   * 1. `subagent/start` 的监听器**只收到一个实参**（`info`），拿不到发起方。
-   *    `.d.ts` 里 LifecycleEmitter 写的是 `(name, info, parent)`，但那个 `parent` 是
-   *    scope carrier，不会传给监听器 —— 照文档写的话 `session_id` 是 undefined，
-   *    记账会落到子代理自己头上（实机撞到：子会话的 subagents 里装着它自己，
-   *    phase 永远停在 writing）。
-   * 2. dsh 的子代理是**后台 job**：父会话答完 `done` 收工时，`subagent/end` 还没来
-   *    （实测两轮都没等到）。按 start/stop 配对记 awaiting，形象会永远卡在那个状态。
+   * 1. The `subagent/start` listener **receives a single argument** (`info`) and
+   *    cannot see who started it. The .d.ts declares LifecycleEmitter as
+   *    `(name, info, parent)`, but that `parent` is a scope carrier and is not
+   *    passed to listeners — following the docs gives you an undefined
+   *    `session_id`, and the bookkeeping lands on the subagent itself (seen on
+   *    real hardware: the child session's `subagents` contained itself and its
+   *    phase never left `writing`).
+   * 2. dsh subagents are **background jobs**: when the parent session finishes and
+   *    reports `done`, `subagent/end` has not arrived yet (never did, across two
+   *    runs). Pairing start/stop into an `awaiting` state would leave the avatar
+   *    stuck there forever.
    *
-   * 父会话的状态本来就是准的 —— 它自己在 `tool/call`（含 `subagent`、`job_output`
-   * 这些）之间来回，writing / executing 如实反映。
+   * The parent session's own state is already accurate — it moves between
+   * `tool/call` events (including `subagent` and `job_output`), so writing and
+   * executing reflect reality.
    */
   ctx.on("subagent/start", info => {
     if (!info?.id) return;
     childSessions.add(info.id);
-    // 子代理的 session/created 可能**早于**这条通知，那就已经建了一条会话记账；
-    // 用 finalize 把它清掉，否则它会一直挂在那里参与「谁最近活动」的竞争。
+    // The subagent's session/created may arrive **before** this notification, in
+    // which case a session record already exists; finalize clears it, otherwise it
+    // lingers and competes in "who was active most recently".
     emit({ hook_event_name: "on_session_finalize", session_id: info.id });
   });
-  // 结束通知不一定来得及；来了也只是再确认一次清理。**不从忽略名单里删** ——
-  // 后台 job 在父会话之后还会继续发事件，那些照样不该驱动形象。
+  // The end notification may never arrive in time; when it does, it just confirms
+  // the cleanup. **Do not remove the id from the ignore set** — background jobs keep
+  // emitting events after the parent session is done, and those must not drive the
+  // avatar either.
   ctx.on("subagent/end", info => {
     if (info?.id) emit({ hook_event_name: "on_session_finalize", session_id: info.id });
   });

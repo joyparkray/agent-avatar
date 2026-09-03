@@ -1,33 +1,40 @@
 #!/usr/bin/env python3
-"""把插件树「本地化」到这台机器 —— Windows 上装 connector 时唯一需要的额外一步。
+"""Localise the plugin tree to this machine — the one extra step Windows needs.
 
-为什么需要这一步（只有 Windows 需要）
-------------------------------------
-从 marketplace clone 下来的插件对所有人是同一份，里面写的是 `python3`。
-POSIX 上那就是对的，装完直接能用。**Windows 上 `python3` 不是 Python** ——
-它解析到 `%LOCALAPPDATA%\\Microsoft\\WindowsApps\\python3.exe`，一个 0 字节的应用商店
-存根：能启动、打印「Python was not found」、以 9009 退出。而 9009 不是 2，
-不会被 harness 当成 block，所以**没有任何一处会察觉**，表现就是形象永远不动。
+Why this step exists (Windows only)
+-----------------------------------
+A plugin cloned from the marketplace is the same for everybody, and it says
+`python3`. On POSIX that is correct and the plugin works as-is.
+**On Windows `python3` is not Python** — it resolves to
+`%LOCALAPPDATA%\\Microsoft\\WindowsApps\\python3.exe`, a 0-byte Microsoft Store
+stub: it starts, prints "Python was not found" and exits with 9009. And 9009 is
+not 2, so the harness does not treat it as a block — **nothing anywhere notices**,
+and the only symptom is an avatar that never moves.
 
-所以要把解释器换成这台机器上真能跑的那个绝对路径。
+So the interpreter has to be replaced with an absolute path that really runs on
+this machine.
 
-为什么是一条命令而不是让 agent 手改 JSON
-----------------------------------------
-装 connector 这件事交给 agent 做（用户本来就坐在一个能执行命令的 agent 面前），
-但**改配置这一步必须是确定的**：提示词会被复制、转发、改写，只有当它退化成
-「执行这条确定的命令」时，用户和我们才都能确认它做了什么。让模型逐字改 JSON
-则每次结果都可能不同 —— 而这条链路上的错误是静默的。
+Why a command instead of letting the agent hand-edit JSON
+---------------------------------------------------------
+Installing the connector is the agent's job (the user is already sitting in front
+of something that can run commands), but **the config edit has to be
+deterministic**: prompts get copied, forwarded and rewritten, and only when a
+prompt degrades into "run this exact command" can the user and we both be sure
+what it did. A model editing JSON by hand produces a slightly different result
+every time — and mistakes on this path are silent.
 
-解释器从哪来
-------------
-`sys.executable` —— **跑得起这个脚本的解释器，按定义就是一个能用的解释器**。
-不需要探测，也不会踩到存根（存根根本跑不起来这个脚本）。
+Where the interpreter comes from
+--------------------------------
+`sys.executable` — **whatever interpreter is able to run this script is, by
+definition, a working interpreter.** No probing needed, and the Store stub cannot
+sneak in (it cannot run this script in the first place).
 
-用法
-----
-    python localize.py <harness> [--root <插件树的根>]
+Usage
+-----
+    python localize.py <harness> [--root <plugin tree root>]
 
-`--root` 默认是脚本所在目录的 `plugins/<harness>/agent-avatar`（发布树的布局）。
+`--root` defaults to `plugins/<harness>/agent-avatar` next to this script, which
+is the layout of the published tree.
 """
 
 import argparse
@@ -40,7 +47,8 @@ import tempfile
 
 HARNESSES = ("claude-code", "codex", "workbuddy", "dsh", "hermes")
 
-# 各家的入口与状态文件名。改布局时这里要跟着改，否则表现是「装完了却没动静」。
+# Entry point and state-file name per harness. Change the layout and this table has
+# to follow, otherwise the symptom is "installed, but nothing happens".
 LAYOUT = {
     "claude-code": {"config": "hooks/hooks.json", "hook": "hooks/agent-avatar-hook.py",
                     "state": "agent-avatar-state.claude-code.json", "event": "UserPromptSubmit"},
@@ -55,15 +63,18 @@ LAYOUT = {
 
 
 def hook_path(executable):
-    """把解释器路径变成**命令行里能用**的形状。
+    """Turn an interpreter path into a shape that **works on a command line**.
 
-    正斜杠：Windows API 两种分隔符都收，但 Claude Code 在 Windows 上默认走 Git Bash，
-    而 bash 会把反斜杠当转义吃掉（`C:\\Python314\\python.exe` → `C:Python314python.exe`）。
+    Forward slashes: the Windows API accepts either separator, but Claude Code
+    defaults to Git Bash on Windows, and bash eats backslashes as escapes
+    (`C:\\Python314\\python.exe` becomes `C:Python314python.exe`).
 
-    不能带空格：命令行里解释器那一段不能加引号（PowerShell 只在**首个 token** 带引号时
-    把它当字符串表达式，直接报错），所以带空格的路径没法表达。
-    「为所有用户安装」的默认位置 `C:\\Program Files\\PythonXXX\\` 正好带空格 ——
-    这时改用 8.3 短路径，它没有空格且两种 shell 都认。
+    No spaces allowed: the interpreter part of the command line cannot be quoted
+    (PowerShell treats a quoted **first token** as a string expression and errors
+    out), so a path containing spaces cannot be expressed at all. The default
+    "install for all users" location `C:\\Program Files\\PythonXXX\\` has spaces —
+    for that case we switch to the 8.3 short path, which has none and is understood
+    by both shells.
     """
     path = executable
     if " " in path and os.name == "nt":
@@ -75,18 +86,19 @@ def hook_path(executable):
 
 
 def rewrite_hooks_json(path, python, harness):
-    """把 hooks.json 里每一条 command 的解释器换掉。
+    """Replace the interpreter in every command in hooks.json.
 
-    写进去的那一行有严格的形状要求（逐条实测，见 private/WINDOWS-PORT.md「4.6」）：
+    The line we write has strict shape requirements, each one measured (see
+    private/WINDOWS-PORT.md §4.6):
 
         C:/Python314/python.exe "${CLAUDE_PLUGIN_ROOT}/hooks/agent-avatar-hook.py" ; exit 0
-        └─ 正斜杠、不加引号        └─ 参数加引号（两种 shell 都认）      └─ 保险
+        └─ forward slashes, unquoted   └─ argument quoted (both shells accept)  └─ the safety net
 
-    `; exit 0` 不能省：脚本路径万一失效，`python x.py` 的退出码**恰好是 2**，
-    而 2 在 Claude Code 与 Codex 里都是 block。
+    `; exit 0` is not optional: if the script path ever breaks, `python x.py` exits
+    with **exactly 2**, and 2 is a block in both Claude Code and Codex.
 
-    Codex 走它自己的 `commandWindows` 覆盖字段，POSIX 那条原样保留 ——
-    同一份 hooks.json 两个平台通用。
+    Codex uses its own `commandWindows` override field, leaving the POSIX line
+    untouched — one hooks.json serves both platforms.
     """
     with open(path, encoding="utf-8") as handle:
         document = json.load(handle)
@@ -98,7 +110,8 @@ def rewrite_hooks_json(path, python, harness):
                     continue
                 source = hook.get("commandWindows") if harness == "codex" else hook.get("command")
                 source = source or hook.get("command", "")
-                # 只换解释器，脚本路径原样保留（含 ${PLUGIN_ROOT} 之类的占位符）
+                # Only the interpreter changes; the script path is kept verbatim
+                # (including placeholders such as ${PLUGIN_ROOT})
                 tail = source.split(None, 1)[1] if " " in source.strip() else source
                 if not tail.lstrip().startswith('"'):
                     parts = tail.strip().split(" ", 1)
@@ -110,25 +123,26 @@ def rewrite_hooks_json(path, python, harness):
                     hook["command"] = line
                 rewritten += 1
     if not rewritten:
-        raise SystemExit("hooks.json 里一条 command 都没找到，布局可能变了：%s" % path)
+        raise SystemExit("no command found in hooks.json; the layout may have changed: %s" % path)
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(document, handle, indent=2, ensure_ascii=False)
     return rewritten
 
 
 def rewrite_index_mjs(path, python):
-    """dsh 是 in-process 的 JS 插件，自己 spawn 一个 python 子进程。
+    """dsh is an in-process JS plugin that spawns a python subprocess itself.
 
-    这条链路在 Windows 上是五家里**最静默**的一种坏法：stderr 被 `ignore`，
-    而 `error` 事件只在 spawn 失败时触发 —— 存根却是能成功启动的。
-    改的是那一行的默认值，`AGENT_AVATAR_PYTHON` 环境变量仍然优先。
+    On Windows this is the **quietest** of the five failure modes: stderr is
+    `ignore`d and the `error` event only fires when the spawn itself fails — while
+    the Store stub starts perfectly well. We rewrite the default on that one line;
+    the `AGENT_AVATAR_PYTHON` environment variable still wins over it.
     """
     import re
     with open(path, encoding="utf-8") as handle:
         text = handle.read()
     pattern = r'process\.env\.AGENT_AVATAR_PYTHON \|\| "[^"]*"'
     if not re.search(pattern, text):
-        raise SystemExit("index.mjs 里找不到解释器那一行，布局可能变了：%s" % path)
+        raise SystemExit("could not find the interpreter line in index.mjs; the layout may have changed: %s" % path)
     text = re.sub(pattern, 'process.env.AGENT_AVATAR_PYTHON || "%s"' % python, text)
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(text)
@@ -136,11 +150,13 @@ def rewrite_index_mjs(path, python):
 
 
 def smoke_test(root, harness):
-    """喂一条真事件，看状态文件有没有落盘。
+    """Feed one real event through and check that the state file lands.
 
-    **必须验到落盘**，不能只验退出码：hook 的设计就是永远 exit 0（退出码 2 会 block），
-    所以退出码根本反映不出它有没有干活。core 漏拷、解释器不对的表现都是
-    「安静地什么都没发生」—— 这个项目踩过的坑全是这个形状。
+    **Landing is the only acceptable proof**, never the exit code: the hook is
+    designed to always exit 0 (exit code 2 would block the agent), so its exit code
+    says nothing about whether it did any work. A missing core module or a wrong
+    interpreter both look like "nothing happened, quietly" — every trap this
+    project has hit has that same shape.
     """
     layout = LAYOUT[harness]
     if not layout["hook"]:
@@ -156,28 +172,34 @@ def smoke_test(root, harness):
     import shutil
     shutil.rmtree(scratch, ignore_errors=True)
     if not landed:
-        raise SystemExit("自检没通过：%s 的 hook 没写出状态文件，core 可能没拷全" % harness)
+        raise SystemExit("smoke test failed: the %s hook wrote no state file; the core may be incomplete" % harness)
     return layout["state"]
 
 
 def print_registration(harness, root=None):
-    """打印要登记的那几行配置 —— **只打印，不碰任何文件**。
+    """Print the configuration lines to register — **print only, touch no files**.
 
-    为什么不直接写：这两家要改的都是**用户自己的配置文件**（Codex 的 `config.toml`
-    里有模型、notify、mcp_servers；dsh 的 patch 里可能有 `!!js` 表达式）。
-    让脚本去动它们，一是风险，二是那正是杀软盯上的行为形状（未签名脚本改别家配置，
-    实机被卡巴删过文件）。打印出来由 agent 追加，用户在按下去之前看得见要加什么。
+    Why not write them directly: both of these harnesses keep their settings in a
+    file that belongs to the **user** (Codex's `config.toml` holds the model,
+    notify and mcp_servers; dsh's patch file may contain `!!js` expressions).
+    Having a script edit them is both a risk and exactly the behaviour antivirus
+    heuristics look for (an unsigned script editing another application's config —
+    Kaspersky deleted one of our installer scripts over precisely that). Printing
+    them and letting the agent append means the user can see what is about to be
+    added before it happens.
 
-    仍然是「钉死的命令」：路径、格式、内容全都算好了，agent 不需要自己拼任何东西 ——
-    而这条链路上最容易错的就是拼路径（Windows 上还得是 file:/// URL）。
+    It is still a pinned command: the path, format and content are all computed, so
+    the agent has nothing to improvise — and improvising a path is the easiest
+    mistake to make here (on Windows it has to be a file:/// URL).
     """
     here = os.path.dirname(os.path.abspath(__file__))
     if harness == "codex":
-        # Codex 的 marketplace 根是**含 .agents/ 的那一层**，也就是这棵树的根。
-        # Windows 的 ChatGPT app 不带 CLI，所以只能手工登记进 config.toml；
-        # `source` 用 TOML 的字面量字符串（单引号），反斜杠在里面不转义。
+        # Codex's marketplace root is **the level that contains .agents/**, i.e. the
+        # root of this tree. The Windows ChatGPT app ships no CLI, so registration
+        # has to be done by hand in config.toml; `source` uses a TOML literal string
+        # (single quotes), inside which backslashes are not escapes.
         config = os.path.join(os.environ.get("USERPROFILE") or os.path.expanduser("~"), ".codex", "config.toml")
-        print("# 追加到 %s（先备份）：" % config)
+        print("# Append to %s (back it up first):" % config)
         print()
         print("[marketplaces.agent-avatar]")
         print('source_type = "local"')
@@ -188,11 +210,14 @@ def print_registration(harness, root=None):
         return 0
     if harness == "dsh":
         entry = os.path.join(root or os.path.join(here, "plugins", "dsh", "agent-avatar"), "index.mjs")
-        # 🔴 dsh 把这个字符串当 ESM specifier 直接 import()，而 Node 会把 `C:/…` 解析成
-        # scheme 为 `c:` 的 URL（ERR_UNSUPPORTED_ESM_URL_SCHEME）。必须是 file:/// URL。
+        # 🔴 dsh imports this string as an ESM specifier, and Node parses `C:/…` as a
+        # URL whose scheme is `c:` (ERR_UNSUPPORTED_ESM_URL_SCHEME). It must be a
+        # file:/// URL.
         url = pathlib.Path(os.path.abspath(entry)).as_uri()
-        print("# 追加到 $DSH_HOME/cordis.patch.yml（默认 %s，先备份）：" % os.path.join("~", ".dsh"))
-        print("# 文件里如果只有一行 `[]`，把那一行删掉 —— 空数组后面再跟条目是非法 YAML。")
+        print("# Append to $DSH_HOME/cordis.patch.yml (defaults to %s; back it up first):"
+              % os.path.join("~", ".dsh"))
+        print("# If the file contains just a line with `[]`, delete that line — an empty")
+        print("# array followed by entries is invalid YAML.")
         print()
         print("# >>> agent-avatar (managed) >>>")
         print("- insert:")
@@ -200,24 +225,25 @@ def print_registration(harness, root=None):
         print("      name: %s" % url)
         print("# <<< agent-avatar (managed) <<<")
         return 0
-    print("%s 不需要额外登记：它自己的 CLI 就能装（见 README）" % harness)
+    print("%s needs no extra registration: its own CLI installs the plugin (see the README)" % harness)
     return 0
 
 
 def main():
-    # Windows 上 stdout 默认按系统代码页编码（简中机器是 cp936），而这条命令的输出
-    # 正是要给 agent 读的 —— 管道那头拿到的会是乱码。钉成 UTF-8。
+    # On Windows stdout defaults to the system code page (cp936 on a Simplified
+    # Chinese machine), and the output of this command is meant to be read by an
+    # agent — the far end of the pipe would receive mojibake. Pin it to UTF-8.
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
-            pass                      # 老 Python 或已被重定向：不值得为此失败
+            pass                      # old Python, or already redirected: not worth failing over
 
-    parser = argparse.ArgumentParser(description="把插件树本地化到这台机器（Windows 需要）")
+    parser = argparse.ArgumentParser(description="Localise the plugin tree to this machine (needed on Windows)")
     parser.add_argument("harness", choices=HARNESSES)
-    parser.add_argument("--root", help="插件树的根，默认 plugins/<harness>/agent-avatar")
+    parser.add_argument("--root", help="plugin tree root; defaults to plugins/<harness>/agent-avatar")
     parser.add_argument("--print-registration", action="store_true",
-                        help="只打印要登记的那几行配置，不改任何文件（codex / dsh 用）")
+                        help="only print the configuration lines to register, change no files (codex / dsh)")
     arguments = parser.parse_args()
 
     if arguments.print_registration:
@@ -226,20 +252,21 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     root = arguments.root or os.path.join(here, "plugins", arguments.harness, "agent-avatar")
     if not os.path.isdir(root):
-        raise SystemExit("找不到插件目录：%s" % root)
+        raise SystemExit("plugin directory not found: %s" % root)
 
     python = hook_path(sys.executable)
     layout = LAYOUT[arguments.harness]
 
     if layout["config"] is None:
-        # Hermes 的插件是 in-process 的 Python 包，跑在 Hermes 自己的解释器里、不 spawn 进程 ——
-        # 五家里唯一不需要本地化的一家。
-        print("hermes 不需要本地化（in-process Python 包，跑在 Hermes 自己的解释器里）")
+        # The Hermes plugin is an in-process Python package: it runs inside Hermes's
+        # own interpreter and spawns nothing — the only one of the five that needs no
+        # localisation.
+        print("hermes needs no localisation (in-process Python package, runs in Hermes's own interpreter)")
         return 0
 
     config = os.path.join(root, layout["config"])
     if not os.path.isfile(config):
-        raise SystemExit("找不到配置文件：%s" % config)
+        raise SystemExit("config file not found: %s" % config)
 
     if arguments.harness == "dsh":
         count = rewrite_index_mjs(config, python)
@@ -247,11 +274,11 @@ def main():
         count = rewrite_hooks_json(config, python, arguments.harness)
 
     state = smoke_test(root, arguments.harness)
-    print("解释器：%s" % python)
+    print("interpreter: %s" % python)
     if python != sys.executable.replace("\\", "/"):
-        print("  （原路径带空格，命令行里改用 8.3 短路径）")
-    print("已改写 %d 处 -> %s" % (count, config))
-    print("自检通过：喂一条事件写出了 %s" % state)
+        print("  (the original path contains spaces; using the 8.3 short path on the command line)")
+    print("rewrote %d command(s) -> %s" % (count, config))
+    print("smoke test passed: one event wrote %s" % state)
     return 0
 
 

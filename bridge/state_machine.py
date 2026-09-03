@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Agent Avatar 的共用语义状态机（stdlib only，harness 无关）。
+"""Agent Avatar's shared semantic state machine (stdlib only, harness-agnostic).
 
-**内部事件词表**沿用 Hermes 的事件名（`pre_llm_call` / `pre_tool_call` / ...）——
-它是历史形成的，不是对 Hermes 的依赖。每个 harness 的适配层负责把自家的事件名翻译
-成这套词表，状态机本身不认识任何具体 harness。见 `docs/DESIGN-M3-MULTI-HARNESS.md` §3.1。
+The **internal event vocabulary** reuses Hermes's event names (`pre_llm_call`,
+`pre_tool_call`, ...) — that is a historical accident, not a dependency on Hermes.
+Each harness's adapter translates its own event names into this vocabulary, and the
+state machine itself knows about no specific harness. See
+`docs/DESIGN-M3-MULTI-HARNESS.md` §3.1.
 
-状态机（`apply_event` / `display_state` / 分类辅助函数）移植自
-`Star-Office-UI-Hermes/integrations/hermes/star_office_hook.py`（MIT）。
-HTTP 上报（`push`）与 Star Office 的投递编排**没有**移植 —— Agent Avatar 只消费聚合后的基态，
-词表是 `docs/HERMES-STATE-TAXONOMY.md` 里的 8 基态契约。
+The state machine (`apply_event`, `display_state` and the classification helpers)
+was ported from `Star-Office-UI-Hermes/integrations/hermes/star_office_hook.py`
+(MIT). The HTTP reporting (`push`) and Star Office's delivery orchestration were
+**not** ported — Agent Avatar consumes only the aggregated base state, whose
+vocabulary is the 8-state contract in `docs/HERMES-STATE-TAXONOMY.md`.
 """
 
 try:
@@ -32,30 +35,36 @@ from datetime import datetime, timezone
 
 STATE_SCHEMA_VERSION = 2
 
-# connector 的版本，写进每一次快照。
+# The connector's version, written into every snapshot.
 #
-# 为什么要写：Windows 上装 connector 的那份是**本地化过的副本**（解释器路径写死了），
-# 所以它收不到 harness 的自动更新 —— 换来的是「更新是显式的」，代价是我们得让用户知道
-# 有新版。app 本来就在读这个状态文件，于是它能准确说出「你装的是 1.0.0，最新 1.2.0」
-# 并给出一句更新用的提示词。这比后台静默更新更可见，而可见性正是这条链路上最缺的东西。
+# Why it is here: on Windows the installed connector is a **localised copy** (the
+# interpreter path is baked in), so it never receives the harness's automatic
+# updates — what we get in return is that updates are explicit, and the price is
+# that somebody has to tell the user a new version exists. The app already reads
+# this state file, so it can say exactly "you have 1.0.0, latest is 1.2.0" and hand
+# over a prompt to update. That is more visible than a silent background update,
+# and visibility is precisely what this path lacks.
 #
-# **必须与五家 plugin.json / plugin.yaml 里的 version 一致** ——
-# build-marketplace.sh 会逐个对，不一致就构建失败。
+# **Must match the version in all five plugin.json / plugin.yaml manifests** —
+# build-marketplace.sh compares them one by one and fails the build if they differ.
 CONNECTOR_VERSION = "1.0.0"
-# reaction 信号在快照里保留多久：皮肤以 200ms 轮询，2s 足够它读到并去重（按 at）触发一次。
+# How long a reaction signal stays in the snapshot: the skin polls every 200 ms, so
+# 2 s is enough for it to read the signal and fire it once (deduplicated by `at`).
 REACTION_HOLD_SECONDS = 2.0
 BACKGROUND_REVIEW_MARKER = (
     "You can only call memory and skill management tools. "
     "Other tools will be denied at runtime"
 )
 
-# 优先级 = 并发信号里显示哪个。
-# - reviewing 低于 writing：它是 turn 结束后的后台整理，用户一旦又说话，当前对话更该被看见。
-# - awaiting 最高（除 error）：整个 turn 都卡在等别人身上，比自己在跑的任何工具更有代表性。
+# Priority decides which of several concurrent signals is shown.
+# - reviewing sits below writing: it is background tidying after a turn ends, and as
+#   soon as the user speaks again the live conversation deserves to be seen.
+# - awaiting is the highest except for error: the whole turn is stuck waiting on
+#   somebody else, which is more representative than any tool we happen to be running.
 PRIORITY = {"idle": 0, "reviewing": 1, "writing": 2, "researching": 3,
             "executing": 4, "syncing": 5, "awaiting": 6, "error": 7}
-# 主语由适配层传入（"Hermes" / "Claude Code"）—— 硬编码 "Hermes" 会让别家 harness 的
-# 用户看到 "Hermes is running a tool"。
+# The subject is supplied by the adapter ("Hermes", "Claude Code", ...) — hardcoding
+# "Hermes" would show users of every other harness "Hermes is running a tool".
 DETAIL_PREDICATE = {
     "idle": "is ready",
     "reviewing": "is updating memory and skills",
@@ -72,12 +81,13 @@ def detail_for(state, label):
     return label + " " + DETAIL_PREDICATE[state]
 
 
-# 词表要同时覆盖 Hermes 的工具名（terminal / exec_command / web_search）与
-# Claude Code 的（Bash / Grep / Glob / Read / Edit / Write / WebFetch / Agent）。
+# The vocabulary has to cover both Hermes's tool names (terminal, exec_command,
+# web_search) and Claude Code's (Bash, Grep, Glob, Read, Edit, Write, WebFetch, Agent).
 RESEARCH_WORDS = ("search", "browser", "web", "fetch", "read", "lookup", "query", "grep", "glob")
 EXECUTE_WORDS = ("terminal", "shell", "exec", "process", "command", "write", "edit", "patch", "build", "test", "compile", "file", "bash")
-# 原来这两组挤在一个 SYNC_WORDS 里，于是「等另一个 agent」和「同步 Slack」显示成同一个状态。
-# 它们是两件事：前者父会话在干等，后者只是一个外部服务工具在跑。
+# These two groups used to share one SYNC_WORDS list, which showed "waiting on another
+# agent" and "syncing Slack" as the same state. They are different things: in the first
+# the parent session is idle-waiting, in the second an external-service tool is running.
 DELEGATE_WORDS = ("delegate", "subagent", "agent")
 SERVICE_WORDS = ("sync", "slack", "github", "drive", "notion", "calendar", "email", "teams")
 AGENT_CLI_NAMES = frozenset({"codex", "claude"})
@@ -114,8 +124,9 @@ def tool_state(name):
 def command_invokes_agent_cli(command):
     """Recognize codex/claude in executable position without running a shell.
 
-    调它们等于把活交给另一个 agent 然后干等 —— 与派子代理同一语义（awaiting），
-    和「同步外部服务」（syncing）无关。"""
+    Calling one of these hands the work to another agent and then waits — the same
+    semantics as spawning a subagent (awaiting), and nothing to do with "syncing an
+    external service"."""
     if isinstance(command, (list, tuple)):
         tokens = [str(item) for item in command]
     elif isinstance(command, str):
@@ -217,9 +228,10 @@ def explicit_child_id(payload):
 def explicit_correlation_id(payload):
     """Return only an ID supplied by the harness, never a synthesized fallback.
 
-    `tool_use_id` 是 Claude Code / Codex / Cursor 三家的公共字段（实测 CC 2.1.212 的
-    PreToolUse/PostToolUse 都带），漏掉它会让 CC 的每个工具都掉进按工具名排队的
-    fallback 配对路径 —— 并发同名工具（CC 很常见）就会配错。
+    `tool_use_id` is a field shared by Claude Code, Codex and Cursor (measured: CC
+    2.1.212 carries it on both PreToolUse and PostToolUse). Missing it would drop every
+    CC tool into the fallback pairing path that queues by tool name — and concurrent
+    tools with the same name (common in CC) would then be paired wrongly.
     """
     for source in (payload, payload.get("extra")):
         if isinstance(source, dict):
@@ -230,7 +242,8 @@ def explicit_correlation_id(payload):
 
 
 def normalized_tool_name(payload):
-    """fallback 配对队列的键：没有 call_id 时按工具名把 pre/post 排队配对。"""
+    """Key for the fallback pairing queue: with no call_id, pre/post are paired by
+    queueing on the tool name."""
     extra = payload.get("extra")
     extra = extra if isinstance(extra, dict) else {}
     return str(payload.get("tool_name") or extra.get("tool_name") or "").strip().lower()
@@ -272,12 +285,14 @@ def has_error(payload):
 
 
 def session_id(payload, data=None):
-    """事件的归属会话。
+    """Which session an event belongs to.
 
-    拿不到时回落到 `last_active` 而不是字面量 "default"：Hermes 的工具事件在
-    `agent.session_id` 为空的路径（如 WebUI）下 session_id 会是空串，
-    落进一个 "default" 桶会把该 turn 的工具与它自己的 pre_llm_call 记到两个会话里，
-    turn 记账（llm_active / active_turns）随即对不上。归给上一个活跃会话才是对的。
+    When there is nothing to go on we fall back to `last_active` rather than the
+    literal "default": on Hermes paths where `agent.session_id` is empty (the WebUI,
+    for example) tool events arrive with an empty session_id, and bucketing them under
+    "default" would file that turn's tools and its own pre_llm_call under two different
+    sessions — after which the turn bookkeeping (llm_active / active_turns) no longer
+    adds up. Attributing them to the previously active session is the correct answer.
     """
     extra = payload.get("extra")
     extra = extra if isinstance(extra, dict) else {}
@@ -306,20 +321,25 @@ def is_background_review_start(payload):
 # State machine (ported from star_office_hook.py)
 # ---------------------------------------------------------------------------
 def display_state(data):
-    """只聚合当前活跃会话（last_active）的 phase / 工具kind / 子代理，不跨会话取 max。
+    """Aggregate phase / tool kind / subagents of the **currently active session only**
+    (`last_active`); never take a max across sessions.
 
-    - 跨会话取 max 会被 stale/无关会话的残留 subagent 顶成 syncing。
-    - 不累加 turns[].review → reviewing：pre_llm_call 遇 review 时已把 phase 置为 reviewing，
-      这里再累加会让「思考」被累计的 stale review turn 顶掉（实测 5 个 review turn 挂死）。
-    - 全文件过期回落由 Rust 侧 read_state_file 的 300s 兜底负责。
+    - Taking a max across sessions lets a leftover subagent in a stale or unrelated
+      session push the display to syncing.
+    - Do not fold turns[].review into reviewing: pre_llm_call already sets phase to
+      reviewing when it sees a review, and folding again lets accumulated stale review
+      turns override "thinking" (measured: five review turns wedged it permanently).
+    - Expiry of the whole file is handled elsewhere — the Rust side's read_state_file
+      has a 300 s fallback.
     """
     last_active = data.get("last_active")
     session = data.get("sessions", {}).get(last_active) if isinstance(data.get("sessions"), dict) else None
     if not session:
         return "idle"
-    # 防御：只把「所属 turn 仍存活」的工具算作忙态。turn 已收尾（post_tool_call 因 call_id
-    # 对不上漏 pop、或事件乱序）后残留的 active 条目若继续计入，皮肤会永久卡 executing。
-    # 正常在 turn 内的工具不受影响（其 turn 仍存活）。
+    # Defensive: only tools whose owning turn is still alive count as busy. If leftover
+    # `active` entries kept counting after a turn has finished (post_tool_call failed to
+    # pop because the call_id did not match, or events arrived out of order), the skin
+    # would wedge on executing forever. Tools inside a live turn are unaffected.
     turns = session.get("turns", {})
     active_turns = session.get("active_turns", {})
     states = [session.get("phase", "idle")]
@@ -328,16 +348,20 @@ def display_state(data):
         if own_turn and own_turn not in turns:
             continue
         states.append(state_of_call)
-    # 有子代理在跑 = 父会话在等另一个 agent。这不是「同步外部服务」，两者已拆开。
+    # A running subagent means the parent session is waiting on another agent. That is
+    # not "syncing an external service" — the two were deliberately split apart.
     states.extend("awaiting" for _ in session.get("subagents", []))
     return max(states or ["idle"], key=lambda item: PRIORITY.get(item, 0))
 
 
-# 子代理 stop 的 ID 配不上时怎么办 —— **两家 harness 要求相反，必须参数化**：
-# - "dequeue-oldest"（Hermes）：它的 subagent_stop 有时拿不到 child_session_id，
-#   配不上是我们的记账问题而不是「它还在跑」。不出队会永久多算一个 awaiting。
-# - "ignore"（Claude Code）：`/compact` 会发一条 ID 从没出现过、也没有对应 start 的
-#   孤儿 SubagentStop。出队会踢掉一个真正在跑的子代理。只处理配得上的。
+# What to do when a subagent stop carries an id we cannot match — **two harnesses want
+# opposite behaviour, so this has to be a parameter**:
+# - "dequeue-oldest" (Hermes): its subagent_stop sometimes has no child_session_id at
+#   all, so a failure to match is our bookkeeping problem, not "it is still running".
+#   Not dequeuing would leave an extra awaiting counted forever.
+# - "ignore" (Claude Code): `/compact` emits an orphan SubagentStop whose id was never
+#   announced and which has no matching start. Dequeuing would evict a subagent that is
+#   genuinely running. Only handle the ones that match.
 ORPHAN_DEQUEUE_OLDEST = "dequeue-oldest"
 ORPHAN_IGNORE = "ignore"
 
@@ -346,15 +370,18 @@ def apply_event(data, payload, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST):
     event = payload.get("hook_event_name")
     current_session_id = session_id(payload, data)
     sessions = data.setdefault("sessions", {})
-    # 子代理跑自己的 conversation loop，它的 pre_llm_call / pre_tool_call 带的是**它自己的**
-    # session_id（`model_tools.py` 用当前 agent 的 session_id 发 hook；只有 delegate_tool 发的
-    # subagent_start/stop 才带 parent_session_id）。这些事件不该驱动形象 —— 否则子代理的一个
-    # 工具报错会把 Echo 顶成 error，而父会话其实好好的。
-    # 父会话「派了子代理」仍记成 syncing：那是父会话真实的状态，由下面的 subagent_start 负责。
+    # A subagent runs its own conversation loop, and its pre_llm_call / pre_tool_call
+    # carry **its own** session_id (`model_tools.py` emits hooks with the current agent's
+    # session_id; only the subagent_start/stop emitted by delegate_tool carry
+    # parent_session_id). Those events must not drive the avatar — otherwise one failing
+    # tool inside a subagent pushes Echo into error while the parent session is fine.
+    # The parent "has delegated" state is still recorded: that is the parent's real
+    # state, and subagent_start below is what records it.
     subagent_sessions = data.setdefault("subagent_sessions", [])
     if current_session_id in subagent_sessions:
-        # 嵌套委派：子代理再派子代理时，那条 subagent_start 也归属被忽略的会话。
-        # 仍要登记孙代理，否则它的事件会漏进来接着夺 last_active。
+        # Nested delegation: when a subagent spawns its own subagent, that
+        # subagent_start also belongs to an ignored session. We still have to record the
+        # grandchild, otherwise its events leak through and steal last_active.
         if event == "subagent_start":
             grandchild = explicit_child_id(payload)
             if grandchild is not None and grandchild not in subagent_sessions:
@@ -382,9 +409,11 @@ def apply_event(data, payload, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST):
     elif event == "pre_llm_call":
         current_turn_id = turn_id(payload)
         review = is_background_review_start(payload)
-        # 新 LLM turn 开始 = 上一轮的 in-flight 已过账：清掉残留的 active 工具与累计 turns，
-        # 防止长会话里漏配对的 post_tool_call / post_llm_call 把 stale 状态顶成执行中/思考中。
-        # 子代理不在此清（跨 turn 合法存在，且保留能正确显示 syncing）。
+        # A new LLM turn starting means the previous turn's in-flight work is settled:
+        # clear leftover active tools and accumulated turns, so that in a long session an
+        # unpaired post_tool_call / post_llm_call cannot leave a stale state showing as
+        # executing or thinking. Subagents are **not** cleared here — they legitimately
+        # span turns, and keeping them is what makes the waiting state display correctly.
         active.clear(); turns.clear(); active_turns.clear(); background_reviews.clear()
         if current_turn_id:
             turns[current_turn_id] = {"llm_active": True, "review": review}
@@ -419,8 +448,9 @@ def apply_event(data, payload, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST):
                 active.pop(finished_id, None); active_turns.pop(finished_id, None)
                 if not queue:
                     fallback_tools.pop(normalized_tool_name(payload), None)
-        # blocked 反应：Hermes 用 status="blocked" 表示工具被拒（not error）。它不该把 turn 判成
-        # error，而是发一条 blocking reaction + 继续当前 turn。reaction 是叠加层，不影响基态。
+        # blocked reaction: Hermes uses status="blocked" to mean the tool was denied (not
+        # an error). That must not put the turn into error — it emits a blocking reaction
+        # and the turn continues. Reactions are an overlay; they do not change the base state.
         if (extra.get("status") or payload.get("status")) == "blocked":
             data["reaction_sequence"] = int(data.get("reaction_sequence", 0)) + 1
             data["reaction"] = {"kind": "blocked", "sequence": data["reaction_sequence"], "at": time.time()}
@@ -433,8 +463,9 @@ def apply_event(data, payload, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST):
     elif event == "subagent_start":
         child_id = explicit_child_id(payload)
         if child_id is not None:
-            # 登记成「要忽略的会话」，并清掉它在此之前可能已建的记录 —— subagent_start 的 hook
-            # 调用在 Hermes 侧是 try/except 包着的，漏发时子代理的事件会先到。
+            # Record it as a session to ignore, and drop any record it may already have
+            # created — on the Hermes side the subagent_start hook call is wrapped in
+            # try/except, so when it is missed the subagent's own events arrive first.
             if child_id not in subagent_sessions:
                 subagent_sessions.append(child_id)
             if child_id != current_session_id:
@@ -451,7 +482,8 @@ def apply_event(data, payload, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST):
         if child_id is not None and str(child_id) in subagents:
             subagents.remove(str(child_id))
         elif subagents and orphan_subagent_stop == ORPHAN_DEQUEUE_OLDEST:
-            # 按到达顺序出队，宁可配错一个也不泄漏（见 ORPHAN_DEQUEUE_OLDEST 的说明）。
+            # Dequeue in arrival order: better to mismatch one than to leak one
+            # (see the note on ORPHAN_DEQUEUE_OLDEST).
             if child_id is not None:
                 diagnostic("stop for an untracked subagent; dequeuing the oldest")
             subagents.pop(0)
@@ -465,35 +497,41 @@ def apply_event(data, payload, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST):
     elif event in ("post_llm_call", "on_session_end"):
         current_turn_id = turn_id(payload)
         if event == "on_session_end":
-            # ⚠️ `on_session_end` 是 **turn 级**事件，不是会话结束 —— Hermes 在每个
-            # run_conversation turn 收尾时都发它（payload 带 turn_id / completed /
-            # failed / turn_exit_reason，只可能是 turn 级）。真正的会话边界是
-            # on_session_finalize。原注释把它当会话结束是错的。
-            # 清子代理仍然正确，但理由是「该 turn 派出的子代理都已收束」：不清的话，
-            # 漏发的 subagent_stop 会让 display_state 永久停在 awaiting —— pre_llm_call
-            # 不清子代理（跨 turn 合法），Rust 的 300s 兜底又看文件 mtime，用户继续
-            # 说话就一直刷新，永远过不了期。
+            # ⚠️ `on_session_end` is a **turn-level** event, not the end of a session —
+            # Hermes emits it as every run_conversation turn wraps up (the payload
+            # carries turn_id / completed / failed / turn_exit_reason, which can only be
+            # turn-level). The real session boundary is on_session_finalize. An earlier
+            # comment here calling it "session end" was simply wrong.
+            # Clearing subagents is still correct, but for a different reason: every
+            # subagent this turn spawned is now settled. Without the clear, one missed
+            # subagent_stop would wedge display_state on awaiting forever — pre_llm_call
+            # deliberately does not clear subagents (they legitimately span turns), and
+            # the Rust side's 300 s fallback looks at file mtime, which keeps refreshing
+            # for as long as the user keeps talking, so it would never expire.
             background_reviews.clear(); turns.clear(); subagents.clear()
         else:
             if current_turn_id in background_reviews:
                 background_reviews.remove(current_turn_id)
             if current_turn_id:
                 turns.pop(current_turn_id, None)
-        # 收尾 turn 的 in-flight 工具一并结清：turn 已结束，它旗下的工具无论 post_tool_call
-        # 的 call_id 是否配对成功都算完成，否则残留 active 会让皮肤永久卡 executing/writing
-        # （post_tool_call 因 call_id 对不上 pop 失败即此 bug）。
+        # Settle the finishing turn's in-flight tools too: the turn is over, so its tools
+        # count as done whether or not post_tool_call's call_id matched. Otherwise the
+        # leftover `active` entries wedge the skin on executing/writing forever — which is
+        # exactly the bug when post_tool_call fails to pop because the call_id disagreed.
         if current_turn_id:
             stale_calls = [call_id for call_id, tid in list(active_turns.items()) if tid == current_turn_id]
             for stale_call in stale_calls:
                 active.pop(stale_call, None); active_turns.pop(stale_call, None)
-        # interrupted 反应：用户在 turn 结束前打断（Hermes 用 extra.interrupted=True）。发一条反应，
-        # 基态照常按收尾事件计算（通常回 idle）。reaction 是叠加层，不影响基态。
+        # interrupted reaction: the user interrupted before the turn finished (Hermes sets
+        # extra.interrupted=True). Emit a reaction; the base state is still computed from
+        # the wrap-up event as usual (normally back to idle). Reactions are an overlay.
         if event == "on_session_end" and (extra.get("interrupted") or payload.get("interrupted")):
             data["reaction_sequence"] = int(data.get("reaction_sequence", 0)) + 1
             data["reaction"] = {"kind": "interrupted", "sequence": data["reaction_sequence"], "at": time.time()}
-        # turn 级失败：Hermes 的 on_session_end 带一个布尔 `failed`，那是**这一轮的权威
-        # 结论**，比从 post_tool_call 的 status 反推准（工具全成功、turn 仍可能失败）。
-        # `turn_exit_reason` 是自由文本，词表未知，不去猜。
+        # Turn-level failure: Hermes's on_session_end carries a boolean `failed`, and that
+        # is **the authoritative verdict for this turn** — more reliable than inferring it
+        # from post_tool_call statuses (every tool can succeed and the turn still fail).
+        # `turn_exit_reason` is free text with an unknown vocabulary, so we do not guess.
         turn_failed = extra.get("failed") is True or payload.get("failed") is True
         session["phase"] = (
             "error" if turn_failed or has_error(payload)
@@ -509,22 +547,24 @@ def apply_event(data, payload, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST):
 
 
 # ---------------------------------------------------------------------------
-# 快照落盘：原子写 + 非阻塞锁
+# Persisting the snapshot: atomic write plus a non-blocking lock
 # ---------------------------------------------------------------------------
 def diagnostic(message, harness=None):
-    """出错时说一声 —— **两个地方都说**。
+    """Say something when things go wrong — **in both places**.
 
-    stderr 是给人看的，但**没人在看**：dsh 那条链路直接把子进程的 stderr 设成 `ignore`，
-    Claude Code / Codex 也只在自己的错误面板里留一行。所以还要落一个文件，
-    让 app 能读到并把原因说出来 —— 这是三层诊断里的**第 2 层**
-    （见 private/RELEASE-CONNECTOR-WIZARD-DESIGN.md「失效怎么被看见」）：
-    「跑起来了但出错」。
+    stderr is for humans, but **nobody is reading it**: the dsh path sets the
+    subprocess's stderr to `ignore` outright, and Claude Code / Codex only keep a line
+    in their own error panels. So we also drop a file the app can read and turn into a
+    reason the user can act on. This is **layer 2** of the three diagnostic layers
+    (see private/RELEASE-CONNECTOR-WIZARD-DESIGN.md, "how failure becomes visible"):
+    "it ran, but something went wrong".
 
-    第 3 层（插件根本没跑起来）这里够不着 —— 那时候这个函数一行都不会执行，
-    只能由 app 从外面判「装了却从没上报过」。
+    Layer 3 — the plugin never ran at all — is out of reach from here: not a line of
+    this function executes in that case, and only the app can spot it from the outside
+    ("installed, but has never reported").
 
-    🔴 **这个函数绝不能抛异常。** 它是在 except 分支里被调用的，
-    在这里炸掉等于把一个「事件被忽略」升级成「hook 崩了」。
+    🔴 **This function must never raise.** It is called from an except branch, so
+    blowing up here would promote "one event was ignored" into "the hook crashed".
     """
     print("agent-avatar-hook: " + message, file=sys.stderr)
     try:
@@ -534,21 +574,24 @@ def diagnostic(message, harness=None):
             "at": utc_timestamp(),
             "harness": harness,
             "connector_version": CONNECTOR_VERSION,
-            # 解释器路径是最有用的一条：Windows 上「装了但不动」十次有九次是它不对
+            # The interpreter path is the single most useful field: on Windows,
+            # "installed but nothing moves" is nine times out of ten the wrong one
             "python": sys.executable,
             "message": message,
         })
-    except Exception:                      # noqa: BLE001 - 见上：诊断本身绝不能成为故障
+    except Exception:                      # noqa: BLE001 - see above: a diagnostic must never become the failure
         pass
 
 
-# 每个 harness 写自己的快照文件，皮肤按「状态来源」设置读其中一个。
-# 同时开着 Hermes 和 Claude Code 时不再互相抢同一个文件。
-# Hermes 沿用无后缀的老路径 —— 已经装好的用户不该因为这次改动就断掉。
+# Each harness writes its own snapshot file, and the skin reads whichever one the
+# "state source" setting points at. Running Hermes and Claude Code at the same time no
+# longer makes them fight over a single file.
+# Hermes keeps the original unsuffixed path — users who already had it working should
+# not be broken by this change.
 def state_path(harness=None):
     explicit = os.getenv("AGENT_AVATAR_STATE_PATH")
     if explicit:
-        return explicit          # 显式指定是用户意图，不参与命名规则
+        return explicit          # an explicit path is user intent; the naming rule does not apply
     name = "agent-avatar-state.json" if harness in (None, "hermes") else "agent-avatar-state.%s.json" % harness
     return os.path.join(tempfile.gettempdir(), name)
 
@@ -563,12 +606,13 @@ def read_json(path, default):
 
 
 def atomic_write(path, value):
-    """`os.replace` 保证原子性即可，**不做 fsync**。
+    """`os.replace` gives us atomicity, and that is enough — **no fsync**.
 
-    这是 `$TMPDIR` 里的瞬态状态文件：掉电后它本来就该是空的，fsync 换不来任何东西，
-    却要付一次真实的磁盘往返。而 Hermes 插件的回调是 in-process 且**没有超时**
-    （`hermes_cli/plugins.py:2103` 只包了 try/except），每个事件多花的毫秒都直接
-    加在 agent 主循环上。
+    This is a transient state file in `$TMPDIR`: after a power cut it is supposed to be
+    gone anyway, so fsync buys nothing while costing a real disk round trip. And the
+    Hermes plugin callback runs in-process with **no timeout**
+    (`hermes_cli/plugins.py:2103` only wraps it in try/except), so every millisecond
+    spent per event is added straight onto the agent's main loop.
     """
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
@@ -582,24 +626,30 @@ def atomic_write(path, value):
             os.unlink(temporary)
 
 
-# 拿不到锁时的重试上限。**必须有界**：Hermes 插件路径是 in-process 且没有超时兜底
-# （shell hook 还有 `timeout: 5`，插件什么都没有），阻塞式 flock 会把 agent 主循环
-# 直接卡住。写一次现在是亚毫秒级，0.5s 足够重试上千次；真拿不到就丢弃这个事件 ——
-# 忙态有过期兜底，丢一个事件远好过卡住用户的 agent。
+# Retry budget when the lock is contended. **It has to be bounded**: the Hermes plugin
+# path is in-process with no timeout to fall back on (a shell hook at least has
+# `timeout: 5`; the plugin has nothing), so a blocking flock would wedge the agent's
+# main loop outright. One write is sub-millisecond today, so 0.5 s is room for a
+# thousand retries; if we still cannot get the lock we drop the event — busy states
+# expire on their own, and dropping one event is far better than stalling the user's agent.
 LOCK_TIMEOUT_SECONDS = 0.5
 LOCK_RETRY_SECONDS = 0.005
 
 
 def acquire_lock(handle):
-    """试着拿独占锁。拿到 True，被占 False，平台不支持 None。**绝不阻塞**。
+    """Try to take an exclusive lock. True if taken, False if held elsewhere, None if the
+    platform offers nothing. **Never blocks.**
 
-    两个平台各有各的 API，但语义要一致：非阻塞、独占、**进程退出时由内核自动释放**。
-    最后一条是选它们而不是「创建锁文件」方案的原因 —— hook 被 kill 掉时，
-    锁文件方案会留下一把永远没人解的锁，而这两种都由操作系统兜底。
+    The two platforms have different APIs but the semantics must match: non-blocking,
+    exclusive, and **released by the kernel when the process exits**. That last property
+    is why we use them instead of a "create a lock file" scheme — if a hook is killed,
+    the lock-file approach leaves a lock nobody will ever release, while both of these
+    are cleaned up by the OS.
 
-    Windows 用 `msvcrt.locking`：`LK_NBLCK` 就是「非阻塞独占」，对应 flock 的
-    `LOCK_EX | LOCK_NB`。它锁的是字节区间而不是整个文件，所以约定锁第 0 个字节 ——
-    锁文件本身是空的，而 Windows 允许锁 EOF 之外的区间。
+    Windows uses `msvcrt.locking`: `LK_NBLCK` is exactly "non-blocking exclusive", the
+    counterpart of flock's `LOCK_EX | LOCK_NB`. It locks a byte range rather than the
+    whole file, so we agree to lock byte 0 — the lock file itself is empty, and Windows
+    permits locking a range beyond EOF.
     """
     if fcntl is not None:
         try:
@@ -618,23 +668,25 @@ def acquire_lock(handle):
 
 
 def release_lock(handle):
-    """显式解锁。关文件本来也会释放，但显式写出来更清楚，也避免依赖关闭时机。"""
+    """Release explicitly. Closing the file would release it anyway, but saying so is
+    clearer and avoids depending on when the close happens."""
     try:
         if fcntl is not None:
             fcntl.flock(handle, fcntl.LOCK_UN)
         elif msvcrt is not None:
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-    except OSError:  # pragma: no cover - 解锁失败时文件即将关闭，内核会兜底
+    except OSError:  # pragma: no cover - if unlocking fails the file is about to close and the kernel cleans up
         pass
 
 
 def update(payload, label, audio=None, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST, harness=None):
-    """把一个事件过一遍状态机并落盘。
+    """Run one event through the state machine and persist the result.
 
-    `label`：写进 `detail` 的主语（"Hermes" / "Claude Code"）。
-    `audio`：该 harness 要额外带出的音频块；`None` 表示沿用上一次的值（不覆盖）。
-    `harness`：决定写哪个快照文件（见 `state_path`）。
+    `label`: the subject written into `detail` ("Hermes", "Claude Code", ...).
+    `audio`: the audio block this harness wants to pass along; `None` means keep the
+             previous value rather than overwrite it.
+    `harness`: decides which snapshot file is written (see `state_path`).
     """
     path = state_path(harness)
     sessions_path = path + ".sessions"
@@ -658,9 +710,11 @@ def update(payload, label, audio=None, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDES
             "updated_at": utc_timestamp(),
             "connector_version": CONNECTOR_VERSION,
         }
-        # reaction 是叠加层：从 data 里带出近期的 reaction（时间窗内），皮肤按 at 去重触发一次。
-        # 去重键是 `at` 而不是 `sequence`：sequence 存在易失的 .sessions 里，文件被重建
-        # （schema 变更 / TMPDIR 清理）后它从 1 重新开始，皮肤会把下一条反应当成已见过的丢掉。
+        # Reactions are an overlay: carry a recent one (inside the time window) out of
+        # `data`, and the skin fires it once, deduplicated by `at`.
+        # The dedup key is `at` rather than `sequence` because sequence lives in the
+        # volatile .sessions file: once that is rebuilt (schema change, TMPDIR cleanup)
+        # it restarts at 1, and the skin would drop the next reaction as already seen.
         reaction = data.get("reaction")
         if isinstance(reaction, dict) and reaction.get("kind"):
             at = float(reaction.get("at", 0) or 0)
@@ -676,17 +730,21 @@ def update(payload, label, audio=None, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDES
         atomic_write(path, snapshot)
 
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    # 原来这里是 `if fcntl is None: 无锁写入`。fcntl 在 Windows 上不存在，于是整条
-    # Windows 路径**静默退化成无锁的读-改-写** —— 并行工具调用与子代理会同时起好几个
-    # hook 进程，抢同一个 .sessions，互相覆盖。丢的是记账，结果是状态机算出错误状态、
-    # 形象卡住，而且不报任何错。现在两个平台各有各的锁，见 acquire_lock。
+    # This used to read `if fcntl is None: write without a lock`. fcntl does not exist on
+    # Windows, so the entire Windows path **silently degraded to an unlocked
+    # read-modify-write** — parallel tool calls and subagents start several hook
+    # processes at once, all racing for the same .sessions file and overwriting each
+    # other. What gets lost is bookkeeping, so the state machine computes a wrong state
+    # and the avatar wedges, with no error anywhere. Both platforms now have a real lock;
+    # see acquire_lock.
     with open(path + ".lock", "a+", encoding="utf-8") as lock:
         deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
         while True:
             acquired = acquire_lock(lock)
             if acquired is None:
-                # 既没有 fcntl 也没有 msvcrt。我们只支持 macOS 与 Windows，两者必有其一，
-                # 所以这条实际到不了；真到了就说清楚，别再静默降级。
+                # Neither fcntl nor msvcrt. We only support macOS and Windows, and each
+                # has one of them, so this is unreachable in practice — but if we ever get
+                # here, say so out loud instead of silently degrading again.
                 diagnostic("no cross-process lock on this platform; writing unserialised")
                 transition()
                 return
