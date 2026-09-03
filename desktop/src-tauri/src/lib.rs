@@ -352,7 +352,17 @@ fn spawn_hit_test(app: tauri::AppHandle) {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 无界面地把连接器从五家 harness 里取回来，然后退出。
+///
+/// 装它的时候用户在界面上点了按钮；**卸的时候界面往往已经不在了** —— 卸载器正在删文件，
+/// 或者用户直接把免安装版的文件夹拖进了回收站。留在别人应用里的登记不会自己消失。
+const REMOVE_CONNECTORS_FLAG: &str = "--remove-connectors";
+
 pub fn run() {
+    if std::env::args().any(|argument| argument == REMOVE_CONNECTORS_FLAG) {
+        println!("{}", connector_install::remove_all_headless());
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| { if let Some(window) = app.get_webview_window("main") { let _ = window.set_focus(); } }))
@@ -383,6 +393,6 @@ pub fn run() {
             spawn_hit_test(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![log_event, hermes::read_semantic_state, hermes::discover_audio_endpoint, config::read_config, config::write_config, config::install_model, config::delete_model, config::list_installed_models, config::list_model_issues, connectors::list_connectors, connector_install::install_connector, connector_install::uninstall_connector, connector_install::reconcile_connectors, connector_install::app_versions, open_tool_window, set_hit_region, open_in_browser, start_global_audio, stop_global_audio])
+        .invoke_handler(tauri::generate_handler![log_event, hermes::read_semantic_state, hermes::discover_audio_endpoint, config::read_config, config::write_config, config::install_model, config::delete_model, config::list_installed_models, config::list_model_issues, connectors::list_connectors, connector_install::install_connector, connector_install::uninstall_connector, connector_install::reconcile_connectors, connector_install::app_versions, connector_install::remove_all_connectors, open_tool_window, set_hit_region, open_in_browser, start_global_audio, stop_global_audio])
         .run(tauri::generate_context!()).expect("error while running Agent Avatar");
 }

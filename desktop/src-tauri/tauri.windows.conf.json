@@ -1,4 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "bundle": { "targets": ["nsis"] }
+  "bundle": {
+    "targets": [
+      "nsis"
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
+  }
 }

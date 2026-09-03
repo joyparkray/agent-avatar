@@ -38,6 +38,8 @@ const TEXT: Record<Language, Record<string, string>> = {
     "general.about": "关于", "general.updateCheck": "自动检查更新", "general.updateHint": "只查一个版本号，不会下载或安装任何东西。查不到时（离线、代理、网络限制）不会有任何提示。", "general.checkNow": "检查更新", "general.checking": "查询中…", "general.upToDate": "已是最新版本。", "general.unreachable": "这会儿查不到（离线或网络受限），不影响使用。", "general.newVersion": "有新版本 {version}", "general.applyUpdate": "去下载",
     "video.display": "显示", "video.scale": "缩放", "video.opacity": "透明度", "video.focus": "聚焦范围：显示顶部", "video.focusHint": "仅在右键菜单启用聚焦模式时生效。", "video.rendering": "渲染", "video.renderHint": "降低画质通常比降低帧率更省 GPU。", "video.quality": "画质", "video.fps": "帧率",
     "agent.connectors": "接入", "agent.connectorsHint": "选一个你在用的 agent，点「安装」就行。连接器和它需要的运行环境都在这个应用里，不联网、不下载；装完如果还需要你做点什么，会显示在下面。", "agent.mapping": "状态与动作", "agent.mappingHint": "为当前模型的每个 Agent 状态选择动作。选择“模型默认”会使用 avatar.json 的映射。", "agent.default": "模型默认",
+    "agent.removeAll": "移除所有连接器", "agent.removeAllHint": "删除本应用之前先点一下：它会把五家里的登记收回来。不这么做的话，那些登记会留在你的 agent 里，指向一个已经不存在的程序。",
+    "agent.removing": "正在移除…", "agent.removedNone": "本来就没有装。", "agent.removedSome": "已移除：{list}", "agent.removeFailed": "有几家没成功：{list}",
     "behavior.lipSync": "口型", "behavior.lipHint": "灵敏度决定多小的声音算「在说话」；张嘴幅度决定嘴张多大。对系统音频、音频文件与 Hermes 三种音源都生效。", "behavior.meterHint": "上面是当前听到的口型强度，竖线是张嘴的门槛。放点声音，把灵敏度拉到柱子能稳定越过竖线为止。", "behavior.sensitivity": "灵敏度", "behavior.amplitude": "张嘴幅度",
     "behavior.idle": "闲置自治", "behavior.idleHint": "无人交互且 Agent 空闲时，让形象自己看四周、播放动作或表情。", "behavior.delay": "静置多少秒后开始", "behavior.zero": "填 0 即关闭。", "behavior.random": "表情与动作", "behavior.randomHint": "「触发」是你亲自触发的方式：单击人物、双击人物，或一个全局快捷键（桌宠没有焦点时也管用）。同一个触发绑多项就在它们之间随机。「常驻」勾上就一直保持，可以同时勾多个（戴着猫耳 + 拿着饮料 + 生气）；只有那种「只改一个参数」的项能常驻。「闲置」是没人理它时自己播的，点标题可全开或全关。", "behavior.origin": "原名", "behavior.alias": "别名", "behavior.trigger": "触发", "behavior.hold": "常驻", "behavior.idleActions": "闲置", "behavior.groupOther": "其他", "behavior.groupMotion": "动作（播放一次）", "behavior.holdOnlySwitch": "这一项要同时改多个参数，做不到常驻 —— 它一次只能显示一个", "behavior.holdOnlyMotion": "动作是播一次就结束的，没有「常驻」；想让它一直循环，用「闲置」那一列", "behavior.kindExpression": "表情", "behavior.kindMotion": "动作", "trigger.none": "无", "trigger.click": "单击", "trigger.dblclick": "双击", "trigger.record": "录制快捷键…", "trigger.recording": "按下组合键…（Esc 取消）", "trigger.needModifier": "快捷键要带 Ctrl / Alt / Shift，否则你正常打字也会触发", "trigger.taken": "这个组合已被别的程序占用，换一个",
     "models.title": "模型", "models.hint": "拖入包含 *.model3.json 的 Cubism 模型文件夹。", "models.drop": "拖模型文件夹到此处",
@@ -50,6 +52,8 @@ const TEXT: Record<Language, Record<string, string>> = {
     "general.about": "About", "general.updateCheck": "Check for updates automatically", "general.updateHint": "It reads a version number and nothing else — no download, no install. If it cannot reach the network, it says nothing.", "general.checkNow": "Check for updates", "general.checking": "Checking…", "general.upToDate": "You are on the latest version.", "general.unreachable": "Can't reach it right now (offline or restricted). Nothing is affected.", "general.newVersion": "Version {version} is available", "general.applyUpdate": "Download",
     "video.display": "Display", "video.scale": "Scale", "video.opacity": "Opacity", "video.focus": "Focus crop: show top", "video.focusHint": "Only applies when Focus Mode is enabled from the context menu.", "video.rendering": "Rendering", "video.renderHint": "Lowering quality usually saves more GPU power than lowering frame rate.", "video.quality": "Quality", "video.fps": "Frame rate",
     "agent.connectors": "Connectors", "agent.connectorsHint": "Pick the agent you use and press Install. The connector and the runtime it needs are inside this app — nothing is downloaded. Any remaining manual step is shown below.", "agent.mapping": "Agent state and motion", "agent.mappingHint": "Choose a motion for each agent state on the current model. Model default uses the avatar.json mapping.", "agent.default": "Model default",
+    "agent.removeAll": "Remove all connectors", "agent.removeAllHint": "Press this before deleting the app: it takes back the registrations in all five harnesses. Otherwise they stay in your agents, pointing at a program that no longer exists.",
+    "agent.removing": "Removing…", "agent.removedNone": "None were installed.", "agent.removedSome": "Removed: {list}", "agent.removeFailed": "Some could not be removed: {list}",
     "behavior.lipSync": "Lip sync", "behavior.lipHint": "Sensitivity sets how quiet a sound still counts as speech; mouth range sets how wide it opens. Both apply to system audio, audio files and Hermes alike.", "behavior.meterHint": "The bar is how strongly the app hears speech right now; the line is the threshold to open the mouth. Play something and raise sensitivity until the bar clears the line consistently.", "behavior.sensitivity": "Sensitivity", "behavior.amplitude": "Mouth range",
     "behavior.idle": "Idle autonomy", "behavior.idleHint": "Let the avatar look around or play motions and expressions while the agent is idle.", "behavior.delay": "Start after this many idle seconds", "behavior.zero": "Set to 0 to disable.", "behavior.random": "Expressions and motions", "behavior.randomHint": "Trigger is how you set it off yourself: click the character, double-click it, or a global shortcut that works even when the avatar has no focus. Bind several rows to the same trigger and it picks among them at random. Keep on holds an item indefinitely, and several can be on at once (cat ears + a drink + angry); only entries that change a single parameter can be held. Idle is what it plays on its own; click the heading to toggle all.", "behavior.origin": "Name in model", "behavior.alias": "Alias", "behavior.trigger": "Trigger", "behavior.hold": "Keep on", "behavior.idleActions": "Idle", "behavior.groupOther": "Other", "behavior.groupMotion": "Motions (play once)", "behavior.holdOnlySwitch": "This one changes several parameters at once, so it cannot stay on — only one of its kind shows at a time", "behavior.holdOnlyMotion": "A motion plays once and ends, so there is nothing to keep on; use the Idle column to have it come back", "behavior.kindExpression": "Expression", "behavior.kindMotion": "Motion", "trigger.none": "None", "trigger.click": "Click", "trigger.dblclick": "Double-click", "trigger.record": "Record shortcut…", "trigger.recording": "Press a combination… (Esc to cancel)", "trigger.needModifier": "A shortcut needs Ctrl / Alt / Shift, or ordinary typing would set it off", "trigger.taken": "That combination is taken by another app — pick a different one",
     "models.title": "Models", "models.hint": "Drop a Cubism model folder containing a *.model3.json file.", "models.drop": "Drop a model folder here",
@@ -582,7 +586,36 @@ const showAbout = (): void => {
   };
 };
 
-const showConnectors = (): void => renderConnectors($<HTMLElement>('[data-list="connectors"]'), locale);
+const showConnectors = (): void => {
+  renderConnectors($<HTMLElement>('[data-list="connectors"]'), locale);
+
+  /**
+   * 一次把五家里的登记全收回来。
+   *
+   * 🔴 **删掉这个 app 不会带走它们。** 五家的配置里仍然登记着 agent-avatar，而那些 hook
+   * 指向一个已经不存在的解释器 —— 留在别人应用里的垃圾，而用户没有理由知道去哪清。
+   * 一家一家点五次也行，但没人会记得，所以给一个入口。
+   */
+  const button = $<HTMLButtonElement>('[data-act="remove-all-connectors"]');
+  const said = $<HTMLElement>('[data-label="remove-all"]');
+  button.onclick = () => {
+    button.disabled = true;
+    said.textContent = tr("agent.removing");
+    void invoke<{ removed?: string[]; failed?: { harness: string }[] }>("remove_all_connectors")
+      .then(report => {
+        const removed = report.removed ?? [];
+        const failed = (report.failed ?? []).map(item => item.harness);
+        said.textContent = failed.length
+          ? tr("agent.removeFailed").replace("{list}", failed.join("、"))
+          : removed.length
+            ? tr("agent.removedSome").replace("{list}", removed.join("、"))
+            : tr("agent.removedNone");
+        showConnectors();                       // 列表要跟着变，否则它还写着「已连通」
+      })
+      .catch((error: unknown) => { said.textContent = errorMessage(error, locale); })
+      .finally(() => { button.disabled = false; });
+  };
+};
 
 /** 每一块独立失败：设置页有五组控件，一组坏了不该让其余四组一起消失。 */
 function guard(name: string, run: () => void): void {

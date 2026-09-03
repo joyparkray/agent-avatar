@@ -1,4 +1,4 @@
 [[permission]]
 identifier = "allow-skin-commands"
 description = "Allows the Agent Avatar frontend to use its application commands."
-commands.allow = ["log_event", "read_semantic_state", "discover_audio_endpoint", "read_config", "write_config", "install_model", "delete_model", "list_installed_models", "list_model_issues", "list_connectors", "install_connector", "uninstall_connector", "reconcile_connectors", "app_versions", "open_tool_window", "set_hit_region", "open_in_browser", "start_global_audio", "stop_global_audio"]
+commands.allow = ["log_event", "read_semantic_state", "discover_audio_endpoint", "read_config", "write_config", "install_model", "delete_model", "list_installed_models", "list_model_issues", "list_connectors", "install_connector", "uninstall_connector", "reconcile_connectors", "app_versions", "remove_all_connectors", "open_tool_window", "set_hit_region", "open_in_browser", "start_global_audio", "stop_global_audio"]

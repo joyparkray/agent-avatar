@@ -966,6 +966,57 @@ fn needs_refresh(installed: Option<&str>, bundled: &str) -> bool {
 /// 两个都要报，因为它们回答的是不同的问题：前者是用户在关于里看到、报 bug 时会贴的那个；
 /// 后者是「harness 里现在跑的是哪一版观察者」。打包之后两者是绑在一起发布的，
 /// 但仍然不是同一个数字 —— connector 的版本跟着状态文件的格式走，app 的跟着发布走。
+/// 同一件事，但**不需要一个跑起来的 app** —— 给卸载器用。
+///
+/// 🔴 用户删掉这个 app 的那一刻，正是这些登记最该被收回的时刻，而那时 GUI 已经不在了。
+/// NSIS 的卸载脚本可以在删文件之前调 `agent-avatar.exe --remove-connectors`；
+/// 便携版的用户也可以自己跑一次。
+///
+/// 卸载那条路径不需要连接器树（dsh 那一段是按 `id: agent-avatar` 认的，与树在哪无关），
+/// 所以这里不去解析资源目录 —— 那正是 app 已经半删掉时最可能失败的一步。
+pub fn remove_all_headless() -> String {
+    let mut removed = Vec::new();
+    let mut failed = Vec::new();
+    for harness in HARNESSES {
+        if !crate::connectors::is_installed(harness) { continue; }
+        match uninstall_from(Path::new(""), harness) {
+            Ok(_) => removed.push(harness.to_string()),
+            Err(error) => failed.push(format!("{harness}: {error}")),
+        }
+    }
+    let mut report = if removed.is_empty() {
+        "no connectors were installed".to_string()
+    } else {
+        format!("removed: {}", removed.join(", "))
+    };
+    for line in &failed {
+        report.push_str(&format!("\ncould not remove {line}"));
+    }
+    report
+}
+
+/// 把我们放进**别人应用里**的东西全部取回来。
+///
+/// 🔴 删掉这个 app 并不会带走它们。五家 harness 的配置里仍然登记着 agent-avatar，而那些
+/// hook 命令行指向一个已经不存在的解释器 —— `plugin list` 里还挂着它，每次开会话都会去启动
+/// 一个不存在的程序。那是**留在别人应用里的垃圾**，而用户没有理由知道要去哪清。
+///
+/// 一家失败不打断其余：卸载是善后，能收回多少收回多少，剩下的照实说。
+#[tauri::command(async)]
+pub fn remove_all_connectors(app: tauri::AppHandle) -> Value {
+    let tree = working_root(&app).unwrap_or_default();
+    let mut removed = Vec::new();
+    let mut failed = Vec::new();
+    for harness in HARNESSES {
+        if !crate::connectors::is_installed(harness) { continue; }
+        match uninstall_from(&tree, harness) {
+            Ok(_) => removed.push(json!(harness)),
+            Err(error) => failed.push(json!({ "harness": harness, "error": error })),
+        }
+    }
+    json!({ "removed": removed, "failed": failed })
+}
+
 #[tauri::command(async)]
 pub fn app_versions(app: tauri::AppHandle) -> Value {
     let connector = bundled(&app).map(|(tree, _)| bundled_version(&tree)).ok();
