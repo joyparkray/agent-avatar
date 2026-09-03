@@ -9,20 +9,17 @@ Five harnesses are supported and have all been verified on real sessions.
 
 ## Install
 
-**If you downloaded the app (not the source)** — use the Quick Start path:
-download `agent-avatar-connectors.zip` from the Release page, unzip it, and run the
-installer for your harness from the unzipped folder. See
-[docs/QUICKSTART.md](../docs/QUICKSTART.md).
+**Use the app.** Settings → Agent → Install, next to your harness. The plugin and the
+Python it needs are inside the application, so nothing is downloaded; registration goes
+through your harness's own CLI. The button reports which step failed, and what the
+harness itself said, if it does.
 
-**If you cloned the repo**, run the installer for your harness from the repository root:
+Afterwards, **start a new session** — plugins load at session start. Codex additionally
+needs `/hooks` trust and WorkBuddy an app restart; the app spells out whichever applies.
 
-```bash
-connectors/claude-code/install-plugin.sh
-connectors/codex/install-plugin.sh
-connectors/hermes/install-plugin.sh
-connectors/dsh/install-plugin.sh
-connectors/workbuddy/install-plugin.sh
-```
+**By hand** — for a harness the app cannot reach (WSL, a container, another machine),
+or to read the commands first: see [the connectors README](../connectors/marketplace-README.md).
+It is the same set of commands, written out.
 
 Then open the avatar's right-click menu → **Agent State Source** and pick the matching
 harness (or *Auto*).

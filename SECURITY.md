@@ -11,26 +11,39 @@ a private channel — do not include details in it.
 
 Agent Avatar is a desktop application with a few capabilities worth knowing about:
 
-- **It installs plugins into your agent harness, and can run that installer for you.**
-  Settings → Agent → Connectors downloads `agent-avatar-connectors.zip` over HTTPS from
-  this project's GitHub release, extracts it under the app's data directory, and runs the
-  harness's own `install-plugin.sh` from it. You can do the same by hand instead — the
-  zip is a published release asset and the scripts are in this repository.
+- **It installs plugins into your agent harness.** Settings → Agent → Install ships the
+  plugin files and a Python interpreter **inside the application** — nothing is
+  downloaded — copies them into the app's own data directory, writes that interpreter's
+  path into the plugin's hook command line, feeds one synthetic event through to check
+  it works, and then registers the plugin **by calling your harness's own CLI**
+  (`claude plugin install`, `codex plugin add`, `codebuddy plugin install`,
+  `hermes plugins install`). It does not write your harness's configuration files.
 
-  **Connectors never modify harness source code.** What an installer does beyond copying
-  plugin files differs per harness, and it is worth knowing which:
+  The one exception is **DeepSeek Harness**, which has no plugin CLI: there the
+  registration *is* an entry in `~/.dsh/cordis.patch.yml`, so the app writes that file.
+  It backs it up first, wraps its entry in `# >>> agent-avatar (managed) >>>` markers,
+  and preserves everything else you keep there.
 
-  | Harness | What the installer touches |
-  |---|---|
-  | Claude Code | Plugin files only, under `~/.claude/plugins/local/agent-avatar` |
-  | Hermes | Plugin files only, under `~/.hermes/plugins/agent-avatar`; your `config.yaml` is not touched (you enable the plugin yourself) |
-  | DeepSeek Harness | Plugin files, plus one marked block in `~/.dsh/cordis.patch.yml`; the file is backed up first and your own entries are preserved |
-  | Codex | Plugin files, plus an `agent-avatar` entry in `~/.agents/plugins/marketplace.json` (backed up first, other entries preserved), then runs `codex plugin add` |
-  | WorkBuddy | Plugin files under a local marketplace in `~/.workbuddy`, then runs the bundled `codebuddy` CLI to register and install it |
+  **Connectors never modify harness source code**, and they are pure observers: they
+  read events and write one state file. They return no instructions, block no tool, and
+  take no part in an approval decision.
 
-  Uninstalling from the app reverses these: it removes the plugin directory, strips the
-  managed block from the dsh patch file, removes the Codex marketplace entry, and calls
-  the WorkBuddy CLI's own uninstall.
+  Two things the app cannot do for you, by design:
+
+  - **Codex hook trust.** Enabling a plugin does not trust its hooks; you approve them
+    yourself with `/hooks`. Trust is keyed to the hook's content hash, so a connector
+    upgrade needs re-approving.
+  - **Restarting your harness.** Plugins load at session start.
+
+  Uninstalling reverses this through the same CLIs, and removes the managed block from
+  the dsh patch file. Everything is also documented for doing by hand — see the
+  connectors README — for the cases the app cannot reach (a harness in WSL, a container,
+  or on another machine).
+
+  **It can check for a newer version of itself** (Settings → 关于 / About, on by
+  default, switchable off). That reads one version number from this project's GitHub
+  releases and nothing else: no download, no install. With the switch off it makes no
+  request at all.
 - **It captures system audio** (macOS Core Audio process tap) to drive lip sync, only
   while that audio source is selected. Audio is reduced to a loudness value and is never
   recorded or written to disk.

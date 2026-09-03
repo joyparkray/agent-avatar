@@ -37,16 +37,16 @@ STATE_SCHEMA_VERSION = 2
 
 # The connector's version, written into every snapshot.
 #
-# Why it is here: on Windows the installed connector is a **localised copy** (the
-# interpreter path is baked in), so it never receives the harness's automatic
-# updates — what we get in return is that updates are explicit, and the price is
-# that somebody has to tell the user a new version exists. The app already reads
-# this state file, so it can say exactly "you have 1.0.0, latest is 1.2.0" and hand
-# over a prompt to update. That is more visible than a silent background update,
-# and visibility is precisely what this path lacks.
+# Why it is here: the installed connector is a **localised copy** (the interpreter
+# path is baked in), so it does not update itself. It does not need to — it ships
+# inside the app, which re-materialises it whenever the bundled version differs from
+# the installed one. This field is how that comparison is made, and it is also what
+# lets the app tell a snapshot written before this install from one written after:
+# that difference is the only reliable way to notice that a connector which used to
+# work has stopped.
 #
 # **Must match the version in all five plugin.json / plugin.yaml manifests** —
-# build-marketplace.sh compares them one by one and fails the build if they differ.
+# build-bundle.sh compares them one by one and fails the build if they differ.
 CONNECTOR_VERSION = "1.0.0"
 # How long a reaction signal stays in the snapshot: the skin polls every 200 ms, so
 # 2 s is enough for it to read the signal and fire it once (deduplicated by `at`).

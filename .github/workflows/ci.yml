@@ -71,7 +71,7 @@ jobs:
         # Windows 侧不需要造发布树 —— 发布树必须**机器无关**，而 Windows 的
         # assemble.ps1 会把本机解释器路径烤进去，那是**安装时**才该做的事。
         if: runner.os != 'Windows'
-        run: sh connectors/build-marketplace.sh "${{ runner.temp }}/marketplace"
+        run: sh connectors/build-bundle.sh "${{ runner.temp }}/bundle"
 
       - name: Release tree must not be machine-specific
         # 发布树是给所有人的那一份。烤进任何一台机器的解释器绝对路径，
@@ -81,7 +81,7 @@ jobs:
           # 抓的是**某台机器专属**的路径：盘符、以及某个用户的 home。
           # `/usr/bin/python3` 不算 —— Codex 那条 POSIX 命令本来就写死了它，是故意的。
           # 盘符要求前面不是字母，否则 `https://` 里的 `s://` 会被当成盘符。
-          if grep -rlE '(^|[^A-Za-z])[A-Za-z]:[\/]|/(Users|home)/[^/"]+/' "${{ runner.temp }}/marketplace" --include='*.json' --include='*.mjs'; then
+          if grep -rlE '(^|[^A-Za-z])[A-Za-z]:[\/]|/(Users|home)/[^/"]+/' "${{ runner.temp }}/bundle/marketplace" --include='*.json' --include='*.mjs'; then
             echo '发布树里出现了机器相关的绝对路径' >&2; exit 1
           fi
 

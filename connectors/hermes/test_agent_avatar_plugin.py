@@ -19,7 +19,7 @@ CORE = Path(__file__).resolve().parents[2] / "bridge" / "state_machine.py"
 
 
 def load_plugin(tmp_path, state_path):
-    """复刻 install-plugin.sh 的落盘 + Hermes 的包式加载。"""
+    """复刻装机时的落盘 + Hermes 的包式加载。"""
     plugin_dir = tmp_path / "agent-avatar"
     plugin_dir.mkdir()
     for name in ("plugin.yaml", "__init__.py"):

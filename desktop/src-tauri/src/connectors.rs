@@ -42,7 +42,7 @@ pub(crate) fn home() -> PathBuf {
     PathBuf::from("/")
 }
 
-/// `$VAR`，没设就用 `$HOME/<fallback>`。各家 install-plugin.sh 里的口径，原样照搬。
+/// `$VAR`，没设就用 `$HOME/<fallback>`。各家自己文档里的口径，原样照搬。
 pub(crate) fn harness_home(var: &str, fallback: &str) -> PathBuf {
     env::var(var).ok().filter(|value| !value.is_empty()).map(PathBuf::from).unwrap_or_else(|| home().join(fallback))
 }
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn plugin_paths_match_the_install_scripts() {
-        // 判据来自各家 install-plugin.{sh,ps1} 里的 `target=`。脚本改了这里必须跟着改，
+        // 判据是各家实际把插件放在哪 —— 布局变了这里必须跟着改，
         // 否则表现是「装完了界面还说没装」。
         for harness in ["claude-code", "codex", "workbuddy"] {
             assert!(plugin_dir(harness).unwrap().ends_with(LOCAL_MARKETPLACE), "{harness}");

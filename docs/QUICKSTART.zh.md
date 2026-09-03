@@ -45,18 +45,14 @@ app 不内置任何模型。下载一个 **Live2D 官方免费示例模型**，�
    | WorkBuddy | **重启 app** |
    | Codex | **在 Codex 会话里运行 `/hooks` 并逐条授信** |
 
-### 方式 B —— 手动装（离线、或想自己看脚本干了什么）
+### 方式 B —— 手动装
 
-1. 从同一个 [Releases](../../releases) 下载 **`agent-avatar-connectors.zip`**，解压到任意位置。
-2. 在解压后的目录里，为你用的那家运行安装脚本：
+app 够不着你的 harness 时用这条：它跑在 **WSL、容器、或另一台机器**上；或者你想先把命令
+读一遍再跑。
 
-   ```bash
-   sh connectors/claude-code/install-plugin.sh    # Claude Code
-   sh connectors/codex/install-plugin.sh          # OpenAI Codex
-   sh connectors/hermes/install-plugin.sh         # Hermes
-   sh connectors/dsh/install-plugin.sh            # DeepSeek Harness
-   sh connectors/workbuddy/install-plugin.sh      # WorkBuddy
-   ```
+命令都写在 [连接器 README](../connectors/marketplace-README.zh.md) 里 —— 和 app 替你跑的
+是同一批。要么克隆仓库自己构建那棵树，要么从 [Releases](../../releases) 下
+`agent-avatar-connectors.zip` 解压。
 
    `connectors/` 与 `bridge/` 两棵目录**必须保持解压后的相对位置**，脚本靠相对路径找 core。
 3. 同样要做上面那张表里的「装完之后」。

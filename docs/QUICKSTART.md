@@ -58,7 +58,9 @@ most common place to get stuck.
 
 ### Way B — from source (for developers who clone the repo)
 
-Clone the repo and use the same `connectors/<harness>/install-plugin.sh` scripts directly.
+Follow [the connectors README](../connectors/marketplace-README.md) — the same commands
+the app runs, written out. Use it when the app cannot reach your harness (WSL, a
+container, another machine) or when you want to read them first.
 
 ## 4. Tell the avatar which agent
 

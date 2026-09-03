@@ -75,13 +75,30 @@ PY
     "$target/python.exe" -c "import json,os,sys,time,tempfile,shlex,re,datetime,msvcrt,pathlib,subprocess,io; print('bundled python', sys.version.split()[0], 'stdlib OK')"
     ;;
   macos)
-    # 🔴 Not implemented yet, and deliberately loud about it rather than silently
-    # falling back to the system interpreter — that placeholder is the trap we are here
-    # to remove. macOS has no official embeddable build; the plan is
-    # python-build-standalone (astral-sh), install_only flavour, universal2. It needs to
-    # be fetched, stripped of what we do not use, and code-signed with the app, none of
-    # which can be verified from a Windows machine.
-    echo "macOS interpreter bundling is not implemented yet (see the comment in this script)" >&2
+    # 🔴 **还没实现，而且是故意显式失败的** —— 不能悄悄退回系统那个解释器，
+    # 因为 macOS 上 `/usr/bin/python3` 正是我们要消灭的那个占位程序（没装 Xcode 命令行
+    # 工具时它会弹安装框），静默退回等于把这个脚本存在的理由抵消掉。
+    #
+    # 方案定了：astral-sh/python-build-standalone 的 install_only 包（PyTauri 用的就是它）。
+    # 命名规则已经实测过（2026-09-03，用一个已知的老版本验的，返回 200）：
+    #
+    #   https://github.com/astral-sh/python-build-standalone/releases/download/<TAG>/
+    #     cpython-<版本>+<TAG>-<aarch64|x86_64>-apple-darwin-install_only.tar.gz
+    #
+    #   （URL 里那个 `+` 要写成 %2B）
+    #
+    # 在 Mac 上补完它要做三件事：
+    #
+    #   1. 挑一对确实存在的 <TAG>/<版本>，用 HEAD 请求验一下：
+    #        curl -sIL -o /dev/null -w '%{http_code}' "<上面那个 URL>"    # 期望 200
+    #      **必须钉死**，不能用 latest —— 解释器一换，就等于改了我们已经写进五家 harness
+    #      配置里的每一条 hook 命令行。
+    #   2. 两个架构都要（Apple Silicon 与 Intel），或者只出 universal 的那份。
+    #   3. 跟 app 一起签名公证。**这一条不能漏**：没公证的解释器在别人机器上跑不起来，
+    #      而症状还是那个老形状 —— 装好了，形象不动。
+    #
+    # 做完之后照 Windows 那一支的样子跑一遍自检（import 一遍我们用到的标准库）。
+    echo "macOS interpreter bundling is not implemented yet — see the recipe in this script" >&2
     exit 2
     ;;
   *)

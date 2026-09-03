@@ -4,184 +4,218 @@
   <a href="README.md">English</a> · <b>简体中文</b>
 </p>
 
-让桌面形象跟着你的 agent 变表情：它在想、在跑工具、在等子代理，形象就换表情。
+让桌面上的形象跟着你的 agent 动：它在思考、在跑工具、在等子 agent 时，形象会换表情。
 
-这个仓库是五家 agent harness 的**插件本体**，同时也是其中三家的 plugin marketplace
-（三份清单文件名互不相同，互不干扰）。版本 {{VERSION}}。
+这里是五家 agent harness 的**插件本体**。版本 {{VERSION}}。
 
-> **纯观察者**：这些插件只读事件、写一个本地状态文件（`$TMPDIR`/`%TEMP%` 下），
-> 从不返回指令、不拦工具、不参与审批。要看它到底做了什么，
-> 每家的入口都在 `plugins/<harness>/agent-avatar/` 下，一共几百行 Python。
+> **纯观察者**：它们只读事件、只写一个本地状态文件（在 `$TMPDIR` / `%TEMP%` 下）。
+> 不返回任何指令、不拦截工具、不参与授权决定。想确认它到底做了什么，每个入口都在
+> `plugins/<harness>/agent-avatar/` 里 —— 几百行 Python。
 
 ---
 
-## 怎么装
+## 你多半用不到这一页
 
-**把对应的那一段整个贴给你的 agent** —— 你本来就坐在一个能执行命令的 agent 面前，
-让它去装比你手动敲快也少出错。命令都是钉死的，你可以先自己读一遍再让它跑。
+**app 会替你装。** 打开 Agent Avatar → 设置 → Agent，在你用的那一家旁边点「安装」。
+连接器和它需要的 Python 都在这个应用里，不联网、不下载；登记那一步调的是**你那家
+harness 自己的命令行**。失败时它会告诉你卡在第几步、以及那家 harness 自己说了什么。
 
-（也可以自己照着敲，它们就是普通命令。）
+这一页是给 app 够不着的那些情况准备的：
+
+- 你的 harness 跑在 app 看不见的地方 —— **WSL、容器、另一台机器**；
+- 你想**先读一遍命令再跑**，或者手工修一个装坏了的；
+- 你在把 Agent Avatar 打包进我们没想到的什么东西里。
+
+---
+
+## 先拿到文件
+
+克隆 app 仓库，构建出连接器树：
+
+```
+git clone https://github.com/{{REPO}} agent-avatar
+cd agent-avatar
+sh connectors/build-bundle.sh ./connector-tree
+cd connector-tree/marketplace
+```
+
+这一步需要一个 shell 和一个 Python —— 就是你接下来要给连接器用的那个。构建过程会
+**逐家跑一次冒烟自检**，所以能装配出来的树，它的核心就是完整的。
+
+（每个 release 也会附一个构建好的 `agent-avatar-connectors.zip`，不想自己构建就用它。）
+
+---
+
+## 安装
+
+五家里有三家读一个 *marketplace*（一个带清单的目录）。它们的清单文件名互不相同，
+所以同一个目录能同时服务三家。另外两家装法不同，各有一节。
 
 ### Claude Code
 
-**macOS / Linux**
-
 ```
-claude plugin marketplace add {{REPO}}
-claude plugin install agent-avatar@agent-avatar
-```
-
-**Windows** —— 多一步「本地化」，因为 `python3` 在 Windows 上不是 Python
-（它是一个 0 字节的应用商店占位程序，能启动、打印「Python was not found」、然后退出）：
-
-```
-git clone https://github.com/{{REPO}} agent-avatar-connectors
-cd agent-avatar-connectors
 python localize.py claude-code
 claude plugin marketplace add ./
 claude plugin install agent-avatar@agent-avatar
 ```
 
-装完**新开一个会话**（或在会话里 `/reload-plugins`）才生效。
+`localize.py` 会把**正在跑它的那个解释器**写进 hook 的命令行。Windows 上这一步不是可选的：
+那里的 `python3` **不是 Python** —— 它指向一个 0 字节的微软商店占位程序，启动、打印
+"Python was not found"、以 9009 退出。9009 不是 2，所以没有任何一家 harness 会当成失败，
+唯一的症状是形象永远不动。macOS 上也值得跑：它会把解释器钉死，而不是留着
+`/usr/bin/python3` —— 在没装 Xcode 命令行工具的 Mac 上那是个会弹安装框的占位程序。
+
+装完**开一个新会话** —— 插件是在会话启动时加载的。
 
 ### WorkBuddy / CodeBuddy Code
 
-与 Claude Code 完全同形，把 `claude` 换成 `codebuddy`、`localize.py` 的参数换成 `workbuddy`。
+形状一样：把 `claude` 换成 `codebuddy`，`localize.py` 的参数用 `workbuddy`。
 
-🔴 **装进哪个配置目录是关键**：同一个 CLI 有两个 home —— **app 读 `~/.workbuddy`**，
-独立 CLI 默认读 `~/.codebuddy`。装错的表现最迷惑人：**命令行怎么测都正常、app 里完全没反应**。
-只用 app 的话，先设 `CODEBUDDY_CONFIG_DIR` 指到 `~/.workbuddy` 再装。
+🔴 **装进哪个配置目录很要紧。** 同一个 CLI 有两个 home：**app 读 `~/.workbuddy`**，
+而独立 CLI 默认读 `~/.codebuddy`。装错那个是所有故障里最让人迷惑的一种 ——
+**命令行怎么测都正常，app 里完全没反应**。如果你只用 app，装之前把
+`CODEBUDDY_CONFIG_DIR` 指到 `~/.workbuddy`。
 
 装完**重启 WorkBuddy app**（插件在启动时才加载）。
 
 ### Codex
 
-**macOS / Linux**
-
 ```
-codex plugin marketplace add {{REPO}}
-codex plugin install agent-avatar@agent-avatar
-```
-
-**Windows** —— ChatGPT app **不带 codex CLI**，所以要手工登记（脚本会把要加的两段算好）：
-
-```
-git clone https://github.com/{{REPO}} agent-avatar-connectors
-cd agent-avatar-connectors
 python localize.py codex
-python localize.py codex --print-registration
+codex plugin marketplace add ./
+codex plugin add agent-avatar@agent-avatar
 ```
 
-把最后一条打印出来的两段追加到它指出的那个 `config.toml`（先备份），然后**完全退出 ChatGPT app 再打开**。
+🔴 Codex 的动词是 **`plugin add` / `plugin remove`**，不是 install/uninstall。
 
-🔴 **最后一步只能你自己点**：在 Codex 会话里跑 `/hooks`，逐条信任 Agent Avatar 的 hook。
-启用插件**不会**自动信任它的 hook，而未授信的 hook 会被**静默跳过** ——
-表现就是「插件明明是启用的，但形象不动」。这是安全设计，不是故障。
-（connector 升级后要重新授信：Codex 按 hook 的内容哈希记忆信任。）
+🔴 **Windows 上 `codex` 不在 PATH 里，但它确实存在。** ChatGPT app 自带它，装在
+`%LOCALAPPDATA%\OpenAI\Codex\bin\<哈希>\codex.exe` —— 目录名是构建哈希，取最新的那个、
+用绝对路径调。（我们曾经有很长一段时间以为 Windows 版根本没有这个 CLI，并据此写了一整条
+改配置文件的岔路。那是错的，而且更糟：那条路是个**半装** —— `codex plugin add` 还会把插件
+拷进 `~/.codex/plugins/cache/…` 并把**那一份**报成真正加载的副本，手改 `config.toml`
+永远产生不出它。）
 
-### DeepSeek Harness (dsh)
+装完有两步只能你自己做：
 
-dsh 没有「插件市场」式的安装命令，装法是往它的用户 patch 层加一条 entry：
+1. **完全退出再打开 ChatGPT app** —— 插件在启动时才被发现。
+2. **在 Codex 会话里跑 `/hooks`，逐条授信。** 启用插件**不会**自动信任它的 hook，
+   未授信的 hook 会被静默跳过。这是安全设计，不是故障。信任是按 hook 的**内容哈希**记的，
+   所以 connector 每次升级之后都要重新授信一次。
+
+### DeepSeek Harness（dsh）
+
+dsh 根本没有插件 CLI：登记本身就是它 patch 文件里的一条。
 
 ```
-git clone https://github.com/{{REPO}} agent-avatar-connectors
-cd agent-avatar-connectors
-python localize.py dsh            # 仅 Windows 需要
-python localize.py dsh --print-registration
+python localize.py dsh --register
 ```
 
-把打印出来的那一段追加到 `$DSH_HOME/cordis.patch.yml`（默认 `~/.dsh`，先备份）。
-那个文件被 dsh 的 HMR 监视着 —— **正在跑的 dsh 会热加载，不用重启**。
+它会写 `$DSH_HOME/cordis.patch.yml`（默认 `~/.dsh`），动手前先备份原文件。这一步是幂等的
+—— 连早先手工粘贴进去、没有标记的那种条目也认得出来 —— `--unregister` 原样撤销。
+只想看看那一段而不写文件，用 `--print-registration`。
 
-> Windows 上那个 `name` **必须是 `file:///` 开头的 URL**：dsh 把它当 ESM specifier 直接
-> `import()`，而 Node 会把 `C:/…` 的盘符当成协议名（`ERR_UNSUPPORTED_ESM_URL_SCHEME`）。
-> 上面那条命令已经算好了，别自己拼。
+那一条的 `name` **必须是 `file:///` URL**：dsh 会把它当 ES 模块标识符去 import，而 Node 会
+把 `C:/…` 的盘符当成协议名。脚本写得对，手拼的十有八九不对，而且**错了没有任何声音**
+（这条链路把插件的 stderr 丢弃了）。
 
 ### Hermes
 
-Hermes 有自己的插件 CLI（只认 git 来源，支持子目录，能钉死 commit SHA）：
+Hermes **只认 git 源** —— 一个 URL、`owner/repo`，或者它索引里的一个名字。它不接受本地目录；
+而且 `file://` **不支持** `owner/repo/子目录` 那种写法：你指给它什么，它就整个 clone 下来，
+所以插件的 `plugin.yaml` 必须在那个仓库的**根**上。
+
+那就现造一个。在构建出来的树里：
 
 ```
-hermes plugins install {{REPO}}/plugins/hermes/agent-avatar --enable
+cp -r plugins/hermes/agent-avatar /tmp/agent-avatar-hermes
+cd /tmp/agent-avatar-hermes && git init -q && git add -A && git commit -qm bundled
+hermes plugins install "file:///tmp/agent-avatar-hermes" --enable
 hermes plugins doctor agent-avatar
-hermes gateway restart
 ```
 
-`doctor` 应当报 `OK: runtime discovery, manifest parsing, import, and registration passed`
-以及 `10 hook(s)`。
+`doctor` 应当报 `OK: runtime discovery, manifest parsing, import, and registration
+passed` 以及 `10 hook(s)`。app 就是这么做的 —— 它靠这条路让装 Hermes 也不需要联网。
 
-> 这个插件是按「不需要 --force 就能过 Hermes 安全扫描」写的。那个扫描是对每个文件
-> 做裸词正则，所以 connector 连注释里都避开了会命中的词。将来若真被拦下，
-> 请先看清楚它报的是什么再考虑 `--force` —— 那道门存在的意义就是让人看一眼。
+🔴 **别把 Hermes 指向 app 仓库里那个插件源码目录。** 那里没有 `state_machine.py`
+（共享核心是构建时才拷进去的），装出来的插件 import 不了自己。
 
-Hermes 是五家里唯一不需要「本地化」的：它的插件是 in-process 的 Python 包，
-跑在 Hermes 自己的解释器里，不 spawn 任何子进程。
+Hermes 是五家里唯一不需要本地化的：它的插件是 in-process 的 Python 包，跑在 Hermes 自己的
+解释器里，不 spawn 任何进程。
 
 ---
 
 ## 怎么确认它真的通了
 
-🔴 **不要看「命令有没有报错」。** hook 的设计是**永远 exit 0**
-（退出码 2 在 Claude Code / Codex 里是 block，会拦住你的 agent），所以退出码说明不了任何事。
+🔴 **别以「命令没报错」为准。** hook 被设计成**永远 exit 0**（退出码 2 在 Claude Code 和
+Codex 里表示拦截，会挡住你的 agent），所以它的退出码什么也证明不了。
 
-要看**状态文件**：
+看**状态文件**：
 
 | | 路径 |
 |---|---|
 | Windows | `%TEMP%\agent-avatar-state.<harness>.json` |
 | macOS / Linux | `$TMPDIR/agent-avatar-state.<harness>.json`（没有 `TMPDIR` 就是 `/tmp`） |
 
-（Hermes 沿用无后缀的 `agent-avatar-state.json`。）
+（Hermes 沿用无后缀的老路径 `agent-avatar-state.json`。）
 
-让 agent 干一件带工具调用的事，这个文件的 `state` 应当走过：
+让 agent 做一件会调用工具的事，文件里的 `state` 应当依次走过：
 
 ```
 idle → writing → executing → writing → idle
 ```
 
-出错时还会有一份 `agent-avatar-diagnostic.<harness>.json`，里面记着时间、版本、
-**它用的解释器路径**和错误内容 —— 「装了但不动」十有八九是解释器不对。
+出错时还会有一个 `agent-avatar-diagnostic.<harness>.json`，记着时间、版本、
+**它用的那个解释器**和错误内容 —— 「装了但不动」十有八九是解释器不对。
 
-## 装了却一直不动？
+## 装了但什么都没发生？
 
-按可能性从高到低：
+按概率排：
 
 1. **还没开新会话** —— 插件在会话启动时加载，已经在跑的会话不会自己加载。
-2. **没做完那一步人工动作** —— Codex 要 `/hooks` 授信、WorkBuddy 要重启 app、
+2. **还有一步人工的没做** —— Codex 要 `/hooks` 授信，WorkBuddy 要重启 app，
    Hermes 要 `gateway restart`。
-3. **杀毒软件把文件删了。** 已知卡巴斯基会把这类文件判成 `PDM:Trojan.Win32.Generic`
-   并**直接删除**，而删完之后表现就是「装了但不动」。去它的隔离区找一下。
-4. **这台机器上没有可用的 Python**：`python -c "import sys; print(sys.executable)"`。
-   Windows 上 `python3` 常常是那个 0 字节的商店占位程序。
-   没有的话：`winget install Python.Python.3.13`（Windows）/ `xcode-select --install`（macOS）。
+3. **杀毒软件把文件删了。** 已知卡巴斯基会把这类文件判成 `PDM:Trojan.Win32.Generic` ——
+   那是对「未签名脚本修改另一个应用的配置」这个**行为**的误报。去它的隔离区找一下。
+   症状和装失败完全一样：文件就是没了。
+4. **没有可用的 Python。** Windows 上 `python3` 常常就是上面说的那个占位程序。
+   `python -c "import sys; print(sys.executable)"` 会告诉你手上到底是什么。
 
 ## 卸载
 
-各家用自己的命令（`claude plugin uninstall agent-avatar` / `codebuddy plugin uninstall
-agent-avatar` / `hermes plugins remove agent-avatar`），Codex 从 `config.toml` 里删掉那两段，
-dsh 从 `cordis.patch.yml` 里删掉 `# >>> agent-avatar (managed) >>>` 那一段。
+用各家自己的命令，插件名要用**全名**：
 
-> ⚠️ **Windows 上 `hermes plugins remove` 会只做一半**（2026-09-03 实测）：
-> 它把插件目录改名成 `.agent-avatar.remove-xxxx` 之后删不掉（git 的 pack 文件是只读的，
-> 它的删除处理不了这个），于是 `config.yaml` 里的 `plugins.enabled` 还留着 `agent-avatar`,
-> 而目录已经不在了 —— 列表里显示 enabled，实际加载不到。手工收尾两步：
-> 从 `config.yaml` 的 `plugins.enabled` 里删掉那一行，再删掉
-> `%LOCALAPPDATA%\hermes\plugins\.agent-avatar.remove-*`（先去掉只读属性）。
-> 这是 Hermes 自己的 Windows 问题，不是这个插件的。
+```
+claude    plugin uninstall agent-avatar@agent-avatar   &&  claude    plugin marketplace remove agent-avatar
+codebuddy plugin uninstall agent-avatar@agent-avatar   &&  codebuddy plugin marketplace remove agent-avatar
+codex     plugin remove    agent-avatar@agent-avatar   &&  codex     plugin marketplace remove agent-avatar
+```
+
+🔴 短名在 **WorkBuddy 上会直接失败**（`Marketplace undefined is not found.`）而插件原样留着。
+它可能看起来成功了 —— 因为下一步删 marketplace 会顺带把插件带走 —— 直到哪天不再顺带为止。
+
+dsh：`python localize.py dsh --unregister`。
+
+Hermes **要先 disable 再 remove**：
+
+```
+hermes plugins disable agent-avatar
+hermes plugins remove  agent-avatar
+```
+
+单独跑 `remove` 会把条目留在 `config.yaml` 的 `plugins.enabled` 里，于是列表显示启用、
+实际什么都加载不了。而且 Windows 上 `remove` 只做一半：它把目录改名成
+`.agent-avatar.remove-xxxx` 之后删不掉（它 clone 下来的 git pack 文件是只读的），
+所以要去掉只读属性、手动删掉 `%LOCALAPPDATA%\hermes\plugins\` 下那个残骸。
+这是 Hermes 自己在 Windows 上的行为，不是插件的问题 —— app 会替你清掉。
 
 ## 这里面有什么
 
 ```
-.claude-plugin/marketplace.json      Claude Code 读这份
-.agents/plugins/marketplace.json     Codex 读这份
-.codebuddy-plugin/marketplace.json   WorkBuddy 读这份
-plugins/<harness>/agent-avatar/      五家各自的插件树
-localize.py                          Windows 上把解释器换成本机绝对路径那一步
+plugins/<harness>/agent-avatar/    每家一棵插件树
+localize.py                        把这台机器的解释器写进 hook
+.claude-plugin/  .agents/  .codebuddy-plugin/    三家的 marketplace 清单
 ```
 
-`localize.py` 改完会**当场自检**：喂一条真事件进去，确认状态文件真的落盘才算成功。
-
-桌面应用本体在 [joyparkray/agent-avatar](https://github.com/joyparkray/agent-avatar)。
-connector 和 app 分开发布 —— 改 connector 不需要你重装 app。
-
-MIT。
+五棵树各自带着同一份核心（`state_machine.py`）的副本，它把各家的事件翻译成同一套状态词表。
+适配器各不相同，状态机不能 —— 它是和 app 之间的契约，在那儿分叉的表现是
+「形象显示了错的状态」，而那种事几周都不会有人发现。

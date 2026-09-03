@@ -2,12 +2,12 @@
 # 组装**自包含**的插件目录。
 #
 # 为什么需要这一步：状态机与翻译层的单一真相在 `core/`，而插件分发要求插件目录自包含 ——
-# marketplace 装给用户的就是仓库里那棵树，没人替他跑 install-plugin.sh。少了 core 的话
+# app 装给用户的就是这棵树里的一份拷贝，没有别的脚本会再补什么。少了 core 的话
 # hook 起来 import 失败、`python3` 以退出码 2 退出，正好踩中「退出码 2 = block」那颗雷。
 # 所以组装 = 把 core 拷进插件骨架，输出一棵可直接分发、也可直接安装的树。
 #
 # 用法：
-#   assemble.sh <harness> <target>   组装一家到指定目录（install-plugin.sh 走这条）
+#   assemble.sh <harness> <target>   组装一家到指定目录（build-bundle.sh 走这条）
 #   assemble.sh all                  组装五家到 release/connectors/<harness>/（发布走这条）
 #
 # 组装完会跑一次冒烟自检：喂一条事件给**组装后的**脚本，确认它能独立跑起来并落盘。
