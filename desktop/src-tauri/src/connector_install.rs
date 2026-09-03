@@ -306,13 +306,28 @@ fn owned(pair: (&str, &str)) -> (String, String) {
 // 打包进来的那份 & 工作副本
 // ---------------------------------------------------------------------------
 
+/// 把一段用 `/` 写的相对路径接到 `base` 后面 —— **一段一段接**。
+///
+/// 🔴 **不能写成 `base.join("a/b")`。** Windows 上 `resource_dir()` 返回的是 `\\?\` 开头的
+/// **verbatim 路径**，而 verbatim 路径**关闭了路径规范化**：里面的 `/` 不再被当作分隔符，
+/// 于是 `\\?\C:\app\resources/connectors` 这种东西**根本解析不到**，`is_dir()` 直接为假。
+///
+/// 2026-09-03 实机撞到：便携版点「安装」报「app 里没有连接器树」，而那个目录明明在。
+/// 单独验过：普通路径无论用哪种斜杠都能解析，verbatim 路径只认反斜杠。
+///
+/// 这个坑只在 verbatim 路径上出现，所以它**只在打包后的真 app 里发作** —— 开发时、
+/// 测试里都摸不到，因为那些路径是我们自己拼的普通路径。
+fn joined(base: &Path, relative: &str) -> PathBuf {
+    relative.split('/').filter(|part| !part.is_empty())
+        .fold(base.to_path_buf(), |path, part| path.join(part))
+}
+
 /// app 里带的连接器树与解释器。
 fn bundled(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
-    let root = app.path().resource_dir()
-        .map_err(|error| format!("找不到资源目录：{error}"))?
-        .join("resources/connectors");
+    let root = joined(&app.path().resource_dir()
+        .map_err(|error| format!("找不到资源目录：{error}"))?, "resources/connectors");
     let tree = root.join("marketplace");
-    let python = root.join(if cfg!(windows) { "python/python.exe" } else { "python/bin/python3" });
+    let python = joined(&root, python_relative());
     if !tree.is_dir() {
         return Err(format!("app 里没有连接器树（{}）—— 构建时漏跑 connectors/build-bundle.sh", tree.display()));
     }
@@ -371,7 +386,7 @@ fn lay_out_tree(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
     let root = working_root(app)?;
     let slot = root.join("versions").join(&version);
     let tree = slot.join("marketplace");
-    let python = slot.join(python_relative());
+    let python = joined(&slot, python_relative());
 
     if !tree.is_dir() || !python.is_file() {
         // 先铺进暂存目录再整体改名：中途失败（磁盘满、被杀软拦）时留下的是一个带 `.staging-`
@@ -559,7 +574,7 @@ fn smoke_test(tree: &Path, harness: &str, python: &Path) -> Result<(), String> {
     let event = format!("{{\"hook_event_name\":\"{}\",\"session_id\":\"install\",\"turn_id\":\"1\"}}",
                         layout.event);
     let mut command = Command::new(python);
-    command.arg(tree.join(harness_relative(harness)).join(hook))
+    command.arg(joined(&tree.join(harness_relative(harness)), hook))
         .env("TMPDIR", &scratch).env("TEMP", &scratch).env("TMP", &scratch)
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .stdin(std::process::Stdio::piped())
@@ -751,7 +766,7 @@ fn record_install(harness: &str, source: &Path, python: &Path, version: &str) ->
 
 /// 打包进来的那份 core 里写的版本号 —— 它会被写进每一次状态快照。
 fn bundled_version(tree: &Path) -> String {
-    let core = tree.join(harness_relative("claude-code")).join("hooks/state_machine.py");
+    let core = joined(&tree.join(harness_relative("claude-code")), "hooks/state_machine.py");
     fs::read_to_string(core).ok()
         .and_then(|text| text.lines()
             .find_map(|line| line.strip_prefix("CONNECTOR_VERSION = \"")
@@ -777,7 +792,7 @@ pub(crate) fn install_into(tree: &Path, python: &Path, harness: &str, hermes_dir
     //    先登记再改文件的话，改的是没人加载的那一份。
     let command_python = command_line_path(python);
     if let Some(config) = layout(harness).config {
-        let path = plugin.join(config);
+        let path = joined(&plugin, config);
         if config.ends_with(".mjs") {
             rewrite_index_mjs(&path, &command_python)?;
         } else {
@@ -955,8 +970,8 @@ pub fn uninstall_connector(app: tauri::AppHandle, harness: String) -> Result<Val
 
 #[cfg(test)]
 mod tests {
-    use super::{command_line_path, edit_dsh_registration, file_url, harness_relative,
-                rewrite_hooks_json, rewrite_index_mjs, smoke_test};
+    use super::{command_line_path, edit_dsh_registration, file_url, harness_relative, joined,
+                python_relative, rewrite_hooks_json, rewrite_index_mjs, smoke_test};
     use std::{env, fs, path::PathBuf, sync::{Mutex, MutexGuard}};
 
     /// 🔴 改环境变量的测试必须串行。cargo 默认并行跑，而 `DSH_HOME` 是**进程级**的 ——
@@ -981,9 +996,9 @@ mod tests {
     /// 打包产物在不在（`connectors/build-bundle.sh` + `fetch-python.sh` 的输出）。
     /// 没构建过就跳过那几条 —— 它们测的是产物本身，不是代码。
     fn bundle() -> Option<(PathBuf, PathBuf)> {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/connectors");
+        let root = joined(&PathBuf::from(env!("CARGO_MANIFEST_DIR")), "resources/connectors");
         let tree = root.join("marketplace");
-        let python = root.join(if cfg!(windows) { "python/python.exe" } else { "python/bin/python3" });
+        let python = joined(&root, python_relative());
         if tree.is_dir() && python.is_file() { Some((tree, python)) } else { None }
     }
 
@@ -1222,6 +1237,22 @@ mod tests {
         assert!(!needs_refresh(Some("1.1.0"), "1.1.0"));
         // 读不到装机记录 = 更早的装法装的，没有证据说它旧了，别碰
         assert!(!needs_refresh(None, "1.1.0"));
+    }
+
+    /// 🔴 Windows 的 verbatim 路径（`\\?\C:\...`）**关闭了路径规范化**：里面的 `/` 不再是
+    /// 分隔符。而 `resource_dir()` 返回的正是这种路径 —— 于是 `join("resources/connectors")`
+    /// 拼出来的东西根本解析不到，表现是「app 里没有连接器树」，而那个目录明明在。
+    ///
+    /// 这个坑只在打包后的真 app 里发作：开发和测试里的路径都是我们自己拼的普通路径。
+    #[test]
+    fn a_relative_path_is_joined_one_segment_at_a_time() {
+        let base = PathBuf::from("base");
+        assert_eq!(joined(&base, "a/b/c"), base.join("a").join("b").join("c"));
+        // 拼出来的东西里不能留下正斜杠
+        assert!(!joined(&base, "a/b").to_string_lossy().contains('/'),
+                "{}", joined(&base, "a/b").display());
+        assert_eq!(joined(&base, "one"), base.join("one"));
+        assert_eq!(joined(&base, ""), base);
     }
 
     /// 五家的插件树位置是一张表，改布局就要改它 —— 对不上的症状是「装好了，什么也不发生」。

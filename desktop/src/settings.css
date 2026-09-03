@@ -21,6 +21,10 @@ section + section { margin-top: 20px; padding-top: 16px; border-top: 1px solid c
 h2 { font-size: 13px; margin: 0 0 8px; opacity: .55; font-weight: 600; letter-spacing: .04em; }
 h3 { font-size: 13px; margin: 0; font-weight: 600; }
 .hint { margin: 0 0 10px; opacity: .55; }
+/* 🔴 `[hidden]` 的 `display:none` 来自浏览器默认样式表，**优先级低于任何作者规则** ——
+   下面那些 `display: grid` 会把它盖掉，于是设成 hidden 的行照样显示。
+   2026-09-03 实机撞到：设置一打开，「去下载」按钮就杵在那儿，而那时还没查过更新。 */
+[hidden] { display: none !important; }
 .row { display: grid; grid-template-columns: 1fr; gap: 4px; margin-bottom: 12px; }
 .row span { display: flex; justify-content: space-between; }
 .row b { font-variant-numeric: tabular-nums; font-weight: 600; }
