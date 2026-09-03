@@ -144,6 +144,21 @@ describe("connector install wizard", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("stops saying \"waiting for the first session\" once that stops being true", () => {
+    // 装了两天还没上报时，这句就成了安慰话 —— 而它正上方会写着「一直没通？可能是这些原因」。
+    // 两句自相矛盾，实机渲染出来一眼就看见（dsh 那一行），光读代码发现不了。
+    for (const locale of ["zh-CN", "en"] as const) {
+      const fresh = statusLabel("unconfigured", "dsh", locale, true);
+      const stale = statusLabel("unconfigured", "dsh", locale, false);
+      expect(fresh).toMatch(/等待首次会话|waiting for the first session/);
+      expect(stale).not.toBe(fresh);
+      expect(stale).toMatch(/一直没有上报|never reported/);
+      // 有人工步骤的那几家不走这条分支：对它们「需人工配置」才是实话
+      expect(statusLabel("unconfigured", "codex", locale, false))
+        .toBe(CONNECTOR_TEXT[locale]["link.unconfigured"]);
+    }
+  });
+
   it("says something different when it used to work", () => {
     // 「从没上报过」和「以前是通的、升级后断了」是两种处境，话不能一样 ——
     // 后者最常见的原因是 Codex 按 hook 内容哈希记信任，升级后要重新 /hooks 授信。

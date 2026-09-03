@@ -880,6 +880,54 @@ pub fn install_connector(app: tauri::AppHandle, harness: String) -> Result<Value
     install_into(&tree, &python, &harness, &hermes_dir)
 }
 
+/// 这一家要不要重铺一遍。
+///
+/// 两种「不要」都很重要：**版本相同**时重装等于每次打开接入页面都去跑五家的 CLI；
+/// **读不到装机记录**时那多半是更早的装法留下的，能用就别碰 —— 我们没有证据说它旧了。
+fn needs_refresh(installed: Option<&str>, bundled: &str) -> bool {
+    matches!(installed, Some(version) if version != bundled)
+}
+
+/// 把已经装着的那几家**对齐到 app 自带的这一版**。
+///
+/// 🔴 connector 随 app 一起发布，所以 app 一升级，五家里装着的就都是上一版了。没有这一步，
+/// 打包带来的「永远同版本」只是句空话：文件是新的，harness 里跑的还是旧的。
+///
+/// 只在**确实不同**的时候动手（正常情况一次 CLI 都不会调），而且失败不打断别家 ——
+/// 一家的 CLI 出问题不该让另外四家也停在旧版。
+///
+/// 顺带，这一步是「升级后没连上」那一档能被看见的**前提**：重装写下新的装机记录之后，
+/// 升级前那个旧状态文件就比这次安装旧了，界面才分得出「以前是通的」和「从没通过」。
+/// Codex 尤其需要 —— 它按 hook 的内容哈希记信任，一升级就必须重新 /hooks 授信，
+/// 而在此之前界面只会说「还没上报过」，把一个用了几周的人说成新手。
+#[tauri::command(async)]
+pub fn reconcile_connectors(app: tauri::AppHandle) -> Result<Value, String> {
+    let (bundle_tree, _) = bundled(&app)?;
+    let bundled = bundled_version(&bundle_tree);
+    let mut refreshed = Vec::new();
+    let mut failed = Vec::new();
+
+    for harness in HARNESSES {
+        if !crate::connectors::is_installed(harness) { continue; }
+        // 装机记录里记的是**我们装进去的那一版**，而不是它上报的版本 —— 上报要等下一个
+        // 会话，而这里要判断的是「文件是不是旧的」。读不到记录时不动它：那多半是更早的
+        // 装法留下的，能用就别碰。
+        let installed = crate::hermes::install_record(harness)
+            .and_then(|record| record.get("connector_version")
+                .and_then(Value::as_str).map(str::to_owned));
+        if !needs_refresh(installed.as_deref(), &bundled) { continue; }
+
+        match lay_out_tree(&app).and_then(|(tree, python)| {
+            let hermes_dir = working_root(&app)?.join("hermes-repo");
+            install_into(&tree, &python, harness, &hermes_dir)
+        }) {
+            Ok(_) => refreshed.push(json!({ "harness": harness, "from": installed, "to": &bundled })),
+            Err(error) => failed.push(json!({ "harness": harness, "error": error })),
+        }
+    }
+    Ok(json!({ "version": bundled, "refreshed": refreshed, "failed": failed }))
+}
+
 #[tauri::command(async)]
 pub fn uninstall_connector(app: tauri::AppHandle, harness: String) -> Result<Value, String> {
     if !HARNESSES.contains(&harness.as_str()) {
@@ -1149,6 +1197,17 @@ mod tests {
         let names = subcommands(codex);
         assert!(names.iter().any(|name| name == "add"), "{names:?}");
         assert!(names.iter().any(|name| name == "rm"), "{names:?}");
+    }
+
+    /// 判断错的方向不同，代价也不同：多装一次是每次打开页面都跑五家 CLI，
+    /// 少装一次是 app 升级了而 harness 里跑的还是旧 connector。
+    #[test]
+    fn a_connector_is_refreshed_only_when_we_know_it_is_old() {
+        use super::needs_refresh;
+        assert!(needs_refresh(Some("1.0.0"), "1.1.0"));
+        assert!(!needs_refresh(Some("1.1.0"), "1.1.0"));
+        // 读不到装机记录 = 更早的装法装的，没有证据说它旧了，别碰
+        assert!(!needs_refresh(None, "1.1.0"));
     }
 
     /// 五家的插件树位置是一张表，改布局就要改它 —— 对不上的症状是「装好了，什么也不发生」。

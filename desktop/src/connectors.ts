@@ -87,9 +87,15 @@ export function linkState(
  * Claude Code 与 dsh 装完即用，对它们说「需人工配置」是把用户支去做一件不存在的事 ——
  * 真正的原因是还没开过新会话。标签因此分成两句，其余两档共用。
  */
-export function statusLabel(state: LinkState, harness: string, locale: Language): string {
+export function statusLabel(state: LinkState, harness: string, locale: Language,
+                            fresh = true): string {
   if (state === "unconfigured" && postInstallSteps(harness, locale).length === 0) {
-    return locale === "en" ? "Installed · waiting for the first session" : "插件已安装，等待首次会话";
+    // 🔴 「等待首次会话」只在**刚装完**时是真话。装了两天还没上报的时候它就成了安慰话 ——
+    // 而它正上方那一行会写着「一直没通？可能是这些原因」，两句自相矛盾。
+    // 实机渲染出来一眼就看见了（dsh 那一行），光读代码不会发现。
+    return fresh
+      ? (locale === "en" ? "Installed · waiting for the first session" : "插件已安装，等待首次会话")
+      : (locale === "en" ? "Installed, but never reported" : "插件已安装，但一直没有上报");
   }
   return CONNECTOR_TEXT[locale][`link.${state}`];
 }
@@ -126,7 +132,7 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "diagnosis.python": "它用的解释器：",
     "diagnosis.title": "一直没通？可能是这些原因：",
     "diagnosis.regressed": "以前是通的，这次安装之后还没有上报过 —— 开一个新会话试试。",
-    "diagnosis.regressed.codex": "Codex 按 hook 的内容哈希记忆信任，所以 connector 一升级就要**重新授信**：在 Codex 会话里跑 /hooks，逐条通过。",
+    "diagnosis.regressed.codex": "Codex 按 hook 的内容哈希记忆信任，所以 connector 一升级就要重新授信：在 Codex 会话里跑 /hooks，逐条通过。",
     "diagnosis.fresh": "刚装好，等你开一个新会话就会生效。",
     "diagnosis.freshVerified": "刚装好，安装时已自检通过 —— 等你开一个新会话就会生效。",
     done: "完成",
@@ -156,7 +162,7 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "diagnosis.python": "Interpreter it used: ",
     "diagnosis.title": "Still not connected? It could be:",
     "diagnosis.regressed": "This used to work, but nothing has been reported since this install — start a new session.",
-    "diagnosis.regressed.codex": "Codex keys hook trust to the hook's content hash, so a connector upgrade needs **re-trusting**: run /hooks in a Codex session and approve each one.",
+    "diagnosis.regressed.codex": "Codex keys hook trust to the hook's content hash, so a connector upgrade needs re-trusting: run /hooks in a Codex session and approve each one.",
     "diagnosis.fresh": "Just installed. It takes effect when you start a new session.",
     "diagnosis.freshVerified": "Just installed and self-tested at install time — it takes effect when you start a new session.",
     done: "Done",
@@ -249,7 +255,13 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
     ).then(() => onChange?.());
   };
 
-  void listConnectors().catch(error => {
+  // 🔴 先对齐再读状态。connector 随 app 一起发布，所以 app 一升级，装着的就都是上一版了 ——
+  // 不先重装一遍，「永远同版本」只是句空话（文件是新的，harness 里跑的还是旧的）。
+  // 版本一致时它一次 CLI 都不会调，所以正常打开这个页面没有额外开销。
+  //
+  // 对齐失败不该挡住页面：读不到状态才是真的什么都做不了，而某一家装不上时，
+  // 用户至少要能看见另外四家和那一行报错。
+  void invoke("reconcile_connectors").catch(() => undefined).then(() => listConnectors()).catch(error => {
     host.textContent = "";
     const failed = document.createElement("p");
     failed.className = "connector-status error";
@@ -279,8 +291,11 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
       const link = document.createElement("p");
       link.className = "connector-link";
       const dot = document.createElement("i"); dot.className = "dot";
+      // 「刚装完」既决定状态行怎么说，也决定要不要摊开猜测清单 —— 一处算，两处用
+      const installedAt = entry.installRecord?.at || entry.installedAt;
+      const freshInstall = installedAt ? Date.now() - Date.parse(installedAt) < FRESH_INSTALL_MS : false;
       const linkText = document.createElement("span");
-      linkText.textContent = statusLabel(state, harness, locale);
+      linkText.textContent = statusLabel(state, harness, locale, freshInstall);
       if (state === "connected" && typeof entry.lastSignalSeconds === "number") {
         linkText.textContent += ` · ${freshness(entry.lastSignalSeconds, locale)}`;
       }
@@ -305,7 +320,11 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
       const showDetails = (on: boolean) => { details.hidden = !on; toggle.setAttribute("aria-expanded", String(on)); };
       toggle.addEventListener("click", () => showDetails(details.hidden));
       // 需人工配置时直接摊开：这一档的用户正卡在这里，还要他多点一次才看得到步骤没有道理。
-      if ((state === "unconfigured" || state === "regressed") && steps.length > 0) showDetails(true);
+      // 只有「装了但从没上报」才自动摊开手动步骤：那一档我们不知道卡在哪，而步骤就是答案。
+      // 「升级后没连上」不摊 —— 它下面已经有一句针对性的原因了，再把同样的话摊开一遍，
+      // 就变成同一件事说两遍（实机看渲染效果才发现：Codex 那一行把「去 /hooks 授信」
+      // 说了三遍，加起来十几行，而读它的人正卡着）。
+      if (state === "unconfigured" && steps.length > 0) showDetails(true);
       actions.append(toggle);
 
 
@@ -345,8 +364,6 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
         // 「装了但从没上报」在刚装完的几分钟里是**正常的**（还没开新会话），
         // 过了一天才是故障。原来这两种情况给的是同一段五条排查清单 ——
         // 对刚装完的人来说，那等于告诉他「你可能哪儿都错了」，而其实他什么都没做错。
-        const installed = entry.installRecord?.at || entry.installedAt;
-        const freshInstall = installed ? Date.now() - Date.parse(installed) < FRESH_INSTALL_MS : false;
         const title = document.createElement("p");
         title.className = "connector-diagnosis-title";
         title.textContent = state === "regressed"
@@ -375,9 +392,15 @@ ${text("diagnosis.python")}${entry.diagnostic.python}`;
           diagnosis.append(said);
         }
         const reasons = document.createElement("ul");
-        // 刚装完那几分钟不摊清单：那时「还没上报」是正常的（还没开新会话），
-        // 给他五条「可能是」等于告诉他「你可能哪儿都错了」，而他什么都没做错。
-        if (!freshInstall || state === "regressed") {
+        // 🔴 **知道原因的时候就别再猜。** 两种情况都不摊这张清单：
+        //
+        // - 刚装完那几分钟：「还没上报」这时是正常的（还没开新会话），给他五条「可能是」
+        //   等于告诉他「你可能哪儿都错了」，而他什么都没做错。
+        // - 升级后没连上：原因上面已经写清楚了。实机看过一次渲染效果才发现，Codex 那一档
+        //   会把「去 /hooks 授信」说三遍（安装说明一遍、专属原因一遍、猜测清单里再一遍），
+        //   加起来十来行 —— 而读它的人正卡着。
+        const guessing = !freshInstall && state !== "regressed";
+        if (guessing) {
           for (const reason of diagnosisReasons(harness, locale)) {
             const item = document.createElement("li"); item.textContent = reason; reasons.append(item);
           }

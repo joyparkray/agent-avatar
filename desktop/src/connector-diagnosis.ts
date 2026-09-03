@@ -45,7 +45,7 @@ export function diagnosisReasons(harness: string, locale: Language): string[] {
       ? ["插件文件在，但没被登记 —— 光把文件拷进插件目录是不会被发现的，要在 marketplace 里注册并安装。跑 claude plugin list 看它是不是 enabled。"]
       : ["The files are there but the plugin isn't registered — copying files into the plugin folder is not enough; it must be added as a marketplace and installed. Run claude plugin list and check it says enabled."],
     codex: zh
-      ? ["hooks 还没授信。这是最常见的一条：启用插件**不会**自动信任它的 hook，未授信的 hook 会被一直跳过 —— 这是安全设计，不是故障。在 Codex 会话里跑 /hooks 逐条授信。",
+      ? ["hooks 还没授信。这是最常见的一条：启用插件不会自动信任它的 hook，未授信的 hook 会被一直跳过 —— 这是安全设计，不是故障。在 Codex 会话里跑 /hooks 逐条授信。",
          "ChatGPT app 没有完全退出再打开。插件在启动时才被发现。",
          "connector 升级后需要重新授信：Codex 按 hook 的内容哈希记忆信任。"]
       : ["The hooks aren't trusted yet. This is the most common one: enabling a plugin does not trust its hooks, and untrusted hooks are skipped silently — by design. Run /hooks inside a Codex session and trust each one.",
@@ -58,7 +58,7 @@ export function diagnosisReasons(harness: string, locale: Language): string[] {
          "It went into the wrong config directory. The same CLI has two homes: the app reads ~/.workbuddy, the standalone CLI defaults to ~/.codebuddy. Getting this wrong looks like \"works on the command line, does nothing in the app\"."],
     dsh: zh
       ? ["$DSH_HOME/cordis.patch.yml 里那段 agent-avatar 的 insert 不见了或被覆盖了。",
-         "插件里那次调用找不到 Python。dsh 这条链路把 stderr 丢弃了，所以失败时**一点声音都没有** —— 这是五家里最难查的一种。"]
+         "插件里那次调用找不到 Python。dsh 这条链路把 stderr 丢弃了，所以失败时一点声音都没有 —— 这是五家里最难查的一种。"]
       : ["The agent-avatar insert block in $DSH_HOME/cordis.patch.yml is gone or was overwritten.",
          "The plugin can't find Python. This path discards stderr, so the failure makes no sound at all — the hardest of the five to diagnose."],
     hermes: zh
