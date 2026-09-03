@@ -20,7 +20,6 @@ const MESSAGES: Record<Language, Record<string, Phrase>> = {
     "already-installed": name => `已经装过“${name}”了：先在模型文件夹里删掉它再重装。`,
     "too-large": () => "这个文件夹太大了，看起来不像一个模型目录。",
     "unknown-model": () => "找不到这个已安装模型，列表可能已经变了；重开设置再试。",
-    "unknown-harness": name => `不认识的 agent：${name}`,
   },
   en: {
     archive: () => "That is an archive: extract it first, then drag in the extracted folder.",
@@ -30,7 +29,6 @@ const MESSAGES: Record<Language, Record<string, Phrase>> = {
     "already-installed": name => `“${name}” is already installed: delete it from the models folder before reinstalling.`,
     "too-large": () => "That folder is too large to be a model folder.",
     "unknown-model": () => "That installed model is gone — the list may have changed. Reopen Settings and try again.",
-    "unknown-harness": name => `Unknown agent: ${name}`,
   },
 };
 

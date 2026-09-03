@@ -1,6 +1,6 @@
 import "./connectors.css";
 import { invoke } from "@tauri-apps/api/core";
-import { CONNECTOR_VERSION, diagnosePrompt, diagnosisReasons, installPrompt, isOutdated } from "./connector-diagnosis";
+import { CONNECTOR_VERSION, diagnosePrompt, diagnosisReasons, installPrompt, isOutdated, uninstallPrompt } from "./connector-diagnosis";
 import { errorMessage } from "./errors";
 import type { Language } from "./prefs";
 
@@ -95,6 +95,7 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "version.unknown": "版本未知",
     "prompt.update": "复制更新提示词",
     "prompt.install": "复制安装提示词",
+    "prompt.uninstall": "复制卸载提示词",
     "prompt.reinstall": "复制重装提示词",
     "prompt.copied": "已复制，贴给你的 agent 就行",
     "prompt.copyFailed": "复制不了，请手动选中下面这段：",
@@ -104,10 +105,7 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "diagnosis.fresh": "刚装好，等你开一个新会话就会生效。",
     "diagnosis.freshVerified": "刚装好，安装时已自检通过 —— 等你开一个新会话就会生效。",
     "diagnosis.ask": "复制排查提示词",
-    uninstall: "卸载", done: "完成",
-    "stage.removed": "已卸载",
-    uninstallConfirm: "再点一次「确认卸载」就会删除插件目录：",
-    uninstallAgain: "确认卸载",
+    done: "完成",
     listFailed: "读不到接入状态：",
     loading: "读取中…",
     skip: "以后再说",
@@ -125,6 +123,7 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "version.unknown": "unknown version",
     "prompt.update": "Copy update prompt",
     "prompt.install": "Copy install prompt",
+    "prompt.uninstall": "Copy uninstall prompt",
     "prompt.reinstall": "Copy reinstall prompt",
     "prompt.copied": "Copied — paste it to your agent",
     "prompt.copyFailed": "Couldn't copy. Select this text instead:",
@@ -134,10 +133,7 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "diagnosis.fresh": "Just installed. It takes effect when you start a new session.",
     "diagnosis.freshVerified": "Just installed and self-tested at install time — it takes effect when you start a new session.",
     "diagnosis.ask": "Copy a prompt for your agent",
-    uninstall: "Uninstall", done: "Done",
-    "stage.removed": "Uninstalled",
-    uninstallConfirm: "Click Confirm again to remove the plugin directory for",
-    uninstallAgain: "Confirm",
+    done: "Done",
     listFailed: "Could not read connector status: ",
     loading: "Loading…",
     skip: "Not now",
@@ -282,8 +278,6 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
       if (state === "unconfigured" && steps.length > 0) showDetails(true);
       actions.append(toggle);
 
-      const busy = (on: boolean) => actions.querySelectorAll("button").forEach(button => { button.disabled = on; });
-      const redraw = (next: Pending) => { renderConnectors(host, locale, onChange, next); onChange?.(); };
 
       // 🔴 **app 不装 connector。** 它给用户一段可粘贴的话，由用户的 agent 去执行。
       // 那条路比 app 自己装干净得多：没有下载（也就没有 Mark of the Web）、
@@ -298,33 +292,21 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
       actions.append(install);
 
       if (installed) {
-        // 两步确认，**不用 `confirm()`**：Tauri 的 webview 不实现 JS 的 alert/confirm/prompt
-        // （官方要用 dialog 插件），`confirm()` 直接返回 false —— 表现是「点卸载没有任何反应」，
-        // 用户既看不到弹窗也看不到错误（实机撞到）。两步确认不依赖任何弹窗，两个窗口里都一样。
+        // 🔴 **卸载也交给 agent**，和安装同一条路。
+        //
+        // 原来这里调 Rust 去删目录 —— 而那条路对「从远程 marketplace 装」的那套完全没用：
+        // 它删的两个目录都不存在，于是删掉零个文件、报告成功，而 harness 的账本原封不动
+        // （2026-09-03 实测）。**报告成功、什么都没变**，正是我们一整天在打的那个形状。
+        //
+        // 根因和安装那边一样：装是 harness 干的，它的布局我们追不动。卸载用它自己的
+        // `plugin uninstall`，它最清楚东西在哪 —— 顺带连缓存副本一起清掉。
         const remove = document.createElement("button");
-        remove.type = "button"; remove.className = "danger";
-        remove.textContent = text("uninstall");
-        let armed: number | undefined;
-        const disarm = () => {
-          if (armed !== undefined) clearTimeout(armed);
-          armed = undefined; remove.textContent = text("uninstall"); say(harness, "");
-        };
-        remove.addEventListener("click", () => {
-          if (armed === undefined) {
-            remove.textContent = text("uninstallAgain");
-            say(harness, `${text("uninstallConfirm")} ${HARNESS_LABELS[harness]}`);
-            // 自动解除：误点之后不该让这一行一直端着一个危险动作等你
-            armed = window.setTimeout(disarm, 6000);
-            return;
-          }
-          disarm();
-          busy(true);
-          void invoke("uninstall_connector", { harness })
-            .then(() => redraw({ harness, kind: "ok", message: text("stage.removed") }))
-            .catch(error => { busy(false); say(harness, errorMessage(error, locale), "error"); });
-        });
+        remove.type = "button"; remove.className = "ghost";
+        remove.textContent = text("prompt.uninstall");
+        remove.addEventListener("click", () => copyPrompt(harness, uninstallPrompt(harness, locale)));
         actions.append(remove);
       }
+
       // 每一行都有一个提示词框：点「复制」时把原文摊在这里，用户按下去之前看得见它写了什么。
       const prompt = document.createElement("textarea");
       prompt.className = "connector-prompt"; prompt.hidden = true; prompt.readOnly = true; prompt.rows = 8;

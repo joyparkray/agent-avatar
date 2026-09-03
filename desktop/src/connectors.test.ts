@@ -257,11 +257,12 @@ describe("connector install wizard", () => {
   it("is reachable from the Agent tab and registered as Tauri commands", () => {
     expect(readFileSync("settings.html", "utf8")).toContain('data-list="connectors"');
     const lib = readFileSync("src-tauri/src/lib.rs", "utf8");
-    for (const command of ["list_connectors", "uninstall_connector"]) {
-      expect(lib).toContain(`connectors::${command}`);
-    }
-    // app **不装** connector：装是用户的 agent 干的活（没有下载、没有解压、没有跑脚本 ——
-    // 那三步正是杀软误报的来源，实机被卡巴删过文件）。
+    expect(lib).toContain("connectors::list_connectors");
+    // app **既不装也不卸** connector：两件都是用户的 agent 干的活。
+    // - 装：没有下载、没有解压、没有跑脚本（那三步正是杀软误报的来源，实机被卡巴删过文件）
+    // - 卸：原来那个 uninstall_connector 对「从远程 marketplace 装」的那套完全没用 ——
+    //   删的两个目录都不存在，于是删掉零个文件、报告成功，而账本原封不动（实测）
     expect(lib).not.toContain("connectors::install_connector");
+    expect(lib).not.toContain("connectors::uninstall_connector");
   });
 });

@@ -25,15 +25,15 @@ pub mod user_error {
     pub const ALREADY_INSTALLED: &str = "already-installed";
     pub const TOO_LARGE: &str = "too-large";
     pub const UNKNOWN_MODEL: &str = "unknown-model";
-    pub const UNKNOWN_HARNESS: &str = "unknown-harness";
-    // download-failed / extract-failed / bad-archive / install-failed / local-zip-missing
-    // 随「app 自己装 connector」那条路一起作废了 —— app 不再下载、不再解压、不再跑脚本。
+    // connector 相关的错误码全部作废了：app 既不装也不卸 connector，只读状态。
+    // （download-failed / extract-failed / bad-archive / install-failed /
+    //  local-zip-missing / unknown-harness —— 随那两条链路一起去掉。）
 
     /// 前端必须逐个有中英文案的那一份清单（`errors.ts` 与它对表，见那边的测试）。
-    pub const ALL: [&str; 8] = [ARCHIVE, NOT_A_FOLDER, BAD_NAME, NO_MODEL3, ALREADY_INSTALLED,
-        TOO_LARGE, UNKNOWN_MODEL, UNKNOWN_HARNESS];
+    pub const ALL: [&str; 7] = [ARCHIVE, NOT_A_FOLDER, BAD_NAME, NO_MODEL3, ALREADY_INSTALLED,
+        TOO_LARGE, UNKNOWN_MODEL];
 }
-/// Agent connector 的检测与诊断（**不装任何东西**，装由用户的 agent 做）。
+/// Agent connector 的检测（**不装也不卸**，那两件都由用户的 agent 做）。
 mod connectors;
 /// Hermes 适配层：**可整体摘除**的边界（见 integrations/hermes/README.md）。
 /// 删掉这一行与 hermes.rs 后应用仍能跑，前端调不到命令会自动降级为常驻 idle。
@@ -382,6 +382,6 @@ pub fn run() {
             spawn_hit_test(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![log_event, hermes::read_semantic_state, hermes::discover_audio_endpoint, config::read_config, config::write_config, config::install_model, config::delete_model, config::list_installed_models, config::list_model_issues, connectors::list_connectors, connectors::uninstall_connector, open_tool_window, set_hit_region, open_in_browser, start_global_audio, stop_global_audio])
+        .invoke_handler(tauri::generate_handler![log_event, hermes::read_semantic_state, hermes::discover_audio_endpoint, config::read_config, config::write_config, config::install_model, config::delete_model, config::list_installed_models, config::list_model_issues, connectors::list_connectors, open_tool_window, set_hit_region, open_in_browser, start_global_audio, stop_global_audio])
         .run(tauri::generate_context!()).expect("error while running Agent Avatar");
 }

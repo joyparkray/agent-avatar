@@ -253,3 +253,45 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
     ...boundaries,
   ].join("\n");
 }
+
+/**
+ * 卸载 connector 的提示词 —— 和安装同一条路：交给 agent。
+ *
+ * 🔴 **为什么 app 自己不做这件事**：卸载要动的是 harness 自己的账本（`plugin uninstall`
+ * 会同时清登记和缓存副本），而**它的布局我们一天之内追丢过三次** ——
+ * claude-code / codex 改成本地 marketplace、Hermes 在 Windows 上不住 `~/.hermes`，
+ * 以及 app 里那个卸载按钮对「从远程 marketplace 装」的那套完全没用（它删的两个目录都不存在，
+ * 于是删掉零个文件、报告成功，而账本原封不动 —— 正是我们一整天在打的那个形状）。
+ *
+ * 装是 harness 干的，卸也该由它干。它自己最清楚东西在哪。
+ */
+export function uninstallPrompt(harness: string, locale: Language): string {
+  const zh = locale !== "en";
+  const cli = MARKETPLACE_CLI[harness];
+  let steps: string[];
+  if (cli) {
+    // `marketplace remove` 会连带清掉缓存里那份插件副本 —— 只 uninstall 会留下市场登记，
+    // 下次装同名插件时它还在，容易装到旧版上。
+    steps = [`${cli} plugin uninstall agent-avatar`, `${cli} plugin marketplace remove agent-avatar`];
+  } else if (harness === "dsh") {
+    steps = [zh ? "从 $DSH_HOME/cordis.patch.yml 里删掉 `# >>> agent-avatar (managed) >>>` 到 `# <<< agent-avatar (managed) <<<` 之间那一段（含这两行），其余原样保留"
+                : "Delete the block between `# >>> agent-avatar (managed) >>>` and `# <<< agent-avatar (managed) <<<` (inclusive) from $DSH_HOME/cordis.patch.yml, leaving everything else untouched"];
+  } else {
+    // ⚠️ Windows 上 `hermes plugins remove` 只做一半：目录改名后删不掉（git 的 pack 是只读的），
+    // 而 config.yaml 里还留着 enabled —— 列表显示启用、实际加载不到。所以要交代收尾。
+    steps = ["hermes plugins remove agent-avatar",
+      zh ? "如果它报错没删干净（Windows 上会）：从 $HERMES_HOME/config.yaml 的 plugins.enabled 里删掉 agent-avatar 那一行，再删掉 plugins 目录下那个 .agent-avatar.remove-* 残留（先去掉只读属性）"
+         : "If it errors out half-way (it does on Windows): remove the agent-avatar line from plugins.enabled in $HERMES_HOME/config.yaml, then delete the leftover .agent-avatar.remove-* under plugins (clear the read-only attribute first)"];
+  }
+  return [
+    zh ? `帮我卸载 Agent Avatar 的 ${harness} connector。执行：`
+       : `Uninstall the Agent Avatar ${harness} connector for me. Run:`,
+    "",
+    ...steps.map((step, index) => `${index + 1}) ${step}`),
+    "",
+    zh ? "如果之前是 clone 到本地装的（Windows 那条路），把那个 agent-avatar-connectors 目录也删掉。"
+       : "If it was installed from a local clone (the Windows route), delete that agent-avatar-connectors directory too.",
+    zh ? "**只告诉我成功还是失败。** 不用解释过程。"
+       : "**Just tell me whether it worked.** No explanation needed.",
+  ].join("\n");
+}

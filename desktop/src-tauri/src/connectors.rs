@@ -12,46 +12,23 @@
 //! - **agent 能做 app 做不了的事**：缺 Python 时它可以（在用户点头后）装一个，
 //!   看得懂报错，还能重试。
 //!
-//! 于是这里只剩两件事，也正是 app 唯一做得比 agent 好的两件事：
+//! 于是这里只剩**检测**：插件装没装（读各家自己的账本，见 `installed_by_record`），
+//! 以及**有没有真的上报过**（`hermes::last_signal_seconds`）。这两件事必须分开：
+//! 账本记着只说明 harness 认得它，没 enable / 没授信 / 没重启时账本照样记着，
+//! 而用户看到的是「装好了但形象一直不动」。
 //!
-//! 1. **检测**——插件装没装（`plugin_dirs`），以及**有没有真的上报过**
-//!    （`hermes::last_signal_seconds`）。这两件事必须分开：目录在只说明文件拷过去了，
-//!    没 enable / 没授信 / 没重启时目录照样在，而用户看到的是「装好了但形象一直不动」。
-//! 2. **卸载**——删目录、清各家的注册项。这一步没有下载，也就没有上面那些问题。
+//! **卸载也不在这里。** 原来有一个 `uninstall_connector`，而它对「从远程 marketplace 装」
+//! 的那套完全没用：它删的两个目录都不存在，于是删掉零个文件、报告成功，
+//! 而 harness 的账本原封不动（2026-09-03 实测）。根因和安装一样 —— 装是 harness 干的，
+//! 它的布局我们追不动（一天之内追丢过三次）。卸载现在也走提示词，
+//! 用各家自己的 `plugin uninstall`，它最清楚东西在哪。
 //!
 //! 提示词（装 / 排查）在前端 `src/connector-diagnosis.ts`。
-use crate::user_error;
 use serde_json::{json, Value};
-use std::{env, fs, path::{Path, PathBuf}, process::Command};
+use std::{env, fs, path::PathBuf};
 
 /// 认得的 harness。**这是白名单**：名字会被拼进路径与命令行，不能让任意字符串进来。
 pub const HARNESSES: [&str; 5] = ["claude-code", "codex", "dsh", "hermes", "workbuddy"];
-
-/// 卸载时要调各家的 CLI（`codex plugin remove` / `codebuddy plugin uninstall`）。
-/// 从 Finder 或资源管理器启动的 app 只继承一份最小 PATH，而那几个 CLI 装在
-/// Homebrew / npm 的全局 bin 下 —— 不补这一段的话，用户从终端跑成功、从 app 里跑失败，
-/// 而错误信息只是「command not found」，完全指不到真正的原因。
-///
-/// 两个平台的分隔符和落点都不一样：POSIX 是 `:` 与 Homebrew，Windows 是 `;` 与
-/// npm 的全局 bin。照搬 POSIX 那套到 Windows 上等于**没补**。
-fn command_path() -> String {
-    let user = home();
-    let user = user.display().to_string();
-    #[cfg(windows)]
-    let (separator, extra) = (";", vec![
-        // npm 的全局 bin —— codebuddy / dsh 都装在这儿
-        format!(r"{user}\AppData\Roaming\npm"),
-        format!(r"{user}\.local\bin"),
-    ]);
-    #[cfg(not(windows))]
-    let (separator, extra) = (":", vec![
-        "/opt/homebrew/bin".to_owned(), "/usr/local/bin".to_owned(),
-        format!("{user}/.local/bin"), format!("{user}/bin"),
-    ]);
-    let fallback = if cfg!(windows) { String::new() } else { "/usr/bin:/bin:/usr/sbin:/sbin".to_owned() };
-    let inherited = env::var("PATH").unwrap_or(fallback);
-    format!("{}{separator}{inherited}", extra.join(separator))
-}
 
 /// 用户目录。**Windows 上没有 `HOME`** —— 那是 POSIX 与 Git Bash 的约定，
 /// 从资源管理器启动的 app 进程里只有 `USERPROFILE`。只读 HOME 的话，五家的插件目录
@@ -227,112 +204,10 @@ pub fn list_connectors() -> Vec<Value> {
     }).collect()
 }
 
-/// 外部命令的回显。stdout/stderr 都要 —— 安装脚本的后续步骤提示走 stdout，失败原因走 stderr。
-fn run(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
-    let mut command = Command::new(program);
-    command.args(args).env("PATH", command_path());
-    if let Some(dir) = cwd { command.current_dir(dir); }
-    let output = command.output().map_err(|error| format!("{program}: {error}"))?;
-    let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-    if output.status.success() { Ok(text) } else { Err(tail(&text, 2000)) }
-}
-
-/// 只把回显的末尾交给界面：安装脚本可能刷很多行，而有用的（失败原因/后续步骤）在最后。
-fn tail(text: &str, max: usize) -> String {
-    let trimmed = text.trim();
-    if trimmed.len() <= max { return trimmed.to_owned(); }
-    let start = trimmed.len() - max;
-    // 不能从多字节字符中间切，否则中文回显会被切成乱码
-    let start = (start..trimmed.len()).find(|index| trimmed.is_char_boundary(*index)).unwrap_or(trimmed.len());
-    format!("…\n{}", &trimmed[start..])
-}
-
-/// dsh 的 patch 文件里由安装脚本托管的那一段。卸载要连它一起摘掉 ——
-/// 只删插件目录的话，patch 里还留着一条指向已删目录的 entry，dsh 下次加载会报错。
-const DSH_BEGIN: &str = "# >>> agent-avatar (managed) >>>";
-const DSH_END: &str = "# <<< agent-avatar (managed) <<<";
-
-/// 按行摘掉托管块，其余原样保留。**不用 YAML 解析器**：dsh 的 patch 允许 `!!js` 表达式，
-/// 通用解析器读它会丢行甚至报错（安装脚本里同一条注意事项）。
-fn strip_managed_block(text: &str) -> String {
-    let mut out = Vec::new();
-    let mut skipping = false;
-    for line in text.lines() {
-        match line.trim() {
-            DSH_BEGIN => { skipping = true; continue; }
-            DSH_END => { skipping = false; continue; }
-            _ => {}
-        }
-        if !skipping { out.push(line); }
-    }
-    let body = out.join("\n");
-    let body = body.trim_end();
-    if body.is_empty() { String::new() } else { format!("{body}\n") }
-}
-
-/// 从 Codex 的 marketplace.json 里摘掉 agent-avatar 那条，保留用户其它条目。
-/// 读不动就返回 None（不去猜坏文件的内容，也不覆盖它）。
-fn without_marketplace_entry(raw: &str) -> Option<String> {
-    let mut doc: Value = serde_json::from_str(raw).ok()?;
-    let plugins = doc.get_mut("plugins")?.as_array_mut()?;
-    plugins.retain(|entry| entry.get("name").and_then(Value::as_str) != Some("agent-avatar"));
-    serde_json::to_string_pretty(&doc).ok()
-}
-
-/// 卸载。**先跑各家自己的注销命令**（有 CLI 的话），再删目录、清注册项。
-///
-/// 注销命令失败不算错误：CLI 可能没装、或本来就没注册过，而残留的目录/注册项才是
-/// 用户看得见的问题。删干净比报错更有用。
-#[tauri::command(async)]
-pub fn uninstall_connector(harness: String) -> Result<Value, String> {
-    // 新旧布局都要清：按老布局装过的机器上，只删新目录等于什么都没删
-    let dirs = plugin_dirs(&harness);
-    if dirs.is_empty() { return Err(format!("{}|{harness}", user_error::UNKNOWN_HARNESS)); }
-    let mut notes: Vec<String> = Vec::new();
-    match harness.as_str() {
-        "codex" => {
-            if let Err(error) = run("/usr/bin/env", &["codex", "plugin", "remove", "agent-avatar"], None) {
-                notes.push(format!("codex plugin remove: {}", tail(&error, 200)));
-            }
-            let marketplace = harness_home("AGENTS_HOME", ".agents").join("plugins/marketplace.json");
-            if let Ok(raw) = fs::read_to_string(&marketplace) {
-                match without_marketplace_entry(&raw) {
-                    Some(cleaned) => { let _ = fs::write(&marketplace, cleaned); }
-                    None => notes.push(format!("marketplace.json 读不动，未改动：{}", marketplace.display())),
-                }
-            }
-        }
-        "dsh" => {
-            let patch = harness_home("DSH_HOME", ".dsh").join("cordis.patch.yml");
-            if let Ok(raw) = fs::read_to_string(&patch) {
-                let _ = fs::write(&patch, strip_managed_block(&raw));
-            }
-        }
-        "workbuddy" => {
-            let cli = env::var("CODEBUDDY_CLI").unwrap_or_else(|_|
-                "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy".to_owned());
-            if Path::new(&cli).is_file() {
-                if let Err(error) = run(&cli, &["plugin", "uninstall", "agent-avatar"], None) {
-                    notes.push(format!("codebuddy plugin uninstall: {}", tail(&error, 200)));
-                }
-            }
-            // 删的是整个本地 marketplace 目录（插件树在它下面两层）
-            let market = harness_home("WORKBUDDY_HOME", ".workbuddy").join("local-marketplaces/agent-avatar-local");
-            if market.is_dir() { fs::remove_dir_all(&market).map_err(|error| error.to_string())?; }
-        }
-        _ => {}
-    }
-    for dir in &dirs {
-        if dir.is_dir() { fs::remove_dir_all(dir).map_err(|error| error.to_string())?; }
-    }
-    Ok(json!({ "harness": harness, "notes": notes }))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{command_path, home, installed_by_record, installed_dir, plugin_dir, plugin_dirs,
-                strip_managed_block, tail,
-                without_marketplace_entry, HARNESSES, LOCAL_MARKETPLACE};
+    use super::{home, installed_by_record, installed_dir, plugin_dir, plugin_dirs,
+                HARNESSES, LOCAL_MARKETPLACE};
     use std::{env, fs};
 
     #[test]
@@ -412,58 +287,4 @@ mod tests {
                 "Windows 上应当落到 USERPROFILE：{}", home().display());
     }
 
-    #[test]
-    fn strips_only_the_managed_block_from_the_dsh_patch() {
-        let patch = "- insert:\n    - id: mine\n      name: /x/y.mjs\n\
-                     # >>> agent-avatar (managed) >>>\n- insert:\n    - id: agent-avatar\n      name: /p/index.mjs\n\
-                     # <<< agent-avatar (managed) <<<\n";
-        let cleaned = strip_managed_block(patch);
-        assert!(cleaned.contains("id: mine"), "用户自己的条目必须留着：{cleaned}");
-        assert!(!cleaned.contains("agent-avatar"));
-        assert!(cleaned.ends_with('\n'));
-        // 只有托管块时应当留下空文件，而不是一个只剩空行的非法 YAML
-        assert_eq!(strip_managed_block("# >>> agent-avatar (managed) >>>\n- insert: []\n# <<< agent-avatar (managed) <<<\n"), "");
-        // 没装过时原样返回
-        assert_eq!(strip_managed_block("- insert:\n    - id: mine\n"), "- insert:\n    - id: mine\n");
-    }
-
-    #[test]
-    fn removes_only_our_entry_from_the_codex_marketplace() {
-        let raw = r#"{"name":"local","plugins":[{"name":"other"},{"name":"agent-avatar"}]}"#;
-        let cleaned = without_marketplace_entry(raw).unwrap();
-        assert!(cleaned.contains("other"));
-        assert!(!cleaned.contains("agent-avatar"));
-        // 坏文件不去猜它的内容，也就不会被覆盖
-        assert!(without_marketplace_entry("not json").is_none());
-        assert!(without_marketplace_entry(r#"{"plugins":"nope"}"#).is_none());
-    }
-
-    #[test]
-    fn command_path_adds_where_the_harness_clis_actually_live() {
-        // 卸载时要调各家的 CLI（codex / codebuddy）。从 Finder 或资源管理器启动的 app
-        // 只继承一份最小 PATH，那几个都不在里面 —— 表现是「用户从终端跑成功、
-        // 从 app 里跑失败」，而错误只是 command not found，指不到真正的原因。
-        let path = command_path();
-        #[cfg(not(windows))]
-        {
-            assert!(path.contains("/opt/homebrew/bin"), "{path}");
-            assert!(path.contains("/usr/local/bin"), "{path}");
-        }
-        #[cfg(windows)]
-        {
-            // Windows 上 npm 的全局 bin 在 %APPDATA%\npm，那是 codebuddy / dsh 的落点
-            assert!(path.to_lowercase().contains("npm"), "{path}");
-            assert!(path.contains(';'), "Windows 的 PATH 用分号分隔：{path}");
-        }
-    }
-
-    #[test]
-    fn tail_keeps_the_end_and_never_splits_a_character() {
-        assert_eq!(tail("  short  ", 100), "short");
-        let long = "中".repeat(1000);
-        let cut = tail(&long, 100);
-        assert!(cut.starts_with("…\n"));
-        assert!(cut.chars().all(|c| c == '中' || c == '…' || c == '\n'));
-        assert!(cut.len() <= 106);
-    }
 }
