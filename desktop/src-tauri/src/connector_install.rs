@@ -165,23 +165,141 @@ pub fn resolve_cli(harness: &str) -> Option<PathBuf> {
 ///
 /// 错误信息**必须是它的原话**：这条链路上我们能给用户的唯一线索就是 harness 的输出
 /// （「Marketplace undefined is not found.」这种），我们自己改写一遍只会把它变模糊。
+/// 一条命令跑多久算跑死了。
+///
+/// 这些 CLI 有的会去够网络（marketplace 元数据、git clone），所以不能定得太短；但**必须有**：
+/// 一个在非 TTY 下等输入的 CLI 会一直等下去，而我们是它的父进程。
+const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// 跑一条命令，失败时把 harness 自己说的话原样带回来。
+///
+/// 错误信息**必须是它的原话**：这条链路上我们能给用户的唯一线索就是 harness 的输出
+/// （「Marketplace undefined is not found.」这种），我们自己改写一遍只会把它变模糊。
+///
+/// 🔴 两条硬性防护，缺一条都能让「安装」这个按钮永远转下去：
+///
+/// - **stdin 给 null。** CLI 发现自己不在终端里时，未必会报错退出 —— 它可能就那么等着
+///   （确认条款、覆盖提示）。给它一个立刻 EOF 的 stdin，它就只能自己决定。
+/// - **超时后杀掉。** 上一条挡不住铁了心要等的实现，也挡不住卡在网络上的那种。
+///   宁可报「超时」让用户看见，也不能让安装线程停在那儿。
 fn run(program: &Path, args: &[&str]) -> Result<String, String> {
+    use std::io::Read;
+
     let mut command = Command::new(program);
-    command.args(args);
+    command.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);          // CREATE_NO_WINDOW：别闪控制台
     }
-    let output = command.output().map_err(|error| format!("{}: {error}", program.display()))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if output.status.success() {
-        Ok(if stdout.is_empty() { stderr } else { stdout })
-    } else {
-        Err(format!("{} {}: {}", program.display(), args.join(" "),
-                    if stderr.is_empty() { stdout } else { stderr }))
+    let mut child = command.spawn().map_err(|error| format!("{}: {error}", program.display()))?;
+
+    // 管道要在等待期间被读走，否则输出填满缓冲区时子进程会阻塞在写上 —— 那是另一种挂死，
+    // 而且比等 stdin 更难看出来。各起一个线程收。
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let out_thread = std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        if let Some(pipe) = out_pipe.as_mut() { let _ = pipe.read_to_end(&mut buffer); }
+        buffer
+    });
+    let err_thread = std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        if let Some(pipe) = err_pipe.as_mut() { let _ = pipe.read_to_end(&mut buffer); }
+        buffer
+    });
+
+    let deadline = std::time::Instant::now() + COMMAND_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(error) => return Err(format!("{}: {error}", program.display())),
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&out_thread.join().unwrap_or_default()).trim().to_string();
+    let stderr = String::from_utf8_lossy(&err_thread.join().unwrap_or_default()).trim().to_string();
+    let described = format!("{} {}", program.display(), args.join(" "));
+    match status {
+        None => Err(format!("{described}：{} 秒没有返回，已终止{}",
+                            COMMAND_TIMEOUT.as_secs(),
+                            if stderr.is_empty() { String::new() } else { format!("（{stderr}）") })),
+        Some(status) if status.success() => Ok(if stdout.is_empty() { stderr } else { stdout }),
+        Some(_) => Err(format!("{described}: {}", if stderr.is_empty() { stdout } else { stderr })),
     }
+}
+
+/// `<cli> plugin --help` 里列出的子命令名（含别名）。
+///
+/// 三种形状都要认，因为三家各写各的：
+///
+/// ```text
+///   install [options] <plugin>          Claude Code：光名字
+///   uninstall|remove [options] <plugin> CodeBuddy：竖线分隔的别名
+///   remove (rm, uninstall)              Hermes：括号里的别名
+/// ```
+fn subcommands(help: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in help.lines() {
+        // 子命令行是缩进的；正文和 Usage 不是
+        if !line.starts_with("  ") || line.trim().is_empty() { continue; }
+        let spec = line.trim();
+        // 名字部分在第一段空白之前，别名用 | 或 (,) 挂在后面
+        let head: String = spec.chars().take_while(|c| !c.is_whitespace()).collect();
+        let aliases: String = spec.chars().skip(head.len())
+            .take_while(|&c| c != ' ' || false).collect::<String>();
+        let mut candidates = vec![head];
+        if let Some(open) = spec.find('(') {
+            if let Some(close) = spec[open..].find(')') {
+                candidates.push(spec[open + 1..open + close].to_string());
+            }
+        }
+        let _ = aliases;
+        for chunk in candidates {
+            for name in chunk.split(['|', ',']) {
+                let name = name.trim();
+                if !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+/// 「装」和「卸」这两个动词，**问 CLI 自己**，而不是按 harness 名字写死。
+///
+/// 🔴 我们曾经对 Codex 写死了 `plugin install` / `plugin uninstall`，而它其实是
+/// `add` / `remove` —— 两个平台都错，而且错了很久没发现。动词改名是这类外部 CLI
+/// 最常见的变更，问一句 `--help` 就能扛过去，比按版本号分支稳。
+///
+/// 探测不出来时退回已知的默认值：那至少是今天实测过的。
+fn plugin_verbs(cli: &Path, harness: &str) -> (String, String) {
+    let fallback = if harness == "codex" { ("add", "remove") } else { ("install", "uninstall") };
+    let help = match run(cli, &["plugin", "--help"]) { Ok(text) => text, Err(_) => return owned(fallback) };
+    let names = subcommands(&help);
+    let pick = |options: &[&str], default: &str| -> String {
+        options.iter().find(|option| names.iter().any(|name| name == *option))
+            .map(|option| option.to_string())
+            .unwrap_or_else(|| default.to_string())
+    };
+    // 顺序即偏好：两个都在时（有的 CLI 互为别名）用前面那个
+    (pick(&["install", "add"], fallback.0), pick(&["uninstall", "remove"], fallback.1))
+}
+
+fn owned(pair: (&str, &str)) -> (String, String) {
+    (pair.0.to_string(), pair.1.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -204,12 +322,11 @@ fn bundled(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
     Ok((tree, python))
 }
 
-/// 工作副本的位置。
+/// 工作副本的根。下面按版本分目录，见 `lay_out_tree`。
 ///
-/// **不能就地用资源目录**，两个原因：本地化要改写 hooks.json，而 `C:\Program Files` /
-/// `/Applications` 下是只读的；而且 marketplace 登记进 harness 之后，那个路径要一直有效 ——
-/// app 升级时资源目录整个换掉，登记就会指向不存在的东西。所以拷进 app 自己的数据目录，
-/// 升级时按版本号重新铺一次。
+/// **不能就地用资源目录**：本地化要改写 hooks.json，而 `C:\Program Files` / `/Applications`
+/// 下是只读的；而且 marketplace 登记进 harness 之后那个路径要一直有效，app 升级时资源目录
+/// 整个换掉，登记就会指向不存在的东西。
 fn working_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|error| format!("找不到数据目录：{error}"))?;
     Ok(dir.join("connectors"))
@@ -230,48 +347,72 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 把打包的那棵树**和解释器**都铺到工作副本里（每次安装都重铺 —— 幂等，顺带修好被人动过的文件）。
-///
-/// 🔴 **解释器也要拷过来，不能直接用资源目录里那份。** 资源目录是 Tauri 按当前可执行文件的
-/// 位置在运行时算出来的，所以用户装到哪都对 —— 但那正是问题：hook 的命令行里烤进的是
-/// 解释器的**绝对路径**，用户之后把 app 挪个位置、或者卸载重装到别的盘，五家 harness 配置里
-/// 那些命令行就指向了不存在的东西。而这种失败是**静默的**：hook 跑不起来，退出码没人看，
-/// 形象就是不动了。
-///
-/// 数据目录的位置与安装位置无关，app 换地方它不动，所以命令行一次写对就一直有效。
-/// 代价是 21MB 的重复，换掉一整类查不出来的故障。
-fn lay_out_tree(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
-    let (bundle, bundled_python) = bundled(app)?;
-    let root = working_root(app)?;
-    let tree = root.join("marketplace");
-    if tree.exists() {
-        fs::remove_dir_all(&tree).map_err(|error| format!("清理旧的工作副本失败：{error}"))?;
-    }
-    copy_tree(&bundle, &tree).map_err(|error| format!("拷贝连接器树失败：{error}"))?;
+/// 解释器在工作副本里的相对位置。
+fn python_relative() -> &'static str {
+    if cfg!(windows) { "python/python.exe" } else { "python/bin/python3" }
+}
 
-    // 解释器只在缺失或版本不同的时候重拷 —— 21MB 的拷贝不该每次装插件都来一遍。
-    let python_root = root.join("python");
-    let python = python_root.join(bundled_python.file_name().unwrap_or_default());
-    let python = if cfg!(windows) { python } else { python_root.join("bin/python3") };
-    if !python.is_file() || !same_size(&bundled_python, &python) {
-        let source_root = bundled_python.parent()
-            .and_then(|dir| if cfg!(windows) { Some(dir.to_path_buf()) }
-                            else { dir.parent().map(Path::to_path_buf) })
+/// 把打包的那棵树**和解释器**铺进「这个版本自己的目录」，返回可以直接用的两个路径。
+///
+/// 🔴 **解释器不能就地用资源目录里那份。** 资源目录是 Tauri 按当前可执行文件的位置在运行时
+/// 算出来的，所以用户装到哪都对 —— 但那正是问题：hook 的命令行里烤进的是解释器的**绝对
+/// 路径**，用户之后把 app 挪个位置、或者卸载重装到别的盘，五家 harness 配置里那些命令行就
+/// 指向了不存在的东西。而这种失败是**静默的**：hook 跑不起来，退出码没人看，形象就是不动了。
+/// 数据目录的位置与安装位置无关，命令行一次写对就一直有效。
+///
+/// 🔴 **每个版本一个目录，不覆盖。** 升级时旧的 connector 很可能**正在被使用** —— 某个
+/// Claude Code 会话开着，它的 hook 随时会拉起那个 python.exe。Windows 上删/改一个正在执行
+/// 的文件会直接 Access denied，于是「app 自动更新」会变成「更新到一半，两个版本都不完整」。
+/// 所以新版本铺到自己的目录里，旧的原地不动，等它自然没人用了再清。
+/// 代价是短时间内多占一份 21MB。
+fn lay_out_tree(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
+    let (bundle_tree, bundle_python) = bundled(app)?;
+    let version = bundled_version(&bundle_tree);
+    let root = working_root(app)?;
+    let slot = root.join("versions").join(&version);
+    let tree = slot.join("marketplace");
+    let python = slot.join(python_relative());
+
+    if !tree.is_dir() || !python.is_file() {
+        // 先铺进暂存目录再整体改名：中途失败（磁盘满、被杀软拦）时留下的是一个带 `.staging-`
+        // 前缀的半成品，而不是一个看起来像正式版本、其实缺文件的目录。
+        let staging = root.join("versions").join(format!(".staging-{version}"));
+        let _ = fs::remove_dir_all(&staging);
+        copy_tree(&bundle_tree, &staging.join("marketplace"))
+            .map_err(|error| format!("拷贝连接器树失败：{error}"))?;
+        let python_source = bundle_python.parent()
+            .and_then(|dir| if cfg!(windows) { Some(dir.to_path_buf()) } else { dir.parent().map(Path::to_path_buf) })
             .ok_or_else(|| "自带解释器的位置不对".to_string())?;
-        let _ = fs::remove_dir_all(&python_root);
-        copy_tree(&source_root, &python_root).map_err(|error| format!("拷贝解释器失败：{error}"))?;
+        copy_tree(&python_source, &staging.join("python"))
+            .map_err(|error| format!("拷贝解释器失败：{error}"))?;
+
+        let _ = fs::remove_dir_all(&slot);
+        if let Some(parent) = slot.parent() {
+            fs::create_dir_all(parent).map_err(|error| format!("{error}"))?;
+        }
+        fs::rename(&staging, &slot)
+            .map_err(|error| format!("启用连接器 {version} 失败：{error}"))?;
     }
     if !python.is_file() {
         return Err(format!("解释器没拷成：{}", python.display()));
     }
+    prune_old_versions(&root, &version);
     Ok((tree, python))
 }
 
-/// 够用的「同一份吗」：解释器要么在，要么被 app 升级换掉了，大小不同就重拷。
-fn same_size(left: &Path, right: &Path) -> bool {
-    match (left.metadata(), right.metadata()) {
-        (Ok(a), Ok(b)) => a.len() == b.len(),
-        _ => false,
+/// 清掉不再是当前版本的那些目录。
+///
+/// **失败就算了**：清不掉多半正是因为里面那个解释器还被某个会话的 hook 用着，
+/// 而那恰恰是不该动它的理由。下次装的时候会再试一遍。
+fn prune_old_versions(root: &Path, keep: &str) {
+    let versions = root.join("versions");
+    if let Ok(entries) = fs::read_dir(&versions) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name != keep {
+                force_remove_dir(&entry.path());
+            }
+        }
     }
 }
 
@@ -660,11 +801,12 @@ pub(crate) fn install_into(tree: &Path, python: &Path, harness: &str, hermes_dir
         _ => {
             let cli = resolve_cli(harness)
                 .ok_or_else(|| format!("找不到 {harness} 的命令行程序"))?;
-            let verb = if harness == "codex" { "add" } else { "install" };
-            // 同名 marketplace 已登记时 `add` 会报「已存在」，那不是失败 —— 先撤再加
+            let (add, _) = plugin_verbs(&cli, harness);
+            // 同名 marketplace 已登记时 `add` 会报「已存在」，那不是失败 —— 先撤再加。
+            // marketplace 那两个动词三家一致（实测），不同的只有插件本身那两个。
             let _ = run(&cli, &["plugin", "marketplace", "remove", "agent-avatar"]);
             run(&cli, &["plugin", "marketplace", "add", &tree_text])?;
-            run(&cli, &["plugin", verb, "agent-avatar@agent-avatar"])?;
+            run(&cli, &["plugin", &add, "agent-avatar@agent-avatar"])?;
         }
     }
 
@@ -718,8 +860,8 @@ pub(crate) fn uninstall_from(tree: &Path, harness: &str) -> Result<Value, String
             // 🔴 用**全名**。短名在 WorkBuddy 上直接失败（`Marketplace undefined is not
             // found.`）而插件原样留着 —— 那次看起来成功，是下一步删 marketplace 时顺带
             // 带走的，靠副作用卸载迟早会漏。
-            let verb = if harness == "codex" { "remove" } else { "uninstall" };
-            run(&cli, &["plugin", verb, "agent-avatar@agent-avatar"])?;
+            let (_, remove) = plugin_verbs(&cli, harness);
+            run(&cli, &["plugin", &remove, "agent-avatar@agent-avatar"])?;
             let _ = run(&cli, &["plugin", "marketplace", "remove", "agent-avatar"]);
         }
     }
@@ -743,7 +885,9 @@ pub fn uninstall_connector(app: tauri::AppHandle, harness: String) -> Result<Val
     if !HARNESSES.contains(&harness.as_str()) {
         return Err(format!("不认得的 harness：{harness}"));
     }
-    let tree = working_root(&app)?.join("marketplace");
+    // 卸载只有 dsh 用得到这棵树（去掉它那段登记），而那段登记里存的是绝对路径，
+    // 删的时候按 `id: agent-avatar` 认，跟树在哪无关。
+    let tree = working_root(&app)?;
     uninstall_from(&tree, &harness)
 }
 
@@ -974,6 +1118,37 @@ mod tests {
             .unwrap_or_else(|error| panic!("卸 {harness} 失败：{error}"));
         assert!(!crate::connectors::is_installed(&harness), "{harness} 卸完界面仍然会说装着");
         assert!(!record.is_file(), "卸完装机记录还在，界面会对已卸载的用户说「刚装好」");
+    }
+
+    /// 三家 help 的形状各不相同，解析器要认全 —— 片段是 2026-09-03 从真 CLI 抓的原文。
+    ///
+    /// 🔴 这条测试存在的理由：我们曾经按 harness 名字写死动词，对 Codex 写成了
+    /// `install`/`uninstall`，而它其实是 `add`/`remove`。两个平台都错，很久没人发现，
+    /// 因为那段提示词从没在真 CLI 上跑过。
+    #[test]
+    fn the_verbs_come_from_the_cli_not_from_our_assumptions() {
+        use super::subcommands;
+
+        let claude = "Commands:\n  disable [options] [plugin]           Disable an enabled plugin\n  \
+                      install [options] <plugin>           Install a plugin\n  \
+                      uninstall [options] <plugin>         Uninstall a plugin\n";
+        let names = subcommands(claude);
+        assert!(names.iter().any(|name| name == "install"), "{names:?}");
+        assert!(names.iter().any(|name| name == "uninstall"), "{names:?}");
+
+        // CodeBuddy 用竖线挂别名
+        let codebuddy = "Commands:\n  list|ls [options]                    List installed plugins\n  \
+                         uninstall|remove [options] <plugin>  Uninstall an installed plugin\n";
+        let names = subcommands(codebuddy);
+        assert!(names.iter().any(|name| name == "uninstall"), "{names:?}");
+        assert!(names.iter().any(|name| name == "remove"), "{names:?}");
+
+        // Hermes 用括号挂别名，而且 Codex 只有 add/remove
+        let codex = "Commands:\n  add          Install a plugin from a marketplace\n  \
+                     remove (rm, uninstall)  Uninstall a plugin\n";
+        let names = subcommands(codex);
+        assert!(names.iter().any(|name| name == "add"), "{names:?}");
+        assert!(names.iter().any(|name| name == "rm"), "{names:?}");
     }
 
     /// 五家的插件树位置是一张表，改布局就要改它 —— 对不上的症状是「装好了，什么也不发生」。
