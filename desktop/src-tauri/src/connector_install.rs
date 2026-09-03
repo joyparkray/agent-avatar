@@ -203,6 +203,35 @@ pub fn resolve_cli(harness: &str) -> Option<PathBuf> {
 // 跑命令
 // ---------------------------------------------------------------------------
 
+/// 子进程的 PATH：先摆上 node 可能在的那几个目录，再接原来的。
+///
+/// 🔴 **找得到不等于跑得起来。** `cli_candidates` 那一大段解决的是「上哪儿找 claude」，
+/// 而 npm 装出来的 `claude` / `codebuddy` 是一行 `#!/usr/bin/env node` 的脚本 —— 真正
+/// 要在 PATH 上被找到的是 **node**。从 Dock 启动的 app 只有
+/// `/usr/bin:/bin:/usr/sbin:/sbin`（`.zshrc` 没跑过），nvm/fnm/volta 装的 node 一个都不在
+/// 里面，于是命令以 `env: node: No such file or directory` 失败 —— 而那句话会被原样贴到
+/// 界面上，用户看到的是「安装失败：env: node: ...」，完全猜不到该去装什么。
+///
+/// Windows 上没有这一条：node 装在机器级 PATH 里，GUI 进程继承得到；npm 的垫片也是 `.cmd`
+/// 而不是 shebang 脚本。所以整段只编进 unix。
+///
+/// 目录扫描（nvm 那几个版本目录）只做一次 —— `run` 在一次安装里要被调十几遍。
+#[cfg(unix)]
+fn child_path() -> std::ffi::OsString {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<std::ffi::OsString> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let mut dirs: Vec<PathBuf> = node_bin_dirs().into_iter().filter(|dir| dir.is_dir()).collect();
+        if let Some(inherited) = env::var_os("PATH") {
+            dirs.extend(env::split_paths(&inherited));
+        }
+        // 去重后保序：nvm 枚举出的目录和继承来的 PATH 常有重叠
+        let mut seen = std::collections::HashSet::new();
+        dirs.retain(|dir| seen.insert(dir.clone()));
+        env::join_paths(dirs).unwrap_or_else(|_| env::var_os("PATH").unwrap_or_default())
+    }).clone()
+}
+
 /// 跑一条命令，失败时把 harness 自己说的话原样带回来。
 ///
 /// 错误信息**必须是它的原话**：这条链路上我们能给用户的唯一线索就是 harness 的输出
@@ -232,6 +261,8 @@ fn run(program: &Path, args: &[&str]) -> Result<String, String> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    command.env("PATH", child_path());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -457,9 +488,33 @@ fn lay_out_tree(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
     if !python.is_file() {
         return Err(format!("解释器没拷成：{}", python.display()));
     }
+    ensure_executable(&python);
     prune_old_versions(&root, &version);
     Ok((tree, python))
 }
+
+/// 确保这份解释器可执行。
+///
+/// 🔴 **可执行位可能在打包那一步就掉了。** `fs::copy` 会把权限带过来，所以问题不在拷贝，
+/// 而在源头：资源文件是被打包器放进 `.app/Contents/Resources` 的，它保不保留 `+x` 不由
+/// 我们说了算（Windows 上根本没有这个概念，所以只在 unix 上管）。丢了的话症状是安装到
+/// 冒烟自检那一步报 `Permission denied` —— 一句用户完全无从下手的话。
+///
+/// 这是**我们自己**拷进数据目录的那一份，改它的权限没有越界。失败就算了：真跑不起来时
+/// 冒烟自检会说出原话，比在这里编一个理由强。
+#[cfg(unix)]
+fn ensure_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = fs::metadata(path) {
+        let mode = meta.permissions().mode();
+        if mode & 0o111 == 0 {
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode | 0o755));
+        }
+    }
+}
+
+#[cfg(windows)]
+fn ensure_executable(_path: &Path) {}
 
 /// 清掉不再是当前版本的那些目录。
 ///
