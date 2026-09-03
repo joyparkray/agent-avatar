@@ -175,7 +175,9 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
   let steps: string[];
   if (cli) {
     steps = windows
-      ? [...clone, localize, `${cli} plugin marketplace add .`, `${cli} plugin install agent-avatar@agent-avatar`]
+      // `add ./` 而不是 `add .`：实测 `.` 被拒（Invalid marketplace source format，
+      // 它要的是 owner/repo、https://… 或 ./path 三种形态之一）。差一个斜杠，整条路就断了。
+      ? [...clone, localize, `${cli} plugin marketplace add ./`, `${cli} plugin install agent-avatar@agent-avatar`]
       : [`${cli} plugin marketplace add ${MARKETPLACE_REPO}`, `${cli} plugin install agent-avatar@agent-avatar`];
   } else if (harness === "dsh") {
     // dsh 没有「插件市场」式的安装命令给本地目录用，装法是往它的用户 patch 层加一条 insert。

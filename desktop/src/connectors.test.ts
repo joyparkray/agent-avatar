@@ -121,6 +121,17 @@ describe("connector install wizard", () => {
     expect(installPrompt("hermes", "zh-CN", "windows")).not.toContain("localize.py");
   });
 
+  it("uses the path form the CLI actually accepts", () => {
+    // 实测：`claude plugin marketplace add .` 被拒 —— Invalid marketplace source format，
+    // 它要 owner/repo、https://… 或 **./path**。差一个斜杠整条路就断了，
+    // 而这种错只有真跑一遍才发现得了。
+    for (const harness of ["claude-code", "codex", "workbuddy"]) {
+      const windows = installPrompt(harness, "zh-CN", "windows");
+      expect(windows).toContain("plugin marketplace add ./");
+      expect(windows).not.toMatch(/marketplace add \.$/m);
+    }
+  });
+
   it("keeps the human steps human", () => {
     // 授信这类步骤存在的意义就是「让人看一眼再点头」，让 agent 代做等于把这道防线拆了
     for (const locale of ["zh-CN", "en"] as const) {
