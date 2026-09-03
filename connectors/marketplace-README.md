@@ -159,6 +159,14 @@ idle → writing → executing → writing → idle
 agent-avatar` / `hermes plugins remove agent-avatar`），Codex 从 `config.toml` 里删掉那两段，
 dsh 从 `cordis.patch.yml` 里删掉 `# >>> agent-avatar (managed) >>>` 那一段。
 
+> ⚠️ **Windows 上 `hermes plugins remove` 会只做一半**（2026-09-03 实测）：
+> 它把插件目录改名成 `.agent-avatar.remove-xxxx` 之后删不掉（git 的 pack 文件是只读的，
+> 它的删除处理不了这个），于是 `config.yaml` 里的 `plugins.enabled` 还留着 `agent-avatar`,
+> 而目录已经不在了 —— 列表里显示 enabled，实际加载不到。手工收尾两步：
+> 从 `config.yaml` 的 `plugins.enabled` 里删掉那一行，再删掉
+> `%LOCALAPPDATA%\hermes\plugins\.agent-avatar.remove-*`（先去掉只读属性）。
+> 这是 Hermes 自己的 Windows 问题，不是这个插件的。
+
 ## 这里面有什么
 
 ```
