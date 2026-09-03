@@ -193,9 +193,16 @@ async function maybeShowConnectorWizard(): Promise<void> {
   card.querySelector("p")!.textContent = copy.hint;
   const close = card.querySelector<HTMLButtonElement>('[data-act="close-wizard"]')!;
   close.textContent = copy.skip;
+  // 这张卡同样盖住整窗，也同样比 340×440 高（五行 harness 加说明）。撑大之后要还回去 ——
+  // 引导页那边靠重新加载时的 applyScale 收窗，这边不重载，得自己记住原来多大。
+  const before = await getCurrentWindow().innerSize().catch(() => undefined);
+  const scaleFactor = await getCurrentWindow().scaleFactor().catch(() => 1);
   const dismiss = () => {
     rememberConnectorWizardSeen();
     wizardOpen = false; card.remove();
+    if (before) void getCurrentWindow().setSize(
+      new LogicalSize(Math.round(before.width / scaleFactor), Math.round(before.height / scaleFactor)),
+    ).catch(error => log({ event: "connector-wizard:restore:error", error: String(error).slice(0, 200) }));
     log({ event: "connector-wizard:closed" });
   };
   card.prepend(cardBar(locale, { label: CARD_TEXT[locale].close, run: dismiss }));
@@ -204,6 +211,8 @@ async function maybeShowConnectorWizard(): Promise<void> {
   close.addEventListener("click", dismiss);
   root.append(card);
   wizardOpen = true;
+  await fitWindowToCard(card).catch(error =>
+    log({ event: "connector-wizard:fit:error", error: String(error).slice(0, 200) }));
   log({ event: "connector-wizard:shown" });
 }
 
@@ -308,6 +317,43 @@ const DOCK_SETTLE_MS = 140;
 async function applyScale(percent: number): Promise<void> {
   prefs.write("scale", percent);
   await getCurrentWindow().setSize(new LogicalSize(Math.round(BASE_SIZE[0] * percent / 100), Math.round(BASE_SIZE[1] * percent / 100)));
+}
+
+/** 整窗卡片放得开的最大尺寸（逻辑像素），再大就该考虑分页而不是继续长高。 */
+const CARD_SIZE = [420, 760] as const;
+
+const twoFrames = () => new Promise<void>(resolve =>
+  requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+
+/**
+ * 把窗口撑到**这张卡片不需要滚动**。
+ *
+ * 🔴 桌宠窗口是 340×440 —— 那是给一个人物用的尺寸，不是给一屏说明文字用的。首启向导比它
+ * 高，于是被裁掉一截：用户看到的是半个拖放框和一条滚动条，而「下载免费模型」那个按钮在窗外。
+ * （给 `.fallback` 加 `overflow:auto` 只是让它**能滚**，不是让它**看得见**。）
+ *
+ * 尺寸量出来而不是写死：中英文案不一样长，连接器向导里还有五行 harness，写死的那个数
+ * 总会对不上其中一种。量两帧 —— 一帧只够浏览器接到新宽度，文字重排在下一帧。
+ *
+ * 最多长三轮：每长高一次，卡片的 `max-height: calc(100% - 68px)` 也跟着放宽，于是可能
+ * 露出新的一段。三轮之后还溢出就认了 —— 那是文案该短一点，不是窗口该更高。
+ */
+async function fitWindowToCard(card: HTMLElement, options: { center?: boolean } = {}): Promise<void> {
+  const appWindow = getCurrentWindow();
+  const width = Math.min(CARD_SIZE[0], Math.round(screen.availWidth * 0.9));
+  const ceiling = Math.min(CARD_SIZE[1], Math.round(screen.availHeight * 0.9));
+  let height: number = BASE_SIZE[1];
+  await appWindow.setSize(new LogicalSize(width, height));
+  for (let round = 0; round < 3; round += 1) {
+    await twoFrames();
+    const overflow = card.scrollHeight - card.clientHeight;
+    if (overflow <= 1 || height >= ceiling) break;
+    height = Math.min(height + overflow, ceiling);
+    await appWindow.setSize(new LogicalSize(width, height));
+  }
+  // 变高之后窗口是往下长的，原来贴着屏幕下缘的话会长到屏幕外面去 —— 引导页没有人物要
+  // 保持位置，居中最稳。连接器向导不居中：那时候人物在屏幕上，用户把它放哪是他的选择。
+  if (options.center) await appWindow.center();
 }
 
 
@@ -532,7 +578,23 @@ log({ event: "endpoint:discovered", url: discovered?.url ?? null, hasToken: Bool
       languageSelect.addEventListener("change", () => {
         const next = languageSelect.value === "en" ? "en" : "zh-CN";
         rememberLanguage(next); applyOnboardingLanguage(next);
+        // 换语言等于换一份文案，长度跟着变 —— 重新量一次，否则中文放得下的窗口装不下英文
+        if (card) void fitWindowToCard(card, { center: true }).then(claimWholeWindow).catch(() => {});
       });
+    }
+    // 窗口变大之后命中区还是老的那一块 —— 卡片长出来的部分会**穿透**，用户点不到
+    // 「下载免费模型」，鼠标从它上面划过去也不会有反应。撑完再报一次。
+    const claimWholeWindow = () => void invoke("set_hit_region", {
+      x: 0, y: 0, width: innerWidth, height: innerHeight,
+      mode: "normal", trackCursor: false, maskCols: 0, maskRows: 0, maskBits: [],
+    }).catch(error => log({ event: "onboarding:hit-region:error", error: String(error).slice(0, 200) }));
+
+    // 文案填完才量得准。装上模型之后窗口不会自己变回去 —— 成功那条路上的 applyScale
+    // 负责收回来（所以那一句不能再「等于 100 就跳过」）。
+    if (card) {
+      await fitWindowToCard(card, { center: true }).catch(error =>
+        log({ event: "onboarding:fit:error", error: String(error).slice(0, 200) }));
+      claimWholeWindow();
     }
     root.querySelector('[data-act="download-model"]')?.addEventListener("click", () => void invoke("open_in_browser", {
       url: "https://www.live2d.com/en/learn/sample/momose-hiyori/",
@@ -653,7 +715,9 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
   clickThroughHint = clickThrough;
   shell.dataset.clickThrough = String(clickThrough);
   const scalePercent = prefs.read("scale", 100), opacityPercent = prefs.read("opacity", 100);
-  if (scalePercent !== 100) await applyScale(scalePercent).catch(error => log({ event: "menu:scale:error", error: String(error) }));
+  // 🔴 **无条件**应用，哪怕是 100%。引导页会把窗口撑大，而装上模型只是重新加载页面 ——
+  // 窗口是操作系统的，不会跟着页面变回去。这一句就是那条回程。
+  await applyScale(scalePercent).catch(error => log({ event: "menu:scale:error", error: String(error) }));
   if (opacityPercent !== 100) model.setOpacity(opacityPercent / 100);
   // 口型两项**无条件应用**，不像上面两个那样「等于默认值就跳过」——
   // 阈值是模块级的，跳过就等于把上一次会话留下的值带进来。
