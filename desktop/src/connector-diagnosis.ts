@@ -180,6 +180,20 @@ const MARKETPLACE_CLI: Record<string, string> = {
 };
 
 /**
+ * 装 / 卸的动词。**三家的插件机制同形，命令名却不同**：Claude Code 和 WorkBuddy 是
+ * `plugin install` / `plugin uninstall`，Codex 是 `plugin add` / `plugin remove`。
+ *
+ * 🔴 我们对 Codex 一直写的是 install/uninstall —— 两个平台都是错的，而错的方式很难被发现：
+ * 提示词从来没在真的 codex CLI 上跑过（Windows 上它不在 PATH 上，我们据此以为它不存在，
+ * 见 `installPrompt`）。2026-09-03 在 ChatGPT app 自带的那个 CLI 上一问 `--help` 就露了。
+ */
+const PLUGIN_VERBS: Record<string, { add: string; remove: string }> = {
+  "claude-code": { add: "install", remove: "uninstall" },
+  workbuddy: { add: "install", remove: "uninstall" },
+  codex: { add: "add", remove: "remove" },
+};
+
+/**
  * 装 connector 的提示词 —— 直接贴给 agent。
  *
  * 🔴 **里面必须是钉死的命令。** 提示词会被复制、转发、改写，别处流传的仿冒版本可以指向
@@ -236,20 +250,11 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
   const localize = (extra = "") => `python localize.py ${harness}${extra}`;
 
   let steps: string[];
-  if (cli && !(windows && harness === "codex")) {
+  if (cli) {
     // `add ./` 而不是 `add .`：实测 `.` 被拒（Invalid marketplace source format，
     // 它要的是 owner/repo、https://… 或 ./path 三种形态之一）。
     steps = [...clone, localize(), `${cli} plugin marketplace add ./`,
-             `${cli} plugin install agent-avatar@agent-avatar`];
-  } else if (harness === "codex") {
-    // 🔴 Windows 的 ChatGPT app **不带 codex CLI**，`codex plugin …` 那两条在这儿根本跑不了。
-    // 它的真实登记处是 config.toml，所以让脚本把要加的两段算好、打印出来 ——
-    // 仍然是钉死的命令，agent 不需要自己拼路径。**只打印不写**：那是用户自己的主配置文件。
-    steps = [...clone, localize(), localize(" --print-registration"),
-      zh ? "把上一步打印出来的两段追加到它指出的那个 config.toml 里（先备份）"
-         : "Append the two blocks it printed to the config.toml it names (back it up first)",
-      zh ? "**完全退出 ChatGPT app 再打开** —— 插件在启动时才被发现，而且 app 运行时也会写 config.toml"
-         : "**Fully quit and reopen the ChatGPT app** — plugins are discovered at startup, and the app writes config.toml while running"];
+             `${cli} plugin ${PLUGIN_VERBS[harness].add} agent-avatar@agent-avatar`];
   } else if (harness === "dsh") {
     // dsh 没有「插件市场」式的安装命令给本地目录用，装法是往它的用户 patch 层加一条 insert
     // （那个文件被 dsh 的 HMR 监视着，正在跑的 dsh 会热加载）。
@@ -315,8 +320,21 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
          : "Decide yourself whether it is `python` or `python3` here. If there is no usable Python, **ask me first** (Windows: winget install Python.Python.3.13; macOS: xcode-select --install).",
     ]),
     ...(harness === "codex"
-      ? [zh ? "**不要替我授信**：Codex 的 /hooks 授信只能我自己点，告诉我去点什么就行。"
-            : "**Do not trust the hooks for me**: the /hooks approval in Codex is mine to click — just tell me what to click."]
+      ? [
+          // 🔴 Windows 上 `codex` **不在 PATH 上**。ChatGPT app 确实自带这个 CLI，但它住在
+          // 一个带版本哈希的目录里（`%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`），
+          // 哈希每次升级都变，所以写死路径没有意义 —— 让 agent 去那儿找，它跑一次
+          // `--version` 就知道找对没找对。
+          //
+          // 这条不说的话，用户会以为「这台机器上没有 codex」然后放弃 —— 我们自己就是这么
+          // 以为的，还据此给 Windows 写了一整条手改 config.toml 的岔路（那条路只写登记、
+          // 不产生 codex 真正加载的那份缓存副本，等于半装）。
+          ...(windows ? [zh
+            ? "Windows 上 `codex` 不在 PATH 上，但 ChatGPT app 自带它：去 `%LOCALAPPDATA%\\OpenAI\\Codex\\bin\\` 下最新的那个子目录找 `codex.exe`，用绝对路径跑（先 `--version` 确认一下）。"
+            : "On Windows `codex` is not on PATH, but the ChatGPT app ships it: look for `codex.exe` in the newest subdirectory of `%LOCALAPPDATA%\\OpenAI\\Codex\\bin\\` and call it by absolute path (check with `--version` first)."] : []),
+          zh ? "**不要替我授信**：Codex 的 /hooks 授信只能我自己点，告诉我去点什么就行。"
+             : "**Do not trust the hooks for me**: the /hooks approval in Codex is mine to click — just tell me what to click.",
+        ]
       : []),
   ];
 
@@ -343,10 +361,15 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
  *
  * 装是 harness 干的，卸也该由它干。它自己最清楚东西在哪。
  */
-export function uninstallPrompt(harness: string, locale: Language): string {
+export function uninstallPrompt(harness: string, locale: Language,
+                                platform: Platform = currentPlatform()): string {
   const zh = locale !== "en";
   const cli = MARKETPLACE_CLI[harness];
+  const windows = platform === "windows";
   let steps: string[];
+  // 🔴 **卸载也要分平台。** 这个函数原来根本没有 platform 参数，于是 Windows 上的 Codex
+  // 用户拿到的是三条 `codex …` 命令 —— 而那个平台上**没有 codex CLI**，三条全是
+  // "command not found"，提示词里也没有任何退路。安装那半早就有这条分支了，卸载这半漏了。
   if (cli) {
     // `marketplace remove` 会连带清掉缓存里那份插件副本 —— 只 uninstall 会留下市场登记，
     // 下次装同名插件时它还在，容易装到旧版上。
@@ -354,7 +377,7 @@ export function uninstallPrompt(harness: string, locale: Language): string {
     // `Marketplace undefined is not found.`，插件原样留着。2026-09-03 实机那次之所以
     // 看起来成功，是第 2 步删 marketplace 时**顺带**把它带走的 —— 靠副作用卸载，
     // 哪天顺序或实现一变就漏。Claude Code 两种写法都接受，所以统一用全名。
-    steps = [`${cli} plugin uninstall agent-avatar@agent-avatar`,
+    steps = [`${cli} plugin ${PLUGIN_VERBS[harness].remove} agent-avatar@agent-avatar`,
              `${cli} plugin marketplace remove agent-avatar`];
   } else if (harness === "dsh") {
     // 同样由脚本来删：它认得**没有标记**的旧条目（按旧提示词手工粘贴进去的那种），
@@ -412,6 +435,12 @@ export function uninstallPrompt(harness: string, locale: Language): string {
     // 那会把还装着的另外几家**静默**弄废：账本上还写着已安装，插件却再也跑不起来。
     // 那次是 agent 自己起疑停下来问才没删成，靠的是运气不是设计。
     // Hermes 从 git 直装，没有这个目录，那条 SessionEnd 红字也只出现在本地 marketplace 这条路上。
+    // 卸载这两条命令在 Windows 上同样需要那个不在 PATH 上的 codex.exe。安装提示词里有这句、
+    // 卸载里没有，用户就会在卸载时卡在 command not found —— 同一条信息要在两边都出现。
+    ...(windows && harness === "codex" ? [
+      zh ? "- Windows 上 `codex` 不在 PATH 上，但 ChatGPT app 自带它：去 `%LOCALAPPDATA%\\OpenAI\\Codex\\bin\\` 下最新的那个子目录找 `codex.exe`，用绝对路径跑。"
+         : "- On Windows `codex` is not on PATH, but the ChatGPT app ships it: look for `codex.exe` in the newest subdirectory of `%LOCALAPPDATA%\\OpenAI\\Codex\\bin\\` and call it by absolute path.",
+    ] : []),
     ...(harness === "hermes" ? [] : [
       zh ? "- `$HOME/agent-avatar-connectors`：只有在你没给别的 agent 装过 Agent Avatar 时才删，**不确定就留着**（几家共用同一份）。"
          : "- `$HOME/agent-avatar-connectors`: delete it only if no other agent has Agent Avatar installed — **if unsure, leave it** (the harnesses share one copy).",
@@ -454,8 +483,8 @@ export function updatePrompt(harness: string, locale: Language, platform: Platfo
     // 先卸再装：装同一个插件名时 CLI 只会说「已安装」，**不会刷新缓存里那份副本**。
     // 远程 marketplace 那条路 install 会先刷新市场，所以不必单独 update。
     // 先卸再装：装同一个插件名时 CLI 只会说「已安装」，**不会刷新缓存里那份副本**。
-    steps.push(`${cli} plugin uninstall agent-avatar@agent-avatar`);
-    steps.push(`${cli} plugin install agent-avatar@agent-avatar`);
+    steps.push(`${cli} plugin ${PLUGIN_VERBS[harness].remove} agent-avatar@agent-avatar`);
+    steps.push(`${cli} plugin ${PLUGIN_VERBS[harness].add} agent-avatar@agent-avatar`);
   } else if (harness === "dsh") {
     // 重新登记是幂等的（脚本先删旧条目再写新的），所以更新不需要单独一步去核对路径。
     steps.push("python localize.py dsh --register");

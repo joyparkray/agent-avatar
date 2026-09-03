@@ -182,7 +182,8 @@ describe("connector install wizard", () => {
     // 那次看起来成功是因为下一步删 marketplace 顺带带走了它 —— 靠副作用卸载迟早会漏。
     for (const harness of ["claude-code", "workbuddy", "codex"]) {
       const prompt = uninstallPrompt(harness, "zh-CN");
-      expect(prompt).toMatch(/plugin uninstall agent-avatar@agent-avatar/);
+      // 动词按家不同（Codex 是 remove），要盯的是**全名**那一半
+      expect(prompt).toMatch(/plugin (uninstall|remove) agent-avatar@agent-avatar/);
     }
   });
 
@@ -220,11 +221,23 @@ describe("connector install wizard", () => {
       expect(posix).toContain("git clone");
       expect(posix).toContain(`localize.py ${harness}`); // mac 上也本地化：顺带拆掉 CLT 占位程序那颗雷
     }
-    // 🔴 Codex 是**真实差异**，不是我们没统一：Windows 的 ChatGPT app 不带 codex CLI，
-    // 那两条命令在那儿根本跑不了，只能手工登记进 config.toml。
-    expect(installPrompt("codex", "zh-CN", "posix")).toContain("codex plugin marketplace add ./");
-    expect(installPrompt("codex", "zh-CN", "windows")).not.toContain("codex plugin");
-    expect(installPrompt("codex", "zh-CN", "windows")).toContain("--print-registration");
+    // 🔴 Codex 也走同一条路。**这里原来断言的是相反的事** —— 「Windows 的 ChatGPT app
+    // 不带 codex CLI，只能手工登记进 config.toml」。那是个误判：CLI 确实在，只是不在
+    // PATH 上（`%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`）。据此写出来的那条
+    // 岔路只写 config.toml，而 `codex plugin add` 还会把插件拷进 `~/.codex/plugins/cache/`
+    // 并把那份报成 "Installed plugin root" —— 也就是说手工那条是**半装**：登记好了，
+    // 没有可加载的东西。两个平台的步骤因此逐字一致，只有边界多一句「去哪找 codex.exe」。
+    for (const platform of ["windows", "posix"] as const) {
+      const codex = installPrompt("codex", "zh-CN", platform);
+      expect(codex).toContain("codex plugin marketplace add ./");
+      expect(codex).toContain("codex plugin add agent-avatar@agent-avatar");
+      expect(codex).not.toContain("config.toml");
+    }
+    // 装和卸都要说 —— 只在安装里说的话，用户卸载时会卡在 command not found
+    for (const build of [installPrompt, uninstallPrompt]) {
+      expect(build("codex", "zh-CN", "windows")).toContain("OpenAI\\Codex\\bin");
+      expect(build("codex", "zh-CN", "posix")).not.toContain("OpenAI");
+    }
     // Hermes 是唯一的例外：它自己的 CLI 只认 git 来源，而且不需要本地化
     // （in-process Python 包，跑在 Hermes 自己的解释器里）
     const hermes = installPrompt("hermes", "zh-CN", "posix");
@@ -253,14 +266,18 @@ describe("connector install wizard", () => {
       expect(windows).toContain("plugin marketplace add ./");
       expect(windows).not.toMatch(/marketplace add \.$/m);
     }
-    // 🔴 Codex 在 Windows 上**没有 CLI**（ChatGPT app 不带），所以那两条命令在这儿根本
-    // 跑不了 —— 它的真实登记处是 config.toml。提示词里出现 `codex plugin` 就是把用户送进死路。
-    const codexWindows = installPrompt("codex", "zh-CN", "windows");
-    expect(codexWindows).not.toContain("codex plugin");
-    expect(codexWindows).toContain("--print-registration");
-    expect(codexWindows).toContain("config.toml");
-    // POSIX 上有 CLI，走正常那条
-    expect(installPrompt("codex", "zh-CN", "posix")).toContain("codex plugin marketplace add");
+    // 🔴 **动词按家取。** 三家的插件机制同形，命令名不同：Claude Code 与 WorkBuddy 是
+    // `plugin install` / `plugin uninstall`，Codex 是 `plugin add` / `plugin remove`。
+    // 我们对 Codex 一直写的是 install/uninstall —— 两个平台都错，而且错得很难发现：
+    // 那条提示词从没在真的 codex CLI 上跑过（我们以为 Windows 上没有这个 CLI）。
+    // 在 ChatGPT app 自带的那个 CLI 上问一句 `--help` 就露了。
+    expect(installPrompt("codex", "zh-CN", "windows")).toContain("codex plugin add agent-avatar@agent-avatar");
+    expect(installPrompt("codex", "zh-CN", "windows")).not.toMatch(/codex plugin install/);
+    expect(uninstallPrompt("codex", "zh-CN", "windows")).toContain("codex plugin remove agent-avatar@agent-avatar");
+    expect(uninstallPrompt("codex", "zh-CN", "windows")).not.toMatch(/codex plugin uninstall/);
+    // 另外两家的动词不能被顺手改掉
+    expect(installPrompt("claude-code", "zh-CN", "windows")).toContain("claude plugin install");
+    expect(uninstallPrompt("workbuddy", "zh-CN", "windows")).toContain("codebuddy plugin uninstall");
   });
 
   it("does not let the agent hand-write the fiddly bits", () => {

@@ -354,6 +354,53 @@ def edit_dsh_registration(root=None, remove=False):
     return path
 
 
+def codex_config_file():
+    home = os.environ.get("CODEX_HOME") or os.path.join(
+        os.environ.get("USERPROFILE") or os.path.expanduser("~"), ".codex")
+    return os.path.join(home, "config.toml")
+
+
+def codex_tables(root=None):
+    """The two TOML tables that register the plugin with Codex."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    # Codex's marketplace root is the level that contains .agents/ — the root of this
+    # tree, not the plugin directory. `source` is a TOML literal string (single
+    # quotes), inside which backslashes are not escapes.
+    # <root>/plugins/codex/agent-avatar -> <root>: three levels, because the level that
+    # matters is the one holding .agents/, not the plugin directory.
+    marketplace = root and os.path.abspath(root)
+    for _ in range(3):
+        marketplace = marketplace and os.path.dirname(marketplace)
+    marketplace = marketplace or here
+    return NEWLINE.join([
+        "[marketplaces.agent-avatar]",
+        'source_type = "local"',
+        "source = '%s'" % marketplace,
+        "",
+        '[plugins."agent-avatar@agent-avatar"]',
+        "enabled = true",
+    ])
+
+
+def without_codex_tables(text):
+    """Everything except our tables, whatever they are named.
+
+    A TOML table runs from its `[header]` to the next one, so removing ours is a matter
+    of dropping those spans. The match is on the header containing `agent-avatar` rather
+    than on the exact two names we write today: an earlier layout used
+    `agent-avatar-local`, and anyone who registered by hand may have either. Missing one
+    would leave Codex pointed at a plugin tree that is no longer there.
+    """
+    kept, dropping = [], False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            dropping = "agent-avatar" in stripped
+        if not dropping:
+            kept.append(line)
+    return kept
+
+
 def print_registration(harness, root=None):
     """Print the configuration lines to register — **print only, touch no files**.
 
@@ -376,15 +423,10 @@ def print_registration(harness, root=None):
         # root of this tree. The Windows ChatGPT app ships no CLI, so registration
         # has to be done by hand in config.toml; `source` uses a TOML literal string
         # (single quotes), inside which backslashes are not escapes.
-        config = os.path.join(os.environ.get("USERPROFILE") or os.path.expanduser("~"), ".codex", "config.toml")
-        print("# Append to %s (back it up first):" % config)
+        print("# Append to %s (back it up first):" % codex_config_file())
+        print("# Normally `codex plugin add` writes this for you; this is for checking by hand.")
         print()
-        print("[marketplaces.agent-avatar]")
-        print('source_type = "local"')
-        print("source = '%s'" % here)
-        print()
-        print('[plugins."agent-avatar@agent-avatar"]')
-        print("enabled = true")
+        print(codex_tables(root))
         return 0
     if harness == "dsh":
         print("# Append to %s (back it up first):" % dsh_patch_file())
@@ -414,20 +456,34 @@ def main():
     parser.add_argument("--print-registration", action="store_true",
                         help="only print the configuration lines to register, change no files (codex / dsh)")
     parser.add_argument("--register", action="store_true",
-                        help="dsh only: write the registration into cordis.patch.yml (backs it up first)")
+                        help="dsh / codex: write the registration into their config file (backs it up first)")
     parser.add_argument("--unregister", action="store_true",
-                        help="dsh only: remove that registration again")
+                        help="dsh / codex: remove that registration again")
     arguments = parser.parse_args()
 
     # Registration runs after localisation, so `--register` on its own does both: one
     # command is one thing that can fail, and the agent has one line to report.
+    # These two harnesses have no plugin CLI on every platform (dsh has none at all;
+    # Windows's ChatGPT app ships no `codex`), so for them a config file *is* the
+    # install. The others get their registration done by their own CLI.
+    REGISTRARS = {"dsh": edit_dsh_registration}
     if arguments.unregister:
-        if arguments.harness != "dsh":
-            raise SystemExit("--unregister is dsh-only")
-        print("removed agent-avatar from %s" % edit_dsh_registration(arguments.root, remove=True))
+        registrar = REGISTRARS.get(arguments.harness)
+        if registrar is None:
+            raise SystemExit("--unregister is dsh-only; %s is uninstalled by its own CLI"
+                             % arguments.harness)
+        print("removed agent-avatar from %s" % registrar(arguments.root, remove=True))
         return 0
-    if arguments.register and arguments.harness != "dsh":
-        raise SystemExit("--register is dsh-only; for %s use --print-registration" % arguments.harness)
+    # 🔴 Codex is deliberately **not** here, even though writing its config.toml is easy.
+    # `codex plugin add` also copies the plugin into `~/.codex/plugins/cache/...`, and the
+    # "Installed plugin root" it reports is that copy — so config.toml on its own is a
+    # half-install: registered, with nothing to load. Windows looked like it needed the
+    # hand-written route because `codex` is not on PATH there, but the ChatGPT app does
+    # ship the CLI (under %LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\), so both platforms
+    # can use it. Keeping a writer for that file would only invite the half-install back.
+    if arguments.register and arguments.harness not in REGISTRARS:
+        raise SystemExit("--register is dsh-only; for %s use its own CLI (codex plugin add)"
+                         % arguments.harness)
 
     if arguments.print_registration:
         return print_registration(arguments.harness, arguments.root)
@@ -475,7 +531,7 @@ def main():
         print("  (the original path contains spaces; using the 8.3 short path on the command line)")
     print("rewrote %d command(s) -> %s" % (count, config))
     if arguments.register:
-        print("registered agent-avatar in %s" % edit_dsh_registration(arguments.root))
+        print("registered agent-avatar in %s" % REGISTRARS[arguments.harness](arguments.root))
     # 🔴 Say only what this run actually proved. It used to claim the connector was
     # "installed", but this step runs *before* the harness install command — so an agent
     # told to relay this line would have pasted "installed" on top of a failed install.
