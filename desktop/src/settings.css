@@ -131,9 +131,15 @@ input[type="number"] {
 .state-motions { display: flex; flex-direction: column; gap: 8px; }
 /* 状态 | 动作 | 表情。表情那一列是后加的 —— 运行时一直同时应用两者，
    只是以前表情只能由模型作者在 avatar.json 里写死。 */
-.state-motion-row { display: grid; grid-template-columns: minmax(72px, .7fr) minmax(110px, 1fr) minmax(110px, 1fr); align-items: center; gap: 8px; }
+.state-motion-row { display: grid; grid-template-columns: var(--state-cols); align-items: center; gap: 6px; }
 /* 表头用同一套列宽，否则两行对不齐 —— 对不齐的表头比没有表头更糟。 */
-.state-motions-head { display: grid; grid-template-columns: minmax(72px, .7fr) minmax(110px, 1fr) minmax(110px, 1fr); gap: 8px; margin-bottom: 2px; font-size: 12px; opacity: .55; }
+.state-motions-head { display: grid; grid-template-columns: var(--state-cols); gap: 6px; margin-bottom: 2px; font-size: 12px; opacity: .55; }
+/* 状态 | 显示名 | 动作 | 表情。设置窗宽 460，减去内边距只剩四百出头，四列都得紧一点。 */
+.state-motions, .state-motions-head { --state-cols: minmax(64px, .8fr) minmax(76px, 1fr) minmax(84px, 1.1fr) minmax(84px, 1.1fr); }
+.state-motion-row label { display: flex; flex-direction: column; line-height: 1.2; }
+/* 小字那行是内部语义名：writing 和 researching 默认同名，不写出来两行就分不出谁是谁。 */
+.state-semantic { font-size: 10px; opacity: .45; font-weight: 400; }
+.state-rename { min-width: 0; }
 .state-motion-row label { font-weight: 600; }
 
 /* 口型电平条。柱子是当前强度，竖线是张嘴门槛 —— 有它才能把「盲调灵敏度」变成「看着调」。 */

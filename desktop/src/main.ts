@@ -1,7 +1,8 @@
 import { actionLabel, actionsFor, CLICK, DBLCLICK, defaultTriggers, heldParameters, listActions, migrateTriggers, pickAction, shortcutsIn, type ActionItem, type SwitchTable, type Trigger } from "./actions";
 import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 import "./style.css"; import "./state.css"; import { invoke } from "@tauri-apps/api/core"; import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleActionPoolKey, heldActionPoolKey, aliasMapKey, hasStored, readStringMap, triggerMapKey, SHORTCUT_STATUS_EVENT, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, readStateExpressions, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, lipSensitivityPercent, mouthAmplitudePercent, readStateSource, writeStateSource, connectorWizardSeen, rememberConnectorWizardSeen, type Language, type StateSource, type SettingsChange } from "./prefs";
+import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleActionPoolKey, heldActionPoolKey, aliasMapKey, hasStored, readStringMap, triggerMapKey, SHORTCUT_STATUS_EVENT, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, readStateExpressions, readStateLabels, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, lipSensitivityPercent, mouthAmplitudePercent, readStateSource, writeStateSource, connectorWizardSeen, rememberConnectorWizardSeen, type Language, type StateSource, type SettingsChange } from "./prefs";
+import { stateLabel } from "./state-labels";
 import type { ModelChoice } from "./native-menu";
 import type { ModelSource } from "./prefs";
 import type { AvatarSource } from "./types";
@@ -57,7 +58,7 @@ import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
 import { currentMonitor } from "@tauri-apps/api/window";
 import { AudioSourceController, lastRawLevel, setLipSensitivity, type AudioSource } from "./audio-source";
-import type { AvatarState } from "./types";
+import type { AvatarState, SemanticState } from "./types";
 function log(event: object): void { void invoke("log_event", { event: JSON.stringify(event) }).catch(() => {}); }
 installGlobalDiagnostics(log);
 const root = document.querySelector<HTMLDivElement>("#app")!; root.innerHTML = `<main class="shell idle"><div class="drag" data-tauri-drag-region></div><div class="model" data-tauri-drag-region></div><div class="status" data-no-drag>idle</div></main>`;
@@ -246,24 +247,6 @@ function applyOnboardingLanguage(locale: Language): void {
   if (zone && zone.dataset.busy !== "1") zone.textContent = copy.drop;
   document.documentElement.lang = locale;
 }
-// 对外展示标签：writing/researching 对用户都是「助手在思考」，统一成 thinking，避免工具一闪造成
-// writing→researching→writing 的文案跳动。内部语义与表情仍保留区分。
-// 原来挤在 syncing 里的三件事现在标签也分开了：等另一个 agent / 后台更新记忆技能 / 同步外部服务。
-// 状态栏是这个应用唯一常驻可见的文字，跟界面语言走 —— 日志里记的仍是内部语义，不受影响。
-const STATE_LABELS: Record<Language, Record<string, string>> = {
-  "zh-CN": {
-    idle: "空闲", writing: "思考中", researching: "思考中",
-    executing: "执行中", awaiting: "等待中", reviewing: "审阅中",
-    syncing: "同步中", error: "出错",
-  },
-  en: {
-    // 首字母大写：状态栏与窗口标题都用它（`Agent Avatar · Thinking`），
-    // 而设置页的英文状态名同样是大写开头，两处必须一致
-    idle: "Idle", writing: "Thinking", researching: "Thinking",
-    executing: "Executing", awaiting: "Awaiting", reviewing: "Reviewing",
-    syncing: "Syncing", error: "Error",
-  },
-};
 const REACTION_LABELS: Record<Language, Record<string, string>> = {
   "zh-CN": { blocked: "受阻", interrupted: "被打断" },
   en: { blocked: "Blocked", interrupted: "Interrupted" },
@@ -278,11 +261,13 @@ const ACTIVITY_LABELS: Record<Language, { expression: string; motion: string }> 
 };
 /** 状态栏用的语言。设置窗口改了语言就地更新，故状态文字**渲染时**才拼，不在收到状态时定死。 */
 let uiLanguage: Language = "zh-CN";
+/** 用户给状态起的显示名。与 uiLanguage 同理：只存「哪一份」，拼字符串在 renderStatus 里。 */
+let stateLabels: Partial<Record<SemanticState, string>> = {};
 let lastSnapshot: Readonly<AvatarState> | undefined;
 
 function stateText(): string {
   if (!lastSnapshot) return "";
-  const label = STATE_LABELS[uiLanguage][lastSnapshot.semantic] ?? lastSnapshot.semantic;
+  const label = stateLabel(lastSnapshot.semantic, uiLanguage, stateLabels);
   const reaction = lastSnapshot.reaction ? REACTION_LABELS[uiLanguage][lastSnapshot.reaction] ?? lastSnapshot.reaction : "";
   return [label, reaction].filter(Boolean).join(" · ");
 }
@@ -725,6 +710,7 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
   model.setMouthAmplitude(mouthAmplitudePercent() / 100);
   model.setSemanticMotions(readStateMotions(dir));
   model.setSemanticExpressions(readStateExpressions(dir));
+  stateLabels = readStateLabels();
 
   const buildState = () => ({
     models, currentDir: dir, inventory, audioSource, stateSource,
@@ -770,6 +756,8 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
     if (refreshShortcuts) void applyShortcuts();
     if (payload.stateMotions) model.setSemanticMotions(payload.stateMotions);
     if (payload.stateExpressions) model.setSemanticExpressions(payload.stateExpressions);
+    // 状态栏此刻显示的就是上一个状态的名字 —— 改完不重画，用户要等下一次状态变化才看得到
+    if (payload.stateLabels) { stateLabels = payload.stateLabels; renderStatus(); }
     if (payload.language) { uiLanguage = payload.language; renderStatus(); }
     if (payload.hiddenModels) hiddenModels = payload.hiddenModels;
     log({ event: "settings:applied", keys: Object.keys(payload) });

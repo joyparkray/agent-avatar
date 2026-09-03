@@ -1,4 +1,5 @@
 import { acceleratorFromEvent, actionLabel, expressionActionKey, groupActions, isUsableShortcut, listActions, defaultTriggers, migrateTriggers, MOTION_GROUP, motionActionKey, type ActionItem, type SwitchTable } from "./actions";
+import { STATE_LABELS } from "./state-labels";
 import "./settings.css";
 import { invoke } from "@tauri-apps/api/core";
 import { openRawLevelFor } from "./audio-source";
@@ -18,7 +19,7 @@ import {
   idleDelaySeconds, rememberIdleDelay, rememberStatusPosition, statusPosition, STATUS_LABELS, STATUS_POSITIONS,
   currentModelSource, language, LANGUAGES, modelBaseUrl, readStateMotions, rememberLanguage, rememberStateMotions,
   readHiddenModels, writeHiddenModels, readUpdateCheck, writeUpdateCheck,
-  readStateExpressions, rememberStateExpressions,
+  readStateExpressions, rememberStateExpressions, readStateLabels, rememberStateLabels,
   readLastUpdateCheck, writeLastUpdateCheck, SETTINGS_EVENT, SHORTCUT_STATUS_EVENT, type Language, type SettingsChange, type StatusPosition,
 } from "./prefs";
 import { SEMANTIC_STATES, type SemanticState } from "./types";
@@ -38,8 +39,8 @@ const TEXT: Record<Language, Record<string, string>> = {
     "general.language": "语言", "general.interfaceLanguage": "界面语言", "general.languageHint": "语言切换会立即应用到设置窗口。", "general.statusBar": "状态栏", "general.statusHint": "显示 Agent 当前在做什么，并可调整到不遮挡模型的位置。", "general.position": "位置",
     "general.about": "关于", "general.updateCheck": "自动检查更新", "general.updateHint": "只查一个版本号，不会下载或安装任何东西。查不到时（离线、代理、网络限制）不会有任何提示。", "general.checkNow": "检查更新", "general.checking": "查询中…", "general.upToDate": "已是最新版本。", "general.unreachable": "这会儿查不到（离线或网络受限），不影响使用。", "general.newVersion": "有新版本 {version}", "general.applyUpdate": "去下载",
     "video.display": "显示", "video.scale": "缩放", "video.opacity": "透明度", "video.focus": "聚焦范围：显示顶部", "video.focusHint": "仅在右键菜单启用聚焦模式时生效。", "video.rendering": "渲染", "video.renderHint": "降低画质通常比降低帧率更省 GPU。", "video.quality": "画质", "video.fps": "帧率",
-    "agent.connectors": "接入", "agent.connectorsHint": "选一个你在用的 agent，点「安装」就行。连接器和它需要的运行环境都在这个应用里，不联网、不下载；装完如果还需要你做点什么，会显示在下面。", "agent.mapping": "状态与动作", "agent.mappingHint": "为每个 Agent 状态挑一个动作和一个表情，两者会同时生效。留「模型默认」就用模型作者在 avatar.json 里写的那一份。"
-    , "agent.colMotion": "动作", "agent.colExpression": "表情", "agent.default": "模型默认",
+    "agent.connectors": "接入", "agent.connectorsHint": "选一个你在用的 agent，点「安装」就行。连接器和它需要的运行环境都在这个应用里，不联网、不下载；装完如果还需要你做点什么，会显示在下面。", "agent.mapping": "状态与动作", "agent.mappingHint": "「显示名」是状态栏上写的那几个字，改成你喜欢的说法就行（留空恢复默认）。动作和表情两者会同时生效，留「模型默认」就用模型作者在 avatar.json 里写的那一份。"
+    , "agent.colLabel": "显示名", "agent.colMotion": "动作", "agent.colExpression": "表情", "agent.default": "模型默认",
     "agent.removeAll": "移除所有连接器", "agent.removeAllHint": "删除本应用之前先点一下：它会把五家里的登记收回来。不这么做的话，那些登记会留在你的 agent 里，指向一个已经不存在的程序。",
     "agent.removeAgain": "确认移除", "agent.removeConfirm": "再点一次「确认移除」，会把五家里的登记全部收回。",
     "agent.removing": "正在移除…", "agent.removedNone": "本来就没有装。", "agent.removedSome": "已移除：{list}", "agent.removeFailed": "有几家没成功：{list}",
@@ -54,8 +55,8 @@ const TEXT: Record<Language, Record<string, string>> = {
     "general.language": "Language", "general.interfaceLanguage": "Interface language", "general.languageHint": "Language changes apply to this settings window immediately.", "general.statusBar": "Status bar", "general.statusHint": "Show what the agent is doing and place the label where it does not cover the avatar.", "general.position": "Position",
     "general.about": "About", "general.updateCheck": "Check for updates automatically", "general.updateHint": "It reads a version number and nothing else — no download, no install. If it cannot reach the network, it says nothing.", "general.checkNow": "Check for updates", "general.checking": "Checking…", "general.upToDate": "You are on the latest version.", "general.unreachable": "Can't reach it right now (offline or restricted). Nothing is affected.", "general.newVersion": "Version {version} is available", "general.applyUpdate": "Download",
     "video.display": "Display", "video.scale": "Scale", "video.opacity": "Opacity", "video.focus": "Focus crop: show top", "video.focusHint": "Only applies when Focus Mode is enabled from the context menu.", "video.rendering": "Rendering", "video.renderHint": "Lowering quality usually saves more GPU power than lowering frame rate.", "video.quality": "Quality", "video.fps": "Frame rate",
-    "agent.connectors": "Connectors", "agent.connectorsHint": "Pick the agent you use and press Install. The connector and the runtime it needs are inside this app — nothing is downloaded. Any remaining manual step is shown below.", "agent.mapping": "Agent state and motion", "agent.mappingHint": "Pick a motion and an expression for each agent state; both are applied. Leave either on Model default to use what the model author put in avatar.json."
-    , "agent.colMotion": "Motion", "agent.colExpression": "Expression", "agent.default": "Model default",
+    "agent.connectors": "Connectors", "agent.connectorsHint": "Pick the agent you use and press Install. The connector and the runtime it needs are inside this app — nothing is downloaded. Any remaining manual step is shown below.", "agent.mapping": "Agent state and motion", "agent.mappingHint": "Shown as is the wording in the status bar — put whatever you like there (empty restores the default). The motion and the expression are both applied; leave either on Model default to use what the model author put in avatar.json."
+    , "agent.colLabel": "Shown as", "agent.colMotion": "Motion", "agent.colExpression": "Expression", "agent.default": "Model default",
     "agent.removeAll": "Remove all connectors", "agent.removeAllHint": "Press this before deleting the app: it takes back the registrations in all five harnesses. Otherwise they stay in your agents, pointing at a program that no longer exists.",
     "agent.removeAgain": "Confirm removal", "agent.removeConfirm": "Press \"Confirm removal\" again to take back the registrations in all five harnesses.",
     "agent.removing": "Removing…", "agent.removedNone": "None were installed.", "agent.removedSome": "Removed: {list}", "agent.removeFailed": "Some could not be removed: {list}",
@@ -347,18 +348,22 @@ function clearTriggerNote(row: HTMLElement): void { row.querySelector(".trigger-
  */
 function bindStateActions(dir: string, items: readonly ActionItem[]): void {
   const host = $<HTMLElement>('[data-list="state-motions"]');
+  const draw = () => {
+  host.textContent = "";  // 语言切换要重画：表头、状态名、输入框的 placeholder 三处都跟语言走
   // 两个下拉挨在一起，不标注的话没人知道哪个是哪个 —— 尤其在别名之后，
   // 「微笑」既可能是表情也可能是动作。
   const head = document.createElement("div");
   head.className = "state-motions-head";
   head.append(document.createElement("span"));  // 状态那一列的表头留空 —— 行首已经写着状态名
-  for (const key of ["agent.colMotion", "agent.colExpression"]) {
+  for (const key of ["agent.colLabel", "agent.colMotion", "agent.colExpression"]) {
     const cell = document.createElement("span");
     cell.dataset.i18n = key; cell.textContent = tr(key);
     head.append(cell);
   }
   host.append(head);
   const aliases = readStringMap(aliasMapKey(dir));
+  const locale = language();
+  const labels = readStateLabels();
   const motions = readStateMotions(dir);
   const expressions = readStateExpressions(dir);
   const commitMotions = () => { rememberStateMotions(dir, motions); announce({ stateMotions: { ...motions } }); };
@@ -393,7 +398,30 @@ function bindStateActions(dir: string, items: readonly ActionItem[]): void {
 
   for (const state of SEMANTIC_STATES) {
     const row = document.createElement("div"); row.className = "state-motion-row";
-    const label = document.createElement("label"); label.dataset.i18n = `state.${state}`; label.textContent = tr(`state.${state}`);
+
+    // 🔴 行首原来只写内部语义名（`researching`），中文界面上突兀，而且 writing 与
+    // researching 内置都叫「思考中」—— 只写其中一个，两行看起来就是重复的。所以两个都写：
+    // 大字是它现在显示成什么，小字是它到底是哪一档。
+    const label = document.createElement("label");
+    const shown = document.createElement("span");
+    shown.className = "state-shown"; shown.textContent = STATE_LABELS[locale][state] ?? state;
+    const semantic = document.createElement("span");
+    semantic.className = "state-semantic"; semantic.textContent = state;
+    label.append(shown, semantic);
+
+    // 显示名：空 = 用内置文案，所以 placeholder 就是内置文案本身 —— 不需要再解释一句
+    // 「留空恢复默认」，输入框自己长得就是那个意思。
+    const rename = document.createElement("input");
+    rename.type = "text"; rename.dataset.state = state; rename.className = "state-rename";
+    rename.placeholder = STATE_LABELS[locale][state] ?? state;
+    rename.value = labels[state] ?? "";
+    rename.maxLength = 24;
+    rename.addEventListener("input", () => {
+      const text = rename.value.trim();
+      if (text) labels[state] = text; else delete labels[state];
+      rememberStateLabels(labels);
+      announce({ stateLabels: { ...labels } });
+    });
 
     const motion = motions[state];
     const motionSelect = picker(state, "motion", motion ? motionActionKey(motion) : "", item => {
@@ -407,8 +435,11 @@ function bindStateActions(dir: string, items: readonly ActionItem[]): void {
       commitExpressions();
     });
 
-    row.append(label, motionSelect, expressionSelect); host.append(row);
+    row.append(label, rename, motionSelect, expressionSelect); host.append(row);
   }
+  };
+  draw();
+  redraws.push(draw);
 }
 
 function updateLocalizedSelects(): void {

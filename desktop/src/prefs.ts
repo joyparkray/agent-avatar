@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { MotionRef } from "./inventory";
 import { SEMANTIC_STATES, type SemanticState } from "./types";
+import { cleanStateLabels } from "./state-labels";
 
 /**
  * 主窗口与设置窗口共用的偏好读写。
@@ -41,6 +42,8 @@ export interface SettingsChange {
   idleExpressions?: string[];
   /** 键 → 触发方式（`click` / `dblclick` / 快捷键）。见 actions.ts。 */
   triggers?: Record<string, string>;
+  /** 语义状态 → 用户起的显示名。空表示恢复内置文案。 */
+  stateLabels?: Partial<Record<SemanticState, string>>;
   /** 语义状态 → 表情名。用户没配的状态回落到模型清单里作者写的那个。 */
   stateExpressions?: Partial<Record<SemanticState, string>>;
   /** 键 → 用户改的显示名。只影响显示，不影响播放。 */
@@ -297,6 +300,8 @@ export function rememberConnectorWizardSeen(): void { writeRaw("connectorWizardS
 
 export const stateMotionMapKey = (dir: string): string => `stateMotions:${dir}`;
 export const stateExpressionMapKey = (dir: string): string => `stateExpressions:${dir}`;
+/** 状态显示名是**跟着 agent 走**的，不是跟着模型走 —— 换个皮肤不该把「生气中」改回「出错」。 */
+export const STATE_LABEL_KEY = "stateLabels";
 
 /** 只接受已知状态和 [group, non-negative integer]；模型库存校验由设置页负责。 */
 export function readStateMotions(dir: string): Partial<Record<SemanticState, MotionRef>> {
@@ -332,6 +337,15 @@ export function readStateExpressions(dir: string): Partial<Record<SemanticState,
 
 export function rememberStateExpressions(dir: string, value: Partial<Record<SemanticState, string>>): void {
   writeRaw(stateExpressionMapKey(dir), value);
+}
+
+/** 用户给状态起的显示名。清洗在 state-labels 里，这里只管存取。 */
+export function readStateLabels(): Partial<Record<SemanticState, string>> {
+  return cleanStateLabels(readRaw(STATE_LABEL_KEY));
+}
+
+export function rememberStateLabels(value: Partial<Record<SemanticState, string>>): void {
+  writeRaw(STATE_LABEL_KEY, cleanStateLabels(value));
 }
 
 /** 模型来源：随包的走内嵌资源，用户装的走数据目录（`.app` 只读，装不进去）。 */

@@ -76,8 +76,11 @@ describe("unsupported Cubism 5.1 offscreen models", () => {
 describe("status bar language", () => {
   const main = readFileSync("src/main.ts", "utf8");
   it("localizes state, reaction, click-through hint and manual activity", () => {
-    expect(main).toMatch(/STATE_LABELS[\s\S]*"zh-CN": \{[\s\S]*idle: "空闲"[\s\S]*executing: "执行中"/);
-    expect(main).toMatch(/STATE_LABELS[\s\S]*en: \{[\s\S]*idle: "Idle"/);
+    // 文案本身搬到了 state-labels（设置页也要用同一份），main 只负责把它接到状态栏上
+    const labels = readFileSync("src/state-labels.ts", "utf8");
+    expect(labels).toMatch(/STATE_LABELS[\s\S]*"zh-CN": \{[\s\S]*idle: "空闲"[\s\S]*executing: "执行中"/);
+    expect(labels).toMatch(/STATE_LABELS[\s\S]*en: \{[\s\S]*idle: "Idle"/);
+    expect(main).toContain("stateLabel(lastSnapshot.semantic, uiLanguage, stateLabels)");
     expect(main).toContain('"zh-CN": { blocked: "受阻", interrupted: "被打断" }');
     expect(main).toContain('"zh-CN": "穿透中，悬停 3 秒可操作"');
     expect(main).toContain('"zh-CN": { expression: "表情", motion: "动作" }');
