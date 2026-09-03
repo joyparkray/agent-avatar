@@ -33,7 +33,7 @@ pub const HARNESSES: [&str; 5] = ["claude-code", "codex", "dsh", "hermes", "work
 /// 用户目录。**Windows 上没有 `HOME`** —— 那是 POSIX 与 Git Bash 的约定，
 /// 从资源管理器启动的 app 进程里只有 `USERPROFILE`。只读 HOME 的话，五家的插件目录
 /// 全都算到 `/` 底下去，表现是**装好了界面还说没装**（而这正是本模块要报的那个状态）。
-fn home() -> PathBuf {
+pub(crate) fn home() -> PathBuf {
     for name in ["HOME", "USERPROFILE"] {
         if let Ok(value) = env::var(name) {
             if !value.is_empty() { return PathBuf::from(value); }
@@ -43,7 +43,7 @@ fn home() -> PathBuf {
 }
 
 /// `$VAR`，没设就用 `$HOME/<fallback>`。各家 install-plugin.sh 里的口径，原样照搬。
-fn harness_home(var: &str, fallback: &str) -> PathBuf {
+pub(crate) fn harness_home(var: &str, fallback: &str) -> PathBuf {
     env::var(var).ok().filter(|value| !value.is_empty()).map(PathBuf::from).unwrap_or_else(|| home().join(fallback))
 }
 
@@ -84,7 +84,7 @@ fn plugin_dirs(harness: &str) -> Vec<PathBuf> {
 /// POSIX 上是 `~/.hermes`，而 Windows 官方安装器把它放在 `%LOCALAPPDATA%\hermes`，
 /// 并且**不设 `HERMES_HOME`**。照 POSIX 那套找的话，界面永远说「未安装」——
 /// 而用户明明装好了。两个都认，Windows 优先本地约定。
-fn hermes_homes() -> Vec<PathBuf> {
+pub(crate) fn hermes_homes() -> Vec<PathBuf> {
     if let Ok(explicit) = env::var("HERMES_HOME") {
         if !explicit.is_empty() { return vec![PathBuf::from(explicit)]; }
     }
@@ -140,7 +140,7 @@ fn dir_installed_at(harness: &str) -> Option<String> {
 ///
 /// 自己算是因为这个 crate 没有 chrono/time 依赖，而为了一个时间戳引一整个日期库
 /// 不划算。算法是 Howard Hinnant 的 days-from-civil 的逆运算，闰年、世纪闰年都在内。
-fn rfc3339(seconds: u64) -> String {
+pub(crate) fn rfc3339(seconds: u64) -> String {
     let (days, rest) = ((seconds / 86_400) as i64, seconds % 86_400);
     // 以 0000-03-01 为纪元（把闰日挪到年末，月份长度就有了规律）
     let z = days + 719_468;
@@ -154,6 +154,15 @@ fn rfc3339(seconds: u64) -> String {
     let year = era * 400 + yoe + if month <= 2 { 1 } else { 0 };
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
             year, month, day, rest / 3_600, (rest % 3_600) / 60, rest % 60)
+}
+
+/// 「这家装了没有」的**唯一判据**：账本优先，这家没有账本（或从没用过）才退回看目录。
+///
+/// 单独拎出来是因为它有两个调用方 —— 界面，和真机安装测试。两边各写一遍的话，
+/// 测试就会在一条和界面不同的判据上通过（Hermes 正是这样：它没有账本，
+/// `installed_by_record` 对它永远是 None）。
+pub(crate) fn is_installed(harness: &str) -> bool {
+    installed_by_record(harness).unwrap_or_else(|| installed_dir(harness).is_some())
 }
 
 /// 首选位置（新布局）。卸载与「装到哪」的显示用它。
@@ -176,7 +185,7 @@ pub fn plugin_dir(harness: &str) -> Option<PathBuf> {
 /// 返回值分三种：`Some(true)` 账本说装了；`Some(false)` 账本在、但没有我们这一条
 /// （**文件在也算没装** —— 那正是「拷了文件却没登记」，harness 根本不会加载它）；
 /// `None` 账本读不到（这家没有账本，或者从没用过），退回去看目录。
-fn installed_by_record(harness: &str) -> Option<bool> {
+pub(crate) fn installed_by_record(harness: &str) -> Option<bool> {
     let listed = |path: PathBuf, needle: &str| -> Option<bool> {
         let raw = fs::read_to_string(path).ok()?;
         Some(raw.contains(needle))
@@ -219,8 +228,7 @@ fn installed_dir(harness: &str) -> Option<PathBuf> {
 pub fn list_connectors() -> Vec<Value> {
     HARNESSES.iter().map(|harness| {
         let found = installed_dir(harness);
-        // 账本优先；这家没有账本（或从没用过）才退回看目录
-        let installed = installed_by_record(harness).unwrap_or_else(|| found.is_some());
+        let installed = is_installed(harness);
         json!({
             "harness": harness,
             "installed": installed,

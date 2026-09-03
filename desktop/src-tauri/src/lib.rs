@@ -35,6 +35,7 @@ pub mod user_error {
 }
 /// Agent connector 的检测（**不装也不卸**，那两件都由用户的 agent 做）。
 mod connectors;
+mod connector_install;
 /// Hermes 适配层：**可整体摘除**的边界（见 integrations/hermes/README.md）。
 /// 删掉这一行与 hermes.rs 后应用仍能跑，前端调不到命令会自动降级为常驻 idle。
 /// 唯一的外部牵连：connectors.rs 用 `hermes::last_signal_seconds` 判断 connector 通没通
@@ -382,6 +383,6 @@ pub fn run() {
             spawn_hit_test(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![log_event, hermes::read_semantic_state, hermes::discover_audio_endpoint, config::read_config, config::write_config, config::install_model, config::delete_model, config::list_installed_models, config::list_model_issues, connectors::list_connectors, open_tool_window, set_hit_region, open_in_browser, start_global_audio, stop_global_audio])
+        .invoke_handler(tauri::generate_handler![log_event, hermes::read_semantic_state, hermes::discover_audio_endpoint, config::read_config, config::write_config, config::install_model, config::delete_model, config::list_installed_models, config::list_model_issues, connectors::list_connectors, connector_install::install_connector, connector_install::uninstall_connector, open_tool_window, set_hit_region, open_in_browser, start_global_audio, stop_global_audio])
         .run(tauri::generate_context!()).expect("error while running Agent Avatar");
 }

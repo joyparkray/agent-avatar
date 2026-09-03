@@ -1,0 +1,987 @@
+//! 装 / 卸 connector —— **由 app 来做**。
+//!
+//! 🔴 这是对上一版方案的推翻。上一版把安装交给用户的 agent：app 出一段提示词，用户粘给
+//! 手边的 agent，agent 去跑命令。两轮实机测试（提示词交给真实的 claude / codebuddy /
+//! hermes / dsh CLI）一共暴露 **14 个缺陷**，成因是同一件事 —— **提示词是一段程序，
+//! 而执行它的解释器不确定**。而确定性的那部分（改写 + 冒烟自检）在约 20 次运行里零失败。
+//! 压垮它的是 Codex：提示词写的是 `plugin install`，真实动词是 `plugin add`，错了很久没
+//! 人发现，因为它从没在真的 CLI 上跑过。我们能测 4 个 CLI 各一个模型，而用户手里是几十种
+//! 模型 × 版本的组合 —— 那个矩阵永远测不完。详见
+//! private/RELEASE-CONNECTOR-WIZARD-DESIGN.md「2026-09-03 定案」。
+//!
+//! **但当初放弃「app 自己装」的理由是绑错了。** 那个理由是「app 猜 harness 的目录布局会漂」
+//! —— 完全正确（一天漂过三次）。可修好它的东西不是 agent，是**调 harness 自己的 CLI，
+//! 而不是写它的文件**。这两件事被绑成了一个决定，于是为了得到后者，把前者的全部不确定性
+//! 一起接受了。最硬的证据：`codex plugin add` 会把插件拷进 `~/.codex/plugins/cache/…`
+//! 并把**那份**报成 installed root；手写 config.toml 建不出它 —— 那是个半装。
+//!
+//! 所以这里的规矩是：**登记一律交给 harness 自己的 CLI**。唯一的例外是 dsh，它根本没有
+//! CLI，那个 patch 文件就是它的安装机制本身。
+//!
+//! 检测（装没装、通没通）仍在 `connectors.rs`。
+use serde_json::{json, Value};
+use std::{env, fs,
+          path::{Path, PathBuf},
+          process::Command};
+use tauri::Manager;
+
+use crate::connectors::{harness_home, home, hermes_homes, rfc3339, HARNESSES};
+
+/// 各家插件树在 marketplace 里的相对位置 + 本地化要改的那个文件 + 冒烟自检要看的状态文件。
+///
+/// 与 `connectors/localize.py` 的 `LAYOUT` 同源。布局一变这张表就要跟着改，否则症状是
+/// 「装好了，什么也不发生」。
+struct Layout {
+    /// 相对插件树根：要把解释器写进去的那个文件（Hermes 没有）
+    config: Option<&'static str>,
+    /// 相对插件树根：冒烟自检要跑的那个 hook
+    hook: Option<&'static str>,
+    /// 冒烟自检要看它落没落盘
+    state: &'static str,
+    /// 喂给 hook 的那条事件
+    event: &'static str,
+}
+
+fn layout(harness: &str) -> Layout {
+    match harness {
+        "claude-code" => Layout { config: Some("hooks/hooks.json"), hook: Some("hooks/agent-avatar-hook.py"),
+                                  state: "agent-avatar-state.claude-code.json", event: "UserPromptSubmit" },
+        "codex" => Layout { config: Some("hooks.json"), hook: Some("scripts/agent-avatar-hook.py"),
+                            state: "agent-avatar-state.codex.json", event: "UserPromptSubmit" },
+        "workbuddy" => Layout { config: Some("hooks/hooks.json"), hook: Some("hooks/agent-avatar-hook.py"),
+                                state: "agent-avatar-state.workbuddy.json", event: "UserPromptSubmit" },
+        "dsh" => Layout { config: Some("index.mjs"), hook: Some("agent-avatar-hook.py"),
+                          state: "agent-avatar-state.dsh.json", event: "pre_llm_call" },
+        // Hermes 的插件是 in-process 的 Python 包，跑在 Hermes 自己的解释器里、不 spawn
+        // 任何进程 —— 五家里唯一不需要本地化、也无法在装机时冒烟自检的。
+        _ => Layout { config: None, hook: None, state: "agent-avatar-state.json", event: "" },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 找 harness 自己的 CLI
+// ---------------------------------------------------------------------------
+
+/// 那家的可执行文件叫什么。
+fn cli_name(harness: &str) -> Option<&'static str> {
+    match harness {
+        "claude-code" => Some("claude"),
+        "codex" => Some("codex"),
+        "workbuddy" => Some("codebuddy"),
+        "hermes" => Some("hermes"),
+        _ => None,                       // dsh 没有 CLI
+    }
+}
+
+/// PATH 之外还要找的地方。
+///
+/// 🔴 **不能只靠 PATH。** app 是从资源管理器/Dock 启动的，拿到的环境和用户终端里的不是
+/// 同一份；而且 Codex 那个根本就不在任何 PATH 上（见 `newest_codex`）。只认 PATH 的表现是
+/// 「用户明明装了，app 说找不到」。
+fn cli_candidates(harness: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let name = match cli_name(harness) { Some(name) => name, None => return found };
+
+    // npm 全局装的两家
+    let npm_dirs: Vec<PathBuf> = if cfg!(windows) {
+        vec![env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| home().join("AppData/Roaming")).join("npm")]
+    } else {
+        vec![PathBuf::from("/usr/local/bin"), PathBuf::from("/opt/homebrew/bin"),
+             home().join(".npm-global/bin"), home().join(".local/bin")]
+    };
+    for dir in npm_dirs {
+        for suffix in exe_suffixes() {
+            found.push(dir.join(format!("{name}{suffix}")));
+        }
+    }
+
+    match harness {
+        "hermes" => {
+            for root in hermes_homes() {
+                for suffix in exe_suffixes() {
+                    found.push(root.join("bin").join(format!("hermes{suffix}")));
+                }
+            }
+        }
+        "codex" => found.extend(newest_codex()),
+        _ => {}
+    }
+    found
+}
+
+/// Windows 上一个名字对应几种后缀：npm 装出来的是 `.cmd` 垫片，不是 `.exe`。
+fn exe_suffixes() -> &'static [&'static str] {
+    if cfg!(windows) { &[".cmd", ".exe", ".bat", ""] } else { &[""] }
+}
+
+/// Codex 的 CLI **不在 PATH 上，但确实存在**。
+///
+/// Windows 的 ChatGPT app 自带它，装在 `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`
+/// —— 目录名是随版本变的哈希，所以只能枚举后按修改时间取最新的那个。
+///
+/// 🔴 这一条曾经让我们得出完全错误的结论：以为「Windows 上没有 codex CLI」，据此写了一整条
+/// 手改 config.toml 的岔路。那条路只写登记、**不产生 codex 真正加载的那份缓存副本**，
+/// 是个半装 —— 而且很可能正是 Codex 一次都没上报过的真实原因。
+fn newest_codex() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(local) = env::var("LOCALAPPDATA") {
+        roots.push(PathBuf::from(local).join("OpenAI/Codex/bin"));
+    }
+    roots.push(home().join(".codex/bin"));
+
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for root in roots {
+        let entries = match fs::read_dir(&root) { Ok(entries) => entries, Err(_) => continue };
+        for entry in entries.flatten() {
+            for suffix in exe_suffixes() {
+                let binary = entry.path().join(format!("codex{suffix}"));
+                if binary.is_file() {
+                    let stamp = entry.metadata().and_then(|meta| meta.modified())
+                        .unwrap_or(std::time::UNIX_EPOCH);
+                    candidates.push((stamp, binary));
+                }
+            }
+        }
+    }
+    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    candidates.into_iter().map(|(_, path)| path).collect()
+}
+
+/// 解析出这家 CLI 的可执行文件。先试 PATH 上的名字，再试已知位置。
+pub fn resolve_cli(harness: &str) -> Option<PathBuf> {
+    let name = cli_name(harness)?;
+    // PATH 上有同名的就用它 —— 用户自己装的版本优先于我们猜到的位置
+    if run(Path::new(name), &["--version"]).is_ok() {
+        return Some(PathBuf::from(name));
+    }
+    cli_candidates(harness).into_iter().find(|path| path.is_file())
+}
+
+// ---------------------------------------------------------------------------
+// 跑命令
+// ---------------------------------------------------------------------------
+
+/// 跑一条命令，失败时把 harness 自己说的话原样带回来。
+///
+/// 错误信息**必须是它的原话**：这条链路上我们能给用户的唯一线索就是 harness 的输出
+/// （「Marketplace undefined is not found.」这种），我们自己改写一遍只会把它变模糊。
+fn run(program: &Path, args: &[&str]) -> Result<String, String> {
+    let mut command = Command::new(program);
+    command.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);          // CREATE_NO_WINDOW：别闪控制台
+    }
+    let output = command.output().map_err(|error| format!("{}: {error}", program.display()))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if output.status.success() {
+        Ok(if stdout.is_empty() { stderr } else { stdout })
+    } else {
+        Err(format!("{} {}: {}", program.display(), args.join(" "),
+                    if stderr.is_empty() { stdout } else { stderr }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 打包进来的那份 & 工作副本
+// ---------------------------------------------------------------------------
+
+/// app 里带的连接器树与解释器。
+fn bundled(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
+    let root = app.path().resource_dir()
+        .map_err(|error| format!("找不到资源目录：{error}"))?
+        .join("resources/connectors");
+    let tree = root.join("marketplace");
+    let python = root.join(if cfg!(windows) { "python/python.exe" } else { "python/bin/python3" });
+    if !tree.is_dir() {
+        return Err(format!("app 里没有连接器树（{}）—— 构建时漏跑 connectors/build-bundle.sh", tree.display()));
+    }
+    if !python.is_file() {
+        return Err(format!("app 里没有解释器（{}）—— 构建时漏跑 connectors/fetch-python.sh", python.display()));
+    }
+    Ok((tree, python))
+}
+
+/// 工作副本的位置。
+///
+/// **不能就地用资源目录**，两个原因：本地化要改写 hooks.json，而 `C:\Program Files` /
+/// `/Applications` 下是只读的；而且 marketplace 登记进 harness 之后，那个路径要一直有效 ——
+/// app 升级时资源目录整个换掉，登记就会指向不存在的东西。所以拷进 app 自己的数据目录，
+/// 升级时按版本号重新铺一次。
+fn working_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|error| format!("找不到数据目录：{error}"))?;
+    Ok(dir.join("connectors"))
+}
+
+/// 递归拷贝（标准库没有）。
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// 把打包的那棵树**和解释器**都铺到工作副本里（每次安装都重铺 —— 幂等，顺带修好被人动过的文件）。
+///
+/// 🔴 **解释器也要拷过来，不能直接用资源目录里那份。** 资源目录是 Tauri 按当前可执行文件的
+/// 位置在运行时算出来的，所以用户装到哪都对 —— 但那正是问题：hook 的命令行里烤进的是
+/// 解释器的**绝对路径**，用户之后把 app 挪个位置、或者卸载重装到别的盘，五家 harness 配置里
+/// 那些命令行就指向了不存在的东西。而这种失败是**静默的**：hook 跑不起来，退出码没人看，
+/// 形象就是不动了。
+///
+/// 数据目录的位置与安装位置无关，app 换地方它不动，所以命令行一次写对就一直有效。
+/// 代价是 21MB 的重复，换掉一整类查不出来的故障。
+fn lay_out_tree(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
+    let (bundle, bundled_python) = bundled(app)?;
+    let root = working_root(app)?;
+    let tree = root.join("marketplace");
+    if tree.exists() {
+        fs::remove_dir_all(&tree).map_err(|error| format!("清理旧的工作副本失败：{error}"))?;
+    }
+    copy_tree(&bundle, &tree).map_err(|error| format!("拷贝连接器树失败：{error}"))?;
+
+    // 解释器只在缺失或版本不同的时候重拷 —— 21MB 的拷贝不该每次装插件都来一遍。
+    let python_root = root.join("python");
+    let python = python_root.join(bundled_python.file_name().unwrap_or_default());
+    let python = if cfg!(windows) { python } else { python_root.join("bin/python3") };
+    if !python.is_file() || !same_size(&bundled_python, &python) {
+        let source_root = bundled_python.parent()
+            .and_then(|dir| if cfg!(windows) { Some(dir.to_path_buf()) }
+                            else { dir.parent().map(Path::to_path_buf) })
+            .ok_or_else(|| "自带解释器的位置不对".to_string())?;
+        let _ = fs::remove_dir_all(&python_root);
+        copy_tree(&source_root, &python_root).map_err(|error| format!("拷贝解释器失败：{error}"))?;
+    }
+    if !python.is_file() {
+        return Err(format!("解释器没拷成：{}", python.display()));
+    }
+    Ok((tree, python))
+}
+
+/// 够用的「同一份吗」：解释器要么在，要么被 app 升级换掉了，大小不同就重拷。
+fn same_size(left: &Path, right: &Path) -> bool {
+    match (left.metadata(), right.metadata()) {
+        (Ok(a), Ok(b)) => a.len() == b.len(),
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 本地化：把解释器写进 hook 的命令行
+// ---------------------------------------------------------------------------
+
+/// 把解释器路径变成**命令行里能用**的形状。
+///
+/// 正斜杠：Windows API 两种分隔符都收，但 Claude Code 在 Windows 上默认用 Git Bash，
+/// 而 bash 会把反斜杠当转义（`C:\Python\python.exe` 变成 `C:Pythonpython.exe`）。
+///
+/// 不能有空格：命令行里解释器那一段**不能加引号**（PowerShell 会把带引号的首 token 当成
+/// 字符串表达式然后报错），所以带空格的路径根本表达不出来。而 app 装在
+/// `C:\Program Files\…` 下正好带空格 —— 这时换成 8.3 短路径，它没有空格，两个 shell 都认。
+fn command_line_path(path: &Path) -> String {
+    let text = path.to_string_lossy().to_string();
+    if !text.contains(' ') {
+        return text.replace('\\', "/");
+    }
+    #[cfg(windows)]
+    {
+        if let Some(short) = short_path(&text) {
+            if !short.contains(' ') {
+                return short.replace('\\', "/");
+            }
+        }
+    }
+    // 短路径拿不到（卷上关了 8.3 生成）就只能原样返回 —— 后面的冒烟自检会当场发现它跑不了，
+    // 而那正是我们要的：**响亮地失败**，而不是装完之后形象永远不动。
+    text.replace('\\', "/")
+}
+
+#[cfg(windows)]
+fn short_path(long: &str) -> Option<String> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+    let wide: Vec<u16> = std::ffi::OsStr::new(long).encode_wide().chain(Some(0)).collect();
+    let mut buffer = vec![0u16; 1024];
+    let written = unsafe { GetShortPathNameW(wide.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) };
+    if written == 0 || written as usize >= buffer.len() {
+        return None;
+    }
+    buffer.truncate(written as usize);
+    Some(std::ffi::OsString::from_wide(&buffer).to_string_lossy().to_string())
+}
+
+/// 改写 hooks.json 里每一条命令的解释器。
+///
+/// 写出来的那一行形状是有讲究的，每一处都是实测出来的：
+///
+/// ```text
+/// C:/PROGRA~1/…/python.exe "${CLAUDE_PLUGIN_ROOT}/hooks/agent-avatar-hook.py" ; exit 0
+/// └─ 正斜杠、不加引号          └─ 参数加引号（两个 shell 都收）      └─ 安全网
+/// ```
+///
+/// `; exit 0` 不是可选的：脚本路径一旦断了，`python x.py` 的退出码**正好是 2**，
+/// 而 2 在 Claude Code 与 Codex 里都表示「拦截」。
+///
+/// Codex 有自己的 `commandWindows` 覆盖字段，所以 Windows 上写它、POSIX 的 `command` 不动，
+/// 一份 hooks.json 服务两个平台。**POSIX 上必须写 `command`** —— 永远写 `commandWindows`
+/// 会把好路径放进 macOS 不读的字段，而活着的命令仍是 `/usr/bin/python3`，那在没装 Xcode
+/// 命令行工具的 Mac 上是个会弹安装框的占位程序。
+fn rewrite_hooks_json(path: &Path, python: &str, harness: &str) -> Result<usize, String> {
+    let field = if harness == "codex" && cfg!(windows) { "commandWindows" } else { "command" };
+    let raw = fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut document: Value = serde_json::from_str(&raw).map_err(|error| format!("{}: {error}", path.display()))?;
+
+    let mut rewritten = 0;
+    if let Some(groups) = document.get_mut("hooks").and_then(Value::as_object_mut) {
+        for matchers in groups.values_mut() {
+            for matcher in matchers.as_array_mut().into_iter().flatten() {
+                for hook in matcher.get_mut("hooks").and_then(Value::as_array_mut).into_iter().flatten() {
+                    if hook.get("type").and_then(Value::as_str) != Some("command") {
+                        continue;
+                    }
+                    let source = hook.get(field).and_then(Value::as_str)
+                        .or_else(|| hook.get("command").and_then(Value::as_str))
+                        .unwrap_or("").to_string();
+                    // 只换解释器；脚本路径原样保留（含 ${PLUGIN_ROOT} 这类占位符）
+                    let tail = match source.trim().split_once(' ') {
+                        Some((_, rest)) => rest.trim().to_string(),
+                        None => source.trim().to_string(),
+                    };
+                    let tail = if tail.starts_with('"') { tail } else {
+                        match tail.split_once(' ') {
+                            Some((first, rest)) => format!("\"{first}\" {rest}"),
+                            None => format!("\"{tail}\""),
+                        }
+                    };
+                    hook[field] = Value::String(format!("{python} {tail}"));
+                    rewritten += 1;
+                }
+            }
+        }
+    }
+    if rewritten == 0 {
+        return Err(format!("hooks.json 里一条命令都没有，布局可能变了：{}", path.display()));
+    }
+    fs::write(path, serde_json::to_string_pretty(&document)
+        .map_err(|error| error.to_string())? + "\n")
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok(rewritten)
+}
+
+/// dsh 是个 in-process 的 JS 插件，自己去 spawn 一个 python 子进程。
+///
+/// Windows 上这是五种失败里**最安静**的一种：它把 stderr 设成 ignore，而 `error` 事件只在
+/// spawn 本身失败时才触发 —— 而那个应用商店存根是能正常启动的。这里换掉那一行里的默认值；
+/// `AGENT_AVATAR_PYTHON` 环境变量仍然优先于它。
+fn rewrite_index_mjs(path: &Path, python: &str) -> Result<usize, String> {
+    let text = fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let marker = "process.env.AGENT_AVATAR_PYTHON || \"";
+    let start = text.find(marker)
+        .ok_or_else(|| format!("index.mjs 里找不到解释器那一行，布局可能变了：{}", path.display()))?;
+    let value_start = start + marker.len();
+    let value_end = value_start + text[value_start..].find('"')
+        .ok_or_else(|| format!("index.mjs 里那一行没有收尾的引号：{}", path.display()))?;
+    let mut updated = String::with_capacity(text.len() + python.len());
+    updated.push_str(&text[..value_start]);
+    updated.push_str(python);
+    updated.push_str(&text[value_end..]);
+    fs::write(path, updated).map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok(1)
+}
+
+// ---------------------------------------------------------------------------
+// 冒烟自检
+// ---------------------------------------------------------------------------
+
+/// 喂一条真事件进去，看状态文件落不落盘。
+///
+/// 🔴 **落盘是唯一可接受的证据，退出码不算。** hook 被设计成永远 exit 0（退出码 2 会拦住
+/// agent），所以它的退出码说明不了它有没有干活。少拷了 core、解释器不对，两者看起来都是
+/// 「悄悄地什么也没发生」—— 这个项目撞过的每一个坑都是这个形状。
+fn smoke_test(tree: &Path, harness: &str, python: &Path) -> Result<(), String> {
+    let layout = layout(harness);
+    let hook = match layout.hook { Some(hook) => hook, None => return Ok(()) };
+
+    let scratch = env::temp_dir().join(format!("agent-avatar-smoke-{harness}"));
+    let _ = fs::remove_dir_all(&scratch);
+    fs::create_dir_all(&scratch).map_err(|error| format!("{error}"))?;
+
+    let event = format!("{{\"hook_event_name\":\"{}\",\"session_id\":\"install\",\"turn_id\":\"1\"}}",
+                        layout.event);
+    let mut command = Command::new(python);
+    command.arg(tree.join(harness_relative(harness)).join(hook))
+        .env("TMPDIR", &scratch).env("TEMP", &scratch).env("TMP", &scratch)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let mut child = command.spawn().map_err(|error| format!("跑不起来自带的解释器：{error}"))?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        use std::io::Write;
+        let _ = stdin.write_all(event.as_bytes());
+    }
+    let output = child.wait_with_output().map_err(|error| format!("{error}"))?;
+
+    let landed = scratch.join(layout.state).is_file();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let _ = fs::remove_dir_all(&scratch);
+    if landed {
+        Ok(())
+    } else {
+        Err(format!("自检没通过：{harness} 的 hook 没有写出状态文件{}",
+                    if stderr.is_empty() { String::new() } else { format!("（{stderr}）") }))
+    }
+}
+
+/// 插件树在 marketplace 里的相对位置。
+fn harness_relative(harness: &str) -> PathBuf {
+    PathBuf::from("plugins").join(harness).join("agent-avatar")
+}
+
+// ---------------------------------------------------------------------------
+// 登记
+// ---------------------------------------------------------------------------
+
+/// dsh 的登记块两端的标记。
+const DSH_BEGIN: &str = "# >>> agent-avatar (managed) >>>";
+const DSH_END: &str = "# <<< agent-avatar (managed) <<<";
+
+fn dsh_patch_file() -> PathBuf {
+    harness_home("DSH_HOME", ".dsh").join("cordis.patch.yml")
+}
+
+/// 写（或删）dsh 的登记。
+///
+/// 🔴 五家里**只有这一个**文件是我们自己写的，因为 dsh 根本没有 CLI —— 那个 patch 文件
+/// 就是它的安装机制本身。其余四家一律交给它们自己的 CLI。
+///
+/// 判定「哪一条是我们的」看的是 `id: agent-avatar`，而不是那两行标记：按更早的提示词装过的
+/// 机器上，那一段是**手工粘贴**进去的，标记可能根本不在。认不出来的话，重装会叠出第二条，
+/// 卸载会报成功却留着一条。
+fn edit_dsh_registration(tree: &Path, remove: bool) -> Result<PathBuf, String> {
+    let path = dsh_patch_file();
+    let existing = fs::read_to_string(&path).unwrap_or_default();
+    if !existing.is_empty() {
+        let _ = fs::write(path.with_extension("yml.agent-avatar-backup"), &existing);
+    }
+
+    let mut kept: Vec<String> = Vec::new();
+    let mut item: Vec<String> = Vec::new();
+    let mut in_item = false;
+    let mut skipping = false;
+    let flush = |item: &mut Vec<String>, kept: &mut Vec<String>| {
+        if !item.iter().any(|line| line.contains("id: agent-avatar")) {
+            kept.append(item);
+        }
+        item.clear();
+    };
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if trimmed == DSH_BEGIN { flush(&mut item, &mut kept); in_item = false; skipping = true; continue; }
+        if trimmed == DSH_END { skipping = false; continue; }
+        if skipping { continue; }
+        if line.starts_with("- ") {
+            flush(&mut item, &mut kept);
+            in_item = true;
+        } else if in_item && !trimmed.is_empty() && !line.starts_with(' ') && !line.starts_with('\t') {
+            flush(&mut item, &mut kept);
+            in_item = false;
+        }
+        if in_item { item.push(line.to_string()); } else { kept.push(line.to_string()); }
+    }
+    flush(&mut item, &mut kept);
+    // 空的 patch 列表写成一个孤零零的 `[]`，留在真条目上面是无效 YAML
+    kept.retain(|line| line.trim() != "[]");
+    while kept.last().map(|line| line.trim().is_empty()).unwrap_or(false) { kept.pop(); }
+
+    if !remove {
+        // 🔴 dsh 把这个字符串当 ESM specifier 去 import，而 Node 会把 `C:/…` 的盘符当成
+        // 协议名（ERR_UNSUPPORTED_ESM_URL_SCHEME）。必须是 file:/// URL。
+        let entry = tree.join(harness_relative("dsh")).join("index.mjs");
+        kept.push(DSH_BEGIN.to_string());
+        kept.push("- insert:".to_string());
+        kept.push("    - id: agent-avatar".to_string());
+        kept.push(format!("      name: {}", file_url(&entry)));
+        kept.push(DSH_END.to_string());
+    }
+
+    let mut body = kept.join("\n");
+    if !body.is_empty() { body.push('\n'); }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("{error}"))?;
+    }
+    let temporary = path.with_extension("yml.tmp");
+    fs::write(&temporary, body).map_err(|error| format!("{}: {error}", temporary.display()))?;
+    fs::rename(&temporary, &path).map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok(path)
+}
+
+/// `C:\a\b` -> `file:///C:/a/b`
+fn file_url(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    if text.starts_with('/') { format!("file://{text}") } else { format!("file:///{text}") }
+}
+
+/// Hermes 要的是一个 **git 源**。
+///
+/// 它的 CLI 只认 Git URL / owner-repo / 社区索引，**完全不认本地目录**；而 `file://`
+/// 又不支持子路径（指到 `…/plugins/hermes/agent-avatar` 会说 not a git repository）。
+/// 所以把那一份单独拷出来、`git init` 成一个只有它自己的小仓库，再用 `file://` 装。
+/// 实测通过：doctor 报 `OK … 10 hook(s)`。
+///
+/// 不在打包里直接放 `.git` 是因为资源 glob 对点目录不可靠；而走这条路的机器必然有 git ——
+/// Hermes 自己就是用 git 装插件的。
+fn hermes_repo(repo: &Path, tree: &Path) -> Result<PathBuf, String> {
+    let repo = repo.to_path_buf();
+    if repo.exists() {
+        fs::remove_dir_all(&repo).map_err(|error| format!("{error}"))?;
+    }
+    copy_tree(&tree.join(harness_relative("hermes")), &repo).map_err(|error| format!("{error}"))?;
+
+    let git = Path::new("git");
+    let repo_text = repo.to_string_lossy().to_string();
+    run(git, &["-C", &repo_text, "init", "-q"])?;
+    run(git, &["-C", &repo_text, "add", "-A"])?;
+    run(git, &["-C", &repo_text, "-c", "user.email=connector@agent-avatar",
+               "-c", "user.name=Agent Avatar", "commit", "-qm", "bundled connector"])?;
+    Ok(repo)
+}
+
+// ---------------------------------------------------------------------------
+// 装机记录
+// ---------------------------------------------------------------------------
+
+/// 删一棵目录树，路上把只读属性清掉。
+///
+/// Windows 上 git clone 出来的 pack 文件带只读属性，`remove_dir_all` 会直接撞 Access denied。
+/// 这是 Hermes 自己的卸载卡住的原因，所以这里得比标准库多做一步。
+fn force_remove_dir(path: &Path) {
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let child = entry.path();
+            if child.is_dir() {
+                force_remove_dir(&child);
+            } else {
+                if let Ok(metadata) = child.metadata() {
+                    let mut permissions = metadata.permissions();
+                    #[allow(clippy::permissions_set_readonly_false)]
+                    permissions.set_readonly(false);
+                    let _ = fs::set_permissions(&child, permissions);
+                }
+                let _ = fs::remove_file(&child);
+            }
+        }
+    }
+    let _ = fs::remove_dir(path);
+}
+
+/// 记下**验证过什么**，放在状态文件旁边。
+///
+/// 界面靠它区分「刚装完，当然还没上报」和「装了很久还是没上报」—— 后者才是故障。
+fn record_install(harness: &str, source: &Path, python: &Path, version: &str) -> Result<(), String> {
+    let record = json!({
+        "at": rfc3339(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)),
+        "harness": harness,
+        "connector_version": version,
+        "python": python.to_string_lossy(),
+        "smoke_test": "passed",
+        "source": source.to_string_lossy(),
+        "installed_by": "app",
+    });
+    let path = env::temp_dir().join(format!("agent-avatar-install.{harness}.json"));
+    fs::write(&path, serde_json::to_string(&record).map_err(|error| error.to_string())?)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// 打包进来的那份 core 里写的版本号 —— 它会被写进每一次状态快照。
+fn bundled_version(tree: &Path) -> String {
+    let core = tree.join(harness_relative("claude-code")).join("hooks/state_machine.py");
+    fs::read_to_string(core).ok()
+        .and_then(|text| text.lines()
+            .find_map(|line| line.strip_prefix("CONNECTOR_VERSION = \"")
+                .and_then(|rest| rest.split('"').next())
+                .map(str::to_owned)))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// 对外的两条命令
+// ---------------------------------------------------------------------------
+
+/// 装 —— **不碰 tauri**，因为这一段才是要被真机测试驱动的部分。
+///
+/// 命令那一层只负责算出「打包的树在哪、解释器在哪、hermes 的临时仓库放哪」，
+/// 剩下的都在这里：本地化 → 自检 → 交给 harness 自己的 CLI 登记 → 记一笔装机记录。
+pub(crate) fn install_into(tree: &Path, python: &Path, harness: &str, hermes_dir: &Path)
+                           -> Result<Value, String> {
+    let plugin = tree.join(harness_relative(harness));
+    let version = bundled_version(tree);
+
+    // 1) 本地化 —— 必须在登记**之前**：Codex 的 `plugin add` 会把插件拷进自己的缓存，
+    //    先登记再改文件的话，改的是没人加载的那一份。
+    let command_python = command_line_path(python);
+    if let Some(config) = layout(harness).config {
+        let path = plugin.join(config);
+        if config.ends_with(".mjs") {
+            rewrite_index_mjs(&path, &command_python)?;
+        } else {
+            rewrite_hooks_json(&path, &command_python, harness)?;
+        }
+    }
+
+    // 2) 自检：这台机器上真的跑得起来。**落盘是唯一可接受的证据**（见 `smoke_test`）。
+    smoke_test(tree, harness, python)?;
+
+    // 3) 登记 —— 交给它自己的 CLI（dsh 除外，它根本没有）
+    let tree_text = tree.to_string_lossy().to_string();
+    match harness {
+        "dsh" => { edit_dsh_registration(tree, false)?; }
+        "hermes" => {
+            let cli = resolve_cli(harness).ok_or_else(|| "找不到 hermes 的命令行程序".to_string())?;
+            let repo = hermes_repo(hermes_dir, tree)?;
+            // 已经装着时 `install` 会拒绝；`--force` 才是重装
+            run(&cli, &["plugins", "install", &file_url(&repo), "--enable", "--force"])?;
+        }
+        _ => {
+            let cli = resolve_cli(harness)
+                .ok_or_else(|| format!("找不到 {harness} 的命令行程序"))?;
+            let verb = if harness == "codex" { "add" } else { "install" };
+            // 同名 marketplace 已登记时 `add` 会报「已存在」，那不是失败 —— 先撤再加
+            let _ = run(&cli, &["plugin", "marketplace", "remove", "agent-avatar"]);
+            run(&cli, &["plugin", "marketplace", "add", &tree_text])?;
+            run(&cli, &["plugin", verb, "agent-avatar@agent-avatar"])?;
+        }
+    }
+
+    record_install(harness, &plugin, python, &version)?;
+    Ok(json!({ "harness": harness, "version": version, "source": plugin.to_string_lossy() }))
+}
+
+/// 卸 —— 同样不碰 tauri。
+pub(crate) fn uninstall_from(tree: &Path, harness: &str) -> Result<Value, String> {
+    match harness {
+        "dsh" => { edit_dsh_registration(tree, true)?; }
+        "hermes" => {
+            let cli = resolve_cli(harness).ok_or_else(|| "找不到 hermes 的命令行程序".to_string())?;
+            // 🔴 先 disable 再 remove。`remove` 单独跑会把条目留在 config.yaml 的
+            // plugins.enabled 里，于是列表说启用、实际加载不到 —— 最难查的那种状态。
+            let _ = run(&cli, &["plugins", "disable", "agent-avatar"]);
+            let removed = run(&cli, &["plugins", "remove", "agent-avatar"]);
+
+            // 🔴 **Windows 上它只做一半。** 它先把插件目录改名成 `.agent-avatar.remove-xxxx`
+            // 再删，而删那一步会撞上 `[WinError 5] Access is denied` —— 目录是 git clone 出来的，
+            // pack 文件带只读属性。于是留下一个改了名的残骸，`plugins list` 里那条也还在。
+            // 提示词那一版是交代用户自己去收尾；app 这一版必须自己收，否则「卸载」这个按钮
+            // 会以一个用户看不懂的报错收场，而且残骸永远留在那儿。
+            //
+            // 只动 hermes 自己刚造出来又丢下的那个目录，名字是钉死的。
+            let mut swept = false;
+            for root in hermes_homes() {
+                let plugins = root.join("plugins");
+                if let Ok(entries) = fs::read_dir(&plugins) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name == "agent-avatar" || name.starts_with(".agent-avatar.remove-") {
+                            force_remove_dir(&entry.path());
+                            swept = true;
+                        }
+                    }
+                }
+            }
+            // 判据是**界面看到的那条**，不是命令的退出码：残骸清掉之后它就该是「没装」。
+            if crate::connectors::is_installed(harness) {
+                return Err(match removed {
+                    Err(error) => error,
+                    Ok(_) => format!("hermes 说卸掉了，但{}还在",
+                                     if swept { "残骸清理后它" } else { "插件目录" }),
+                });
+            }
+        }
+        _ => {
+            let cli = resolve_cli(harness)
+                .ok_or_else(|| format!("找不到 {harness} 的命令行程序"))?;
+            // 🔴 用**全名**。短名在 WorkBuddy 上直接失败（`Marketplace undefined is not
+            // found.`）而插件原样留着 —— 那次看起来成功，是下一步删 marketplace 时顺带
+            // 带走的，靠副作用卸载迟早会漏。
+            let verb = if harness == "codex" { "remove" } else { "uninstall" };
+            run(&cli, &["plugin", verb, "agent-avatar@agent-avatar"])?;
+            let _ = run(&cli, &["plugin", "marketplace", "remove", "agent-avatar"]);
+        }
+    }
+    // 装机记录跟着走：留着它的话，界面会把「刚装好，等新会话」说给一个已经卸载的用户听
+    let _ = fs::remove_file(env::temp_dir().join(format!("agent-avatar-install.{harness}.json")));
+    Ok(json!({ "harness": harness }))
+}
+
+#[tauri::command(async)]
+pub fn install_connector(app: tauri::AppHandle, harness: String) -> Result<Value, String> {
+    if !HARNESSES.contains(&harness.as_str()) {
+        return Err(format!("不认得的 harness：{harness}"));
+    }
+    let (tree, python) = lay_out_tree(&app)?;
+    let hermes_dir = working_root(&app)?.join("hermes-repo");
+    install_into(&tree, &python, &harness, &hermes_dir)
+}
+
+#[tauri::command(async)]
+pub fn uninstall_connector(app: tauri::AppHandle, harness: String) -> Result<Value, String> {
+    if !HARNESSES.contains(&harness.as_str()) {
+        return Err(format!("不认得的 harness：{harness}"));
+    }
+    let tree = working_root(&app)?.join("marketplace");
+    uninstall_from(&tree, &harness)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{command_line_path, edit_dsh_registration, file_url, harness_relative,
+                rewrite_hooks_json, rewrite_index_mjs, smoke_test};
+    use std::{env, fs, path::PathBuf, sync::{Mutex, MutexGuard}};
+
+    /// 🔴 改环境变量的测试必须串行。cargo 默认并行跑，而 `DSH_HOME` 是**进程级**的 ——
+    /// 三条测试各自设一遍再还原，交错起来就会有人读到别人的值。
+    /// 症状是随机失败（同一份代码，上一轮全绿，这一轮红一条）。
+    static ENVIRONMENT: Mutex<()> = Mutex::new(());
+
+    fn with_dsh_home(dir: &PathBuf) -> (MutexGuard<'static, ()>, Option<String>) {
+        let guard = ENVIRONMENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = env::var("DSH_HOME").ok();
+        env::set_var("DSH_HOME", dir);
+        (guard, previous)
+    }
+
+    fn restore_dsh_home(previous: Option<String>) {
+        match previous {
+            Some(value) => env::set_var("DSH_HOME", value),
+            None => env::remove_var("DSH_HOME"),
+        }
+    }
+
+    /// 打包产物在不在（`connectors/build-bundle.sh` + `fetch-python.sh` 的输出）。
+    /// 没构建过就跳过那几条 —— 它们测的是产物本身，不是代码。
+    fn bundle() -> Option<(PathBuf, PathBuf)> {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/connectors");
+        let tree = root.join("marketplace");
+        let python = root.join(if cfg!(windows) { "python/python.exe" } else { "python/bin/python3" });
+        if tree.is_dir() && python.is_file() { Some((tree, python)) } else { None }
+    }
+
+    /// 🔴 这条是整个打包方案的地基：**app 自带的树 + app 自带的解释器，在这台机器上真的能把
+    /// 状态文件写出来**。少拷一个 core 模块、解释器缺一个标准库模块，两者在真实注册里都是
+    /// 静默的（hook 被跳过，形象一直不动）—— 只有喂一条真事件才看得见。
+    #[test]
+    fn the_bundled_tree_and_interpreter_actually_produce_a_state_file() {
+        let (tree, python) = match bundle() { Some(pair) => pair, None => return };
+        for harness in ["claude-code", "codex", "workbuddy", "dsh"] {
+            smoke_test(&tree, harness, &python)
+                .unwrap_or_else(|error| panic!("{harness}: {error}"));
+        }
+    }
+
+    /// 命令行里解释器那一段**不能有空格、不能有反斜杠**：不能加引号（PowerShell 会把带引号的
+    /// 首 token 当字符串表达式），而 Claude Code 在 Windows 上默认用 Git Bash，反斜杠会被当转义。
+    /// app 装在 `C:\Program Files\…` 下正好带空格，所以这条不是假设性的。
+    #[test]
+    fn the_interpreter_path_is_expressible_on_a_command_line() {
+        let plain = command_line_path(&PathBuf::from("C:/Python314/python.exe"));
+        assert_eq!(plain, "C:/Python314/python.exe");
+        assert!(!command_line_path(&PathBuf::from(r"C:\Python314\python.exe")).contains('\\'));
+
+        #[cfg(windows)]
+        {
+            // 真实存在的带空格路径才拿得到 8.3 短名，所以用系统自带的那个
+            let spaced = PathBuf::from(env::var("ProgramFiles").unwrap_or_else(|_| "C:/Program Files".into()));
+            if spaced.is_dir() {
+                let converted = command_line_path(&spaced);
+                assert!(!converted.contains(' '), "带空格的路径没能转成短路径：{converted}");
+            }
+        }
+    }
+
+    /// dsh 把这个字符串当 ESM specifier 去 import，而 Node 会把 `C:/…` 的盘符当成协议名
+    /// （ERR_UNSUPPORTED_ESM_URL_SCHEME）。必须是 file:/// URL。
+    #[test]
+    fn the_dsh_entry_is_a_url_node_can_import() {
+        assert_eq!(file_url(&PathBuf::from("C:/a/b/index.mjs")), "file:///C:/a/b/index.mjs");
+        assert_eq!(file_url(&PathBuf::from("/a/b/index.mjs")), "file:///a/b/index.mjs");
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("agent-avatar-test-{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 本地化只换解释器，**其余原样保留** —— 尤其是 `${PLUGIN_ROOT}` 这类占位符和末尾的
+    /// `; exit 0`。那个 `; exit 0` 不是装饰：脚本路径一旦断了，`python x.py` 的退出码正好是
+    /// 2，而 2 在 Claude Code 与 Codex 里都表示「拦截」。
+    #[test]
+    fn localisation_replaces_the_interpreter_and_nothing_else() {
+        let dir = scratch("hooks");
+        let path = dir.join("hooks.json");
+        fs::write(&path, r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"python3 ${PLUGIN_ROOT}/hooks/agent-avatar-hook.py ; exit 0"}]}]}}"#).unwrap();
+
+        let count = rewrite_hooks_json(&path, "C:/PROGRA~1/py/python.exe", "claude-code").unwrap();
+        assert_eq!(count, 1);
+        // 读回来看那个**值**，而不是文件的字面文本 —— 文件里的引号是 JSON 转义过的
+        let document: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let command = document["hooks"]["SessionStart"][0]["hooks"][0]["command"].as_str().unwrap();
+        assert_eq!(command,
+                   "C:/PROGRA~1/py/python.exe \"${PLUGIN_ROOT}/hooks/agent-avatar-hook.py\" ; exit 0");
+    }
+
+    /// Codex 有自己的 `commandWindows` 覆盖字段。Windows 上写它、POSIX 的 `command` 不动，
+    /// 一份 hooks.json 服务两个平台。**反过来是个陷阱**：永远写 `commandWindows` 会把好路径
+    /// 放进 macOS 不读的字段，而活着的命令仍是 `/usr/bin/python3` —— 那在没装 Xcode 命令行
+    /// 工具的 Mac 上是个会弹安装框的占位程序。
+    #[test]
+    fn codex_gets_the_field_this_platform_actually_reads() {
+        let dir = scratch("codex-hooks");
+        let path = dir.join("hooks.json");
+        let original = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/usr/bin/python3 ${PLUGIN_ROOT}/scripts/agent-avatar-hook.py ; exit 0"}]}]}}"#;
+        fs::write(&path, original).unwrap();
+        rewrite_hooks_json(&path, "C:/py/python.exe", "codex").unwrap();
+        let written = fs::read_to_string(&path).unwrap();
+        if cfg!(windows) {
+            assert!(written.contains("commandWindows"));
+            assert!(written.contains("/usr/bin/python3"), "POSIX 那条要原样留着：{written}");
+        } else {
+            assert!(!written.contains("commandWindows"));
+            assert!(!written.contains("/usr/bin/python3"));
+        }
+    }
+
+    #[test]
+    fn the_dsh_plugin_learns_where_the_interpreter_is() {
+        let dir = scratch("dsh-index");
+        let path = dir.join("index.mjs");
+        fs::write(&path, "const py = process.env.AGENT_AVATAR_PYTHON || \"python3\";\n").unwrap();
+        rewrite_index_mjs(&path, "C:/py/python.exe").unwrap();
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("AGENT_AVATAR_PYTHON || \"C:/py/python.exe\""), "{written}");
+    }
+
+    /// 这个文件是**用户的**，我们只往里加一条。写两次不能叠出两条，删掉之后用户自己的条目
+    /// 要一字不差地还在。
+    #[test]
+    fn registering_dsh_twice_leaves_one_entry_and_keeps_theirs() {
+        let dir = scratch("dsh-home");
+        let (_guard, previous) = with_dsh_home(&dir);
+
+        let theirs = "- insert:\n    - id: their-plugin\n      name: file:///theirs/index.mjs\n";
+        fs::write(dir.join("cordis.patch.yml"), theirs).unwrap();
+
+        let tree = PathBuf::from("/bundle/marketplace");
+        edit_dsh_registration(&tree, false).unwrap();
+        edit_dsh_registration(&tree, false).unwrap();
+        let body = fs::read_to_string(dir.join("cordis.patch.yml")).unwrap();
+        assert_eq!(body.matches("id: agent-avatar").count(), 1, "{body}");
+        assert!(body.contains("their-plugin"));
+        assert!(body.contains("file:///"), "{body}");
+
+        edit_dsh_registration(&tree, true).unwrap();
+        let body = fs::read_to_string(dir.join("cordis.patch.yml")).unwrap();
+        assert!(!body.contains("agent-avatar"), "{body}");
+        assert_eq!(body.trim(), theirs.trim());
+
+        restore_dsh_home(previous);
+    }
+
+    /// 按更早那版提示词装过的机器上，那一段是**手工粘贴**进去的 —— 两行标记可能根本不在。
+    /// 认不出来的话，重装叠出第二条，卸载报成功却留着一条。
+    #[test]
+    fn an_entry_pasted_by_hand_is_still_recognised_as_ours() {
+        let dir = scratch("dsh-legacy");
+        let (_guard, previous) = with_dsh_home(&dir);
+        fs::write(dir.join("cordis.patch.yml"),
+                  "- insert:\n    - id: agent-avatar\n      name: file:///old/index.mjs\n").unwrap();
+
+        edit_dsh_registration(&PathBuf::from("/bundle/marketplace"), false).unwrap();
+        let body = fs::read_to_string(dir.join("cordis.patch.yml")).unwrap();
+        assert_eq!(body.matches("id: agent-avatar").count(), 1, "{body}");
+        assert!(!body.contains("/old/index.mjs"), "旧的那条要被替掉，不是并存：{body}");
+
+        restore_dsh_home(previous);
+    }
+
+    /// 空列表写成一个孤零零的 `[]`，留在真条目上面是无效 YAML —— dsh 会整个停止解析。
+    #[test]
+    fn an_empty_list_marker_does_not_survive_next_to_a_real_entry() {
+        let dir = scratch("dsh-empty");
+        let (_guard, previous) = with_dsh_home(&dir);
+        fs::write(dir.join("cordis.patch.yml"), "[]\n").unwrap();
+        edit_dsh_registration(&PathBuf::from("/bundle/marketplace"), false).unwrap();
+        let body = fs::read_to_string(dir.join("cordis.patch.yml")).unwrap();
+        assert!(!body.contains("[]"), "{body}");
+        restore_dsh_home(previous);
+    }
+
+    /// 真机安装 —— **默认不跑**，要 `AGENT_AVATAR_LIVE_INSTALL=<harness>` 才会启动。
+    ///
+    /// 它会真的调那家 harness 的 CLI 去装、去卸，所以会改这台机器上的配置。放在测试里而不是
+    /// 手工脚本里，是因为它要验的东西只有代码内部看得见：本地化写进去的那一行、自检落盘、
+    /// 以及登记之后 harness 自己的账本认不认。
+    ///
+    /// 用法：`AGENT_AVATAR_LIVE_INSTALL=claude-code cargo test live_install -- --nocapture`
+    #[test]
+    fn live_install_and_uninstall_on_this_machine() {
+        let harness = match env::var("AGENT_AVATAR_LIVE_INSTALL") { Ok(value) => value, Err(_) => return };
+        let (bundle, bundled_python) = bundle().expect("先跑 connectors/build-bundle.sh 与 fetch-python.sh");
+
+        // 拷成工作副本再动手 —— 本地化会改写文件，而构建产物应当保持机器无关
+        let root = scratch("live-install");
+        let tree = root.join("marketplace");
+        super::copy_tree(&bundle, &tree).unwrap();
+        let python_root = root.join("python");
+        super::copy_tree(bundled_python.parent().unwrap(), &python_root).unwrap();
+        let python = python_root.join(bundled_python.file_name().unwrap());
+
+        let report = super::install_into(&tree, &python, &harness, &root.join("hermes-repo"))
+            .unwrap_or_else(|error| panic!("装 {harness} 失败：{error}"));
+        println!("installed: {report}");
+
+        assert!(crate::connectors::is_installed(&harness),
+                "{harness} 装完之后界面仍然会说没装 —— 登记那一步没真的生效");
+
+        let record = env::temp_dir().join(format!("agent-avatar-install.{harness}.json"));
+        assert!(record.is_file(), "没写装机记录，界面就分不清「刚装好」和「装了很久还不动」");
+
+        // 装完就地留下 —— 用来验最后那一环：真开一个会话，状态文件落不落盘。
+        // 那一环 Rust 侧验不了（要真的跑一次 harness），所以留给外面的脚本。
+        if env::var("AGENT_AVATAR_LIVE_KEEP").is_ok() {
+            println!("left installed on purpose (AGENT_AVATAR_LIVE_KEEP)");
+            return;
+        }
+
+        super::uninstall_from(&tree, &harness)
+            .unwrap_or_else(|error| panic!("卸 {harness} 失败：{error}"));
+        assert!(!crate::connectors::is_installed(&harness), "{harness} 卸完界面仍然会说装着");
+        assert!(!record.is_file(), "卸完装机记录还在，界面会对已卸载的用户说「刚装好」");
+    }
+
+    /// 五家的插件树位置是一张表，改布局就要改它 —— 对不上的症状是「装好了，什么也不发生」。
+    #[test]
+    fn every_harness_has_a_place_in_the_bundled_tree() {
+        let (tree, _) = match bundle() { Some(pair) => pair, None => return };
+        for harness in crate::connectors::HARNESSES {
+            assert!(tree.join(harness_relative(harness)).is_dir(), "{harness}");
+        }
+    }
+}

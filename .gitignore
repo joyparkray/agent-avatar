@@ -27,3 +27,8 @@ private/
 
 # Windows 移植计划：内部规划文档（含签名与商业方向），不随公开仓库分发。
 docs/WINDOWS-PORT.md
+
+# Built by connectors/build-bundle.sh + fetch-python.sh: the connector tree and the
+# interpreter the app ships. Generated from connectors/ and pinned upstream releases,
+# so committing it would only be a second copy that can disagree.
+desktop/src-tauri/resources/connectors/
