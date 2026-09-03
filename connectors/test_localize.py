@@ -72,16 +72,26 @@ def test_rewrites_every_command_into_the_shape_both_shells_accept(tmp_path):
         assert command.rstrip().endswith("; exit 0"), command
 
 
-def test_codex_keeps_the_posix_line_and_adds_a_windows_one(tmp_path):
+def test_codex_writes_the_field_that_this_platform_reads(tmp_path):
     # Codex has commandWindows, a Windows-only override — one hooks.json serves both
-    # platforms. Rewriting the POSIX line as well would hand mac users a plugin that
-    # points at a Windows path.
+    # platforms. On Windows we write that and leave the POSIX line alone (rewriting it
+    # would hand mac users a plugin pointing at a Windows path).
+    #
+    # 🔴 On POSIX we must write `command` instead. Always writing `commandWindows` would
+    # put the good path in a field macOS never reads, leaving the active command as
+    # `/usr/bin/python3` — which on a Mac without the Xcode command line tools is a
+    # placeholder that pops an install dialog instead of running Python.
     plugin = build(tmp_path, "codex")
     localize(tmp_path, "codex")
+    windows = os.name == "nt"
     for hook in commands(plugin, "hooks.json"):
-        assert hook["command"].startswith("/usr/bin/python3 "), hook
-        assert "${PLUGIN_ROOT}" in hook["commandWindows"]
-        assert hook["commandWindows"].rstrip().endswith("; exit 0")
+        active = hook["commandWindows"] if windows else hook["command"]
+        assert "${PLUGIN_ROOT}" in active, hook
+        assert active.rstrip().endswith("; exit 0"), hook
+        assert not active.startswith("/usr/bin/python3 "), hook
+        if windows:
+            # the POSIX line stays untouched so the same tree still works on a Mac
+            assert hook["command"].startswith("/usr/bin/python3 "), hook
 
 
 def test_dsh_keeps_the_env_override_in_front(tmp_path):

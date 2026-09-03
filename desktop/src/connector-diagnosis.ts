@@ -189,27 +189,44 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
   const zh = locale !== "en";
   const cli = MARKETPLACE_CLI[harness];
   const windows = platform === "windows";
+
+  // 🔴 **两个平台走同一条路：clone → 本地化 → 装成本地 marketplace。**
+  //
+  // mac 上本来可以更短（`marketplace add owner/repo` 两条命令，还能吃到 harness 的自动更新），
+  // 那条路我们跑通过。放弃它换来三件事：
+  //
+  // 1. **一份提示词、一条路。** 分叉过的两条今天各出过一次错 —— Windows 那条把
+  //    `add ./` 写成 `add .`（差一个斜杠整条路就断），更新按钮又把安装那段发了出去
+  //    （`git clone` 到一个已存在的目录）。少一个分支就少一类错。
+  // 2. **mac 上也会跑冒烟自检。** `localize.py` 要喂一条真事件、验到状态文件落盘才算成功，
+  //    于是「这台机器上跑得起来」在两个平台上都有实据，装机记录也都有。
+  // 3. **顺带拆掉 mac 上的一颗雷**：Codex 的 POSIX 命令写死 `/usr/bin/python3`，
+  //    而干净 Mac 上那是 Xcode 命令行工具的**占位程序** —— 跑它会弹安装对话框。
+  //
+  // 代价：mac 失去 harness 的自动更新。但更新本来就已经是显式的（Windows 那份收不到自动更新），
+  // 而 app 会在版本落后时提示 —— 两个平台因此行为一致，不再是一个悄悄更新、一个不动。
   const clone = [
     `git clone https://github.com/${MARKETPLACE_REPO} agent-avatar-connectors`,
     "cd agent-avatar-connectors",
   ];
-  // Windows 上 `python3` 是 0 字节的应用商店存根，所以插件里那句 `python3` 必须先换成
-  // 本机解释器的绝对路径。这一步是**一条命令**，不是让 agent 逐字改 JSON ——
-  // 后者每次结果都可能不同，而这条链路上的错误是静默的。
-  const localize = `python localize.py ${harness}`;
+  // 用哪个名字调 Python **交给 agent 判断**：Windows 上 `python3` 是 0 字节存根，
+  // 而 macOS 上通常只有 `python3`。这一处让它判断是安全的 —— 挑错了会立刻失败
+  // （存根打印 "Python was not found" 就退出），不会静默走下去。
+  const localize = (extra = "") => (zh
+    ? `用这台机器上的 Python 跑：python localize.py ${harness}${extra}（macOS/Linux 上通常写 python3）`
+    : `Run with this machine's Python: python localize.py ${harness}${extra} (usually python3 on macOS/Linux)`);
 
   let steps: string[];
   if (cli && !(windows && harness === "codex")) {
-    steps = windows
-      // `add ./` 而不是 `add .`：实测 `.` 被拒（Invalid marketplace source format，
-      // 它要的是 owner/repo、https://… 或 ./path 三种形态之一）。差一个斜杠，整条路就断了。
-      ? [...clone, localize, `${cli} plugin marketplace add ./`, `${cli} plugin install agent-avatar@agent-avatar`]
-      : [`${cli} plugin marketplace add ${MARKETPLACE_REPO}`, `${cli} plugin install agent-avatar@agent-avatar`];
+    // `add ./` 而不是 `add .`：实测 `.` 被拒（Invalid marketplace source format，
+    // 它要的是 owner/repo、https://… 或 ./path 三种形态之一）。
+    steps = [...clone, localize(), `${cli} plugin marketplace add ./`,
+             `${cli} plugin install agent-avatar@agent-avatar`];
   } else if (harness === "codex") {
     // 🔴 Windows 的 ChatGPT app **不带 codex CLI**，`codex plugin …` 那两条在这儿根本跑不了。
     // 它的真实登记处是 config.toml，所以让脚本把要加的两段算好、打印出来 ——
     // 仍然是钉死的命令，agent 不需要自己拼路径。**只打印不写**：那是用户自己的主配置文件。
-    steps = [...clone, localize, `python localize.py codex --print-registration`,
+    steps = [...clone, localize(), localize(" --print-registration"),
       zh ? "把上一步打印出来的两段追加到它指出的那个 config.toml 里（先备份）"
          : "Append the two blocks it printed to the config.toml it names (back it up first)",
       zh ? "**完全退出 ChatGPT app 再打开** —— 插件在启动时才被发现，而且 app 运行时也会写 config.toml"
@@ -219,14 +236,13 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
     // 那个文件被 dsh 的 HMR 监视着，正在跑的 dsh 会热加载。
     // 同样让脚本把那一段算好 —— Windows 上 name 必须是 file:/// URL，
     // 手拼的话十有八九会写成 `C:/…`，而 Node 会把盘符当成协议名。
-    steps = [...clone, ...(windows ? [localize] : []), `python localize.py dsh --print-registration`,
+    steps = [...clone, localize(), localize(" --print-registration"),
       zh ? "把上一步打印出来的那一段追加到它指出的 cordis.patch.yml 里（先备份）"
          : "Append the block it printed to the cordis.patch.yml it names (back it up first)"];
   } else {
-    // Hermes 有自己的插件 CLI，只认 git 来源，还能钉死 commit SHA。
-    // 它装完会跑一遍安全扫描 —— 被拦下时**由用户决定**要不要放行，不要替他 --force。
-    // Hermes 只认 git 来源，但支持 `owner/repo/子目录` —— 我们的插件在树里的
-    // plugins/hermes/agent-avatar 下，所以要带上那一段路径。
+    // Hermes 是唯一的例外：它自己的 CLI 只认 git 来源、支持 `owner/repo/子目录`、
+    // 还能钉死 commit SHA —— 它自己就是「钉死的命令」，不需要我们 clone。
+    // 而且它不需要本地化（in-process Python 包，跑在 Hermes 自己的解释器里）。
     steps = [`hermes plugins install ${MARKETPLACE_REPO}/plugins/hermes/agent-avatar --enable`,
       zh ? "它会跑一遍安全扫描。**被拦下就停下来告诉我**，让我自己决定要不要放行 —— 别替我加 --force。"
          : "It runs a security scan. **If it blocks, stop and tell me** — let me decide whether to override; don't pass --force for me.",
@@ -244,8 +260,10 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
   // 验证照做（`localize.py` 装机时就喂过一条真事件、验到状态文件落盘），但**结论由命令
   // 给出**，agent 只负责转述那一行。真出问题时它自然会带着上下文来找你，
   // 而详细信息就在那条命令的前几行。
-  // Windows 上结论来自 `localize.py` 那一步（它跑完冒烟自检才会打那一行），不是最后一条命令。
-  const verdictStep = windows && harness !== "hermes"
+  // 结论来自 `localize.py` 那一步（它跑完冒烟自检才会打那一行），不是最后一条命令。
+  // 两个平台现在都跑它，所以这句不再分平台 —— 只有 Hermes 例外（它不需要本地化，
+  // 结论由它自己的 `plugins doctor` 给）。
+  const verdictStep = harness !== "hermes"
     ? (zh ? `（\`localize.py ${harness}\` 那一步的最后一行就是结论，原样贴过来即可）`
           : ` (the last line of the \`localize.py ${harness}\` step is the verdict — paste it verbatim)`)
     : "";
@@ -258,9 +276,10 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
     : "Start a new session afterwards and the avatar will follow along — a session that is already running will not pick up a new plugin.";
 
   const boundaries = [
-    // 装 Python 这类事要用户点头；给的命令也得是这台机器上真能跑的那条
-    zh ? `如果这台机器上没有可用的 Python，**先问我**再装（${windows ? "winget install Python.Python.3.13" : "macOS: xcode-select --install"}）。`
-       : `If this machine has no usable Python, **ask me first** before installing one (${windows ? "winget install Python.Python.3.13" : "macOS: xcode-select --install"}).`,
+    // 装 Python 这类事要用户点头。两条命令都给出来、由 agent 按平台挑 ——
+    // 这样两个平台的提示词逐字一致，少一个会漂的分支。
+    zh ? "如果这台机器上没有可用的 Python，**先问我**再装（Windows: winget install Python.Python.3.13；macOS: xcode-select --install）。"
+       : "If this machine has no usable Python, **ask me first** before installing one (Windows: winget install Python.Python.3.13; macOS: xcode-select --install).",
     ...(harness === "codex"
       ? [zh ? "装完之后**不要替我授信**：Codex 的 /hooks 授信必须由我自己点，告诉我该去点什么就行。"
             : "After installing, **do not trust the hooks for me**: the /hooks approval in Codex is mine to click — just tell me what to click."]
@@ -315,8 +334,8 @@ export function uninstallPrompt(harness: string, locale: Language): string {
     "",
     ...steps.map((step, index) => `${index + 1}) ${step}`),
     "",
-    zh ? "如果之前是 clone 到本地装的（Windows 那条路），把那个 agent-avatar-connectors 目录也删掉。"
-       : "If it was installed from a local clone (the Windows route), delete that agent-avatar-connectors directory too.",
+    zh ? "然后把当初 clone 出来的 agent-avatar-connectors 目录也删掉（Hermes 那家没有这个目录）。"
+       : "Then delete the agent-avatar-connectors directory you cloned (Hermes has none).",
     zh ? "**只告诉我成功还是失败。** 不用解释过程。"
        : "**Just tell me whether it worked.** No explanation needed.",
   ].join("\n");
@@ -339,7 +358,7 @@ export function updatePrompt(harness: string, locale: Language, platform: Platfo
   const windows = platform === "windows";
   const steps: string[] = [];
 
-  if (windows && harness !== "hermes") {
+  if (harness !== "hermes") {
     // 装机记录里的 source 指到插件树（<clone>/plugins/<harness>/agent-avatar），
     // 往上三层才是仓库根。拿不到就让 agent 去找 —— 但先给出它长什么样。
     const root = clonePath?.replace(/[\/]plugins[\/][^\/]+[\/]agent-avatar[\/]?$/, "");
@@ -347,16 +366,16 @@ export function updatePrompt(harness: string, locale: Language, platform: Platfo
       ? `cd ${root}`
       : (zh ? "进到当初 clone 出来的 agent-avatar-connectors 目录" : "cd into the agent-avatar-connectors directory you cloned earlier"));
     steps.push("git pull");
-    steps.push(`python localize.py ${harness}`);
+    steps.push(zh ? `用这台机器上的 Python 跑：python localize.py ${harness}（macOS/Linux 上通常写 python3）`
+                  : `Run with this machine's Python: python localize.py ${harness} (usually python3 on macOS/Linux)`);
   }
 
   if (cli) {
     // 先卸再装：装同一个插件名时 CLI 只会说「已安装」，**不会刷新缓存里那份副本**。
     // 远程 marketplace 那条路 install 会先刷新市场，所以不必单独 update。
+    // 先卸再装：装同一个插件名时 CLI 只会说「已安装」，**不会刷新缓存里那份副本**。
     steps.push(`${cli} plugin uninstall agent-avatar`);
-    steps.push(windows ? `${cli} plugin install agent-avatar@agent-avatar`
-                       : `${cli} plugin marketplace update agent-avatar`);
-    if (!windows) steps.push(`${cli} plugin install agent-avatar@agent-avatar`);
+    steps.push(`${cli} plugin install agent-avatar@agent-avatar`);
   } else if (harness === "dsh") {
     steps.push(zh ? "确认 $DSH_HOME/cordis.patch.yml 里那一段还指向同一个路径（一般不用改）"
                   : "Check that the block in $DSH_HOME/cordis.patch.yml still points at the same path (usually unchanged)");

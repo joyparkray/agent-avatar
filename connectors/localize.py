@@ -99,9 +99,14 @@ def rewrite_hooks_json(path, python, harness):
     `; exit 0` is not optional: if the script path ever breaks, `python x.py` exits
     with **exactly 2**, and 2 is a block in both Claude Code and Codex.
 
-    Codex uses its own `commandWindows` override field, leaving the POSIX line
-    untouched — one hooks.json serves both platforms.
+    Codex has its own `commandWindows` override field, so on Windows we write that and
+    leave the POSIX `command` untouched — one hooks.json serves both platforms.
+    **On POSIX we must write `command` instead.** Always writing `commandWindows` would
+    put the good path in a field macOS never reads while leaving the active command as
+    `/usr/bin/python3` — which on a Mac without the Xcode command line tools is a
+    placeholder that pops an install dialog rather than running Python.
     """
+    field = "commandWindows" if (harness == "codex" and os.name == "nt") else "command"
     with open(path, encoding="utf-8") as handle:
         document = json.load(handle)
     rewritten = 0
@@ -110,19 +115,14 @@ def rewrite_hooks_json(path, python, harness):
             for hook in matcher.get("hooks", []):
                 if hook.get("type") != "command":
                     continue
-                source = hook.get("commandWindows") if harness == "codex" else hook.get("command")
-                source = source or hook.get("command", "")
+                source = hook.get(field) or hook.get("command", "")
                 # Only the interpreter changes; the script path is kept verbatim
                 # (including placeholders such as ${PLUGIN_ROOT})
                 tail = source.split(None, 1)[1] if " " in source.strip() else source
                 if not tail.lstrip().startswith('"'):
                     parts = tail.strip().split(" ", 1)
                     tail = '"%s"%s' % (parts[0], (" " + parts[1]) if len(parts) > 1 else "")
-                line = "%s %s" % (python, tail.strip())
-                if harness == "codex":
-                    hook["commandWindows"] = line
-                else:
-                    hook["command"] = line
+                hook[field] = "%s %s" % (python, tail.strip())
                 rewritten += 1
     if not rewritten:
         raise SystemExit("no command found in hooks.json; the layout may have changed: %s" % path)

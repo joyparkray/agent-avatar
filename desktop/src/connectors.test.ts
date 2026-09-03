@@ -150,10 +150,9 @@ describe("connector install wizard", () => {
     expect(windows.indexOf("plugin uninstall")).toBeLessThan(windows.indexOf("plugin install"));
     // 没有装机记录时不能编一个路径出来
     expect(updatePrompt("claude-code", "zh-CN", "windows")).not.toContain("cd undefined");
-    // mac 那条不需要本地化，但要先刷新市场
-    const posix = updatePrompt("claude-code", "zh-CN", "posix");
-    expect(posix).not.toContain("localize.py");
-    expect(posix).toContain("marketplace update");
+    // mac 现在走同一条：也 pull、也本地化
+    const posix = updatePrompt("claude-code", "zh-CN", "posix", clone);
+    expect(posix).toBe(windows);
     // Codex 升级后必须重新授信 —— 不说的话表现是「升级后失灵」
     expect(updatePrompt("codex", "zh-CN", "posix")).toMatch(/重新授信/);
   });
@@ -196,19 +195,38 @@ describe("connector install wizard", () => {
     expect(isOutdated(CONNECTOR_VERSION)).toBe(false);
   });
 
-  it("only asks Windows users for the extra localise step", () => {
-    // POSIX 上 python3 本来就是对的，多让用户跑一步等于制造一个不存在的问题；
-    // Windows 上不跑那一步，装到的插件指向一个 0 字节的商店存根，而且**没有任何声音**。
-    for (const harness of ["claude-code", "codex", "workbuddy", "dsh"]) {
-      expect(installPrompt(harness, "zh-CN", "windows")).toContain(`python localize.py ${harness}`);
-      // POSIX 上不该有「本地化」那一步（`--print-registration` 不是本地化，是打印要登记的内容）
+  it("gives both platforms the same shape", () => {
+    // 分叉过的两条路今天各出过一次错（`add .` 少个斜杠、更新按钮发的是安装那段）。
+    // 现在两个平台走同一条：clone → 本地化 → 装成本地 marketplace。
+    for (const harness of ["claude-code", "workbuddy", "dsh"]) {
+      const windows = installPrompt(harness, "zh-CN", "windows");
       const posix = installPrompt(harness, "zh-CN", "posix");
-      // 「本地化」那一步的形状是行尾就是 `localize.py <harness>`；
-      // `--print-registration` 不是本地化，是打印要登记的内容，POSIX 上也需要。
-      expect(posix.split("\n").some(line => line.trim().endsWith(`localize.py ${harness}`))).toBe(false);
+      expect(windows).toBe(posix);                       // 逐字一致
+      expect(posix).toContain("git clone");
+      expect(posix).toContain(`localize.py ${harness}`); // mac 上也本地化：顺带拆掉 CLT 占位程序那颗雷
     }
-    // Hermes 是 in-process 的 Python 包，两个平台都不需要本地化
-    expect(installPrompt("hermes", "zh-CN", "windows")).not.toContain("localize.py");
+    // 🔴 Codex 是**真实差异**，不是我们没统一：Windows 的 ChatGPT app 不带 codex CLI，
+    // 那两条命令在那儿根本跑不了，只能手工登记进 config.toml。
+    expect(installPrompt("codex", "zh-CN", "posix")).toContain("codex plugin marketplace add ./");
+    expect(installPrompt("codex", "zh-CN", "windows")).not.toContain("codex plugin");
+    expect(installPrompt("codex", "zh-CN", "windows")).toContain("--print-registration");
+    // Hermes 是唯一的例外：它自己的 CLI 只认 git 来源，而且不需要本地化
+    // （in-process Python 包，跑在 Hermes 自己的解释器里）
+    const hermes = installPrompt("hermes", "zh-CN", "posix");
+    expect(hermes).not.toContain("git clone");
+    expect(hermes).not.toContain("localize.py");
+    expect(hermes).toContain("hermes plugins install");
+  });
+
+  it("lets the agent pick the Python name, because picking wrong fails loudly", () => {
+    // 这一处交给 agent 判断是安全的：Windows 上 `python3` 是 0 字节存根、macOS 上通常只有
+    // `python3`，而挑错了会**立刻失败**（存根打印 "Python was not found" 就退出），
+    // 不会静默走下去 —— 与那些一旦猜错就静默失效的地方（解释器路径、file:/// URL）性质不同。
+    for (const locale of ["zh-CN", "en"] as const) {
+      const prompt = installPrompt("claude-code", locale, "windows");
+      expect(prompt).toMatch(/python3/);                 // 提到另一个名字
+      expect(prompt).toMatch(/macOS|Linux/);
+    }
   });
 
   it("uses the path form the CLI actually accepts — where there is a CLI at all", () => {
