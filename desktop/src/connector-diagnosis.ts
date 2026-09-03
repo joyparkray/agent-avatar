@@ -350,7 +350,12 @@ export function uninstallPrompt(harness: string, locale: Language): string {
   if (cli) {
     // `marketplace remove` 会连带清掉缓存里那份插件副本 —— 只 uninstall 会留下市场登记，
     // 下次装同名插件时它还在，容易装到旧版上。
-    steps = [`${cli} plugin uninstall agent-avatar`, `${cli} plugin marketplace remove agent-avatar`];
+    // 🔴 卸载要用**全名**（和装它时那条命令一样）。短名在 WorkBuddy 上直接失败：
+    // `Marketplace undefined is not found.`，插件原样留着。2026-09-03 实机那次之所以
+    // 看起来成功，是第 2 步删 marketplace 时**顺带**把它带走的 —— 靠副作用卸载，
+    // 哪天顺序或实现一变就漏。Claude Code 两种写法都接受，所以统一用全名。
+    steps = [`${cli} plugin uninstall agent-avatar@agent-avatar`,
+             `${cli} plugin marketplace remove agent-avatar`];
   } else if (harness === "dsh") {
     // 同样由脚本来删：它认得**没有标记**的旧条目（按旧提示词手工粘贴进去的那种），
     // 而让 agent 照着标记去删的话，那些条目会被漏掉、卸载报成功却还留着。
@@ -358,14 +363,22 @@ export function uninstallPrompt(harness: string, locale: Language): string {
   } else {
     // ⚠️ Windows 上 `hermes plugins remove` 只做一半：目录改名后删不掉（git 的 pack 是只读的），
     // 而 config.yaml 里还留着 enabled —— 列表显示启用、实际加载不到。所以要交代收尾。
-    // 🔴 收尾这步**不能写成「如果它报错就……」**。2026-09-03 实机：`plugins remove` 报了成功、
-    // 插件和目录都真的没了，但 `config.yaml` 的 plugins.enabled 里那一行还在 —— 没有任何
-    // 报错去触发那个条件分支，于是 agent 跳过了它。写成「去看一眼，有就删」，它就一定会做。
-    steps = ["hermes plugins remove agent-avatar",
-      zh ? "去 $HERMES_HOME/config.yaml 看 plugins.enabled 里还有没有 agent-avatar 那一行（Windows 上通常还在），有就删掉"
-         : "Check plugins.enabled in $HERMES_HOME/config.yaml for an agent-avatar line (on Windows it is usually still there) and remove it if present",
-      zh ? "去 plugins 目录看有没有 .agent-avatar.remove-* 残留，有就删掉（先去掉只读属性）"
-         : "Check the plugins directory for a leftover .agent-avatar.remove-* and delete it if present (clear the read-only attribute first)"];
+    // 🔴 **先 disable 再 remove。** `plugins remove` 单独跑会把 config.yaml 的
+    // plugins.enabled 里那一行留下（2026-09-03 实测），于是列表说启用、实际加载不到 ——
+    // 正是最难查的那种状态。`plugins disable` 会把它从 enabled 挪走，两条命令合起来才干净。
+    //
+    // 这里原来写的是「去 $HERMES_HOME/config.yaml 看一眼，有就删」。两个问题：
+    // **Windows 上 HERMES_HOME 根本没设**（它住 %LOCALAPPDATA%\hermes），于是 agent
+    // 得先去找那个文件；而「去看一眼再动手改 YAML」本身就是个开放任务。实机结果是它
+    // 在这上面跑偏，连第 1 步的 remove 都没执行，回话长到被截断，插件原封不动。
+    // 换成两条钉死的命令之后就没有可发挥的余地了。
+    steps = ["hermes plugins disable agent-avatar",
+      // Hermes 把**成功**的移除也印成 `✗ Plugin agent-avatar removed from ...`。
+      // 那个叉是它的显示风格，不是失败 —— 但 agent 会照字面读：实机那次它答的是
+      // 「成功。……（移除虽提示失败但实体已不在插件列表中。）」，三句话互相打架。
+      // 先说破，回话就能干脆。
+      zh ? "hermes plugins remove agent-avatar（它成功时也会印一个 ✗ 开头的行，那是 Hermes 的显示风格，不是失败）"
+         : "hermes plugins remove agent-avatar (it prints a line starting with ✗ even on success — that is Hermes's style, not a failure)"];
   }
 
   // 判据要**可核对**，而且是问 harness 自己 —— 它才知道自己还认不认这个插件。
@@ -441,7 +454,7 @@ export function updatePrompt(harness: string, locale: Language, platform: Platfo
     // 先卸再装：装同一个插件名时 CLI 只会说「已安装」，**不会刷新缓存里那份副本**。
     // 远程 marketplace 那条路 install 会先刷新市场，所以不必单独 update。
     // 先卸再装：装同一个插件名时 CLI 只会说「已安装」，**不会刷新缓存里那份副本**。
-    steps.push(`${cli} plugin uninstall agent-avatar`);
+    steps.push(`${cli} plugin uninstall agent-avatar@agent-avatar`);
     steps.push(`${cli} plugin install agent-avatar@agent-avatar`);
   } else if (harness === "dsh") {
     // 重新登记是幂等的（脚本先删旧条目再写新的），所以更新不需要单独一步去核对路径。

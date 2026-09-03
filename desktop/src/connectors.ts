@@ -55,11 +55,24 @@ export interface ConnectorState {
  */
 export type LinkState = "missing" | "unconfigured" | "connected";
 
-export function linkState(entry: Pick<ConnectorState, "installed" | "lastSignalSeconds">): LinkState {
+export function linkState(
+  entry: Pick<ConnectorState, "installed" | "lastSignalSeconds" | "installedAt" | "installRecord">,
+  now: number = Date.now(),
+): LinkState {
   if (!entry.installed) return "missing";
   // 判据是「有没有写过」而不是「最近有没有写过」—— 一周没用那家 agent 的用户
   // 不该被告知需要重新配置。新旧程度只作为附注显示。
-  return typeof entry.lastSignalSeconds === "number" ? "connected" : "unconfigured";
+  if (typeof entry.lastSignalSeconds !== "number") return "unconfigured";
+
+  // 🔴 但那次上报必须是**这次安装之后**的。状态文件在临时目录里，卸载不会删它 ——
+  // 于是重装完还没开新会话时，界面就凭上一次安装留下的文件说「已连通」
+  // （2026-09-03 实机：workbuddy 装完立刻显示已连通，而它一次新会话都还没跑）。
+  // 那正好盖掉了中间那档，而中间那档存在的意义就是提醒用户「还差开一个新会话」。
+  const installed = Date.parse(entry.installRecord?.at ?? entry.installedAt ?? "");
+  if (Number.isFinite(installed) && now - entry.lastSignalSeconds * 1000 < installed) {
+    return "unconfigured";
+  }
+  return "connected";
 }
 
 /**

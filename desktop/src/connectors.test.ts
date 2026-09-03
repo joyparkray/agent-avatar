@@ -166,8 +166,23 @@ describe("connector install wizard", () => {
       expect(uninstallPrompt("claude-code", locale)).toContain("marketplace remove");
       expect(uninstallPrompt("workbuddy", locale)).toContain("codebuddy plugin uninstall");
       expect(uninstallPrompt("dsh", locale)).toContain("cordis.patch.yml");
-      // Windows 上 hermes plugins remove 只做一半，不交代用户会以为卸干净了
-      expect(uninstallPrompt("hermes", locale)).toMatch(/config\.yaml/);
+      // `plugins remove` 单独跑会把条目留在 config.yaml 的 plugins.enabled 里 ——
+      // 列表说启用、实际加载不到。先 disable 才干净，而顺序错了就没有意义。
+      const hermes = uninstallPrompt("hermes", locale);
+      expect(hermes.indexOf("plugins disable")).toBeGreaterThan(-1);
+      expect(hermes.indexOf("plugins disable")).toBeLessThan(hermes.indexOf("plugins remove"));
+      // 交代它去编辑 YAML 就等于给了它一个开放任务：实机那次 agent 在这上面跑偏，
+      // 连第 1 步都没执行。而且 Windows 上 HERMES_HOME 根本没设。
+      expect(hermes).not.toMatch(/HERMES_HOME|config\.yaml/);
+    }
+  });
+
+  it("uninstalls by the same name it installed by", () => {
+    // 短名在 WorkBuddy 上失败（`Marketplace undefined is not found.`）而插件留在原地。
+    // 那次看起来成功是因为下一步删 marketplace 顺带带走了它 —— 靠副作用卸载迟早会漏。
+    for (const harness of ["claude-code", "workbuddy", "codex"]) {
+      const prompt = uninstallPrompt(harness, "zh-CN");
+      expect(prompt).toMatch(/plugin uninstall agent-avatar@agent-avatar/);
     }
   });
 
@@ -292,6 +307,20 @@ describe("connector install wizard", () => {
     expect(linkState({ installed: true, lastSignalSeconds: 9_000_000 })).toBe("connected");
     // 字段缺失（老版本 Rust / 调用失败）时不能谎报连通
     expect(linkState({ installed: true })).toBe("unconfigured");
+
+    // 上报必须发生在**这次安装之后**。状态文件住在临时目录里，卸载不会删它，
+    // 所以重装完还没开新会话时，上一次安装留下的文件会让界面说「已连通」——
+    // 2026-09-03 实机 workbuddy 就是这样，而它一次新会话都还没跑。
+    const now = Date.parse("2026-09-03T12:00:00Z");
+    const justInstalled = { installed: true, installRecord: { at: "2026-09-03T11:59:00Z" } };
+    expect(linkState({ ...justInstalled, lastSignalSeconds: 3600 }, now)).toBe("unconfigured");
+    expect(linkState({ ...justInstalled, lastSignalSeconds: 10 }, now)).toBe("connected");
+    // 账本里的时间也算数（Hermes 走目录时间兜底，它没有装机记录）
+    expect(linkState({ installed: true, installedAt: "2026-09-03T11:59:00Z",
+                       lastSignalSeconds: 3600 }, now)).toBe("unconfigured");
+    // 时间读不出来时不能反过来谎报没通 —— 老版本 Rust 不带这两个字段
+    expect(linkState({ installed: true, installedAt: "who knows", lastSignalSeconds: 3600 }, now))
+      .toBe("connected");
   });
 
   it("does not send Claude Code and dsh users off to configure something that does not exist", () => {
