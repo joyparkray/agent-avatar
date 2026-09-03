@@ -1,9 +1,13 @@
-"""Registering dsh and Codex writes their config file — so the writing has to be safe.
+"""Registering dsh writes its patch file — so the writing has to be safe.
 
-These two are the ones with no plugin CLI to do it for them: dsh has none at all, and
-the Windows ChatGPT app ships no `codex`. For them the config file *is* the install —
-`cordis.patch.yml` and `config.toml` respectively. That edit used to be "the script prints a block, the agent pastes
-it", which was the most error-prone step of all five harnesses — YAML is
+dsh is the only harness with no plugin CLI at all, so for it `cordis.patch.yml` *is* the
+install. Codex briefly looked like a second such case — the `codex` binary is not on
+PATH on Windows — but the ChatGPT app does ship it, and `codex plugin add` also creates
+the cache copy that Codex actually loads. Writing that file ourselves would be a
+half-install, so it goes through the CLI like the rest.
+
+The dsh edit used to be "the script prints a block, the agent pastes it", which was the
+most error-prone step of all five harnesses — YAML is
 indentation-sensitive, the entry has to be a file:/// URL, and a malformed patch file
 fails silently because this path discards the plugin's stderr.
 
@@ -30,7 +34,6 @@ localize = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(localize)
 
 PLUGIN_ROOT = "/somewhere/agent-avatar-connectors/plugins/dsh/agent-avatar"
-CODEX_PLUGIN_ROOT = "/somewhere/agent-avatar-connectors/plugins/codex/agent-avatar"
 
 
 def register(tmp_path, remove=False):
@@ -97,81 +100,14 @@ def test_the_previous_contents_are_kept_somewhere(tmp_path):
 
 
 def test_register_is_rejected_where_the_harness_does_it_itself():
-    """Only these two config files are ours to write.
+    """Only dsh's file is ours to write.
 
-    The other three register through their own `plugin install`, and writing their
-    ledgers behind their back is how a second source of truth starts drifting.
+    The other four register through their own CLI, and writing their ledgers behind
+    their back is how a second source of truth starts drifting — and, in Codex's case,
+    would skip the cache copy it actually loads.
     """
-    for harness in ("claude-code", "workbuddy", "hermes"):
+    for harness in ("claude-code", "workbuddy", "hermes", "codex"):
         result = subprocess.run([sys.executable, str(LOCALIZE), harness, "--register"],
                                 capture_output=True, text=True, check=False)
         assert result.returncode != 0, harness
         assert "own CLI" in (result.stderr + result.stdout), harness
-
-
-# ── Codex ────────────────────────────────────────────────────────────────────────
-
-def codex(tmp_path, remove=False):
-    os.environ["CODEX_HOME"] = str(tmp_path)
-    try:
-        return localize.edit_codex_registration(CODEX_PLUGIN_ROOT, remove=remove)
-    finally:
-        os.environ.pop("CODEX_HOME", None)
-
-
-def config_toml(tmp_path):
-    path = tmp_path / "config.toml"
-    return path.read_text(encoding="utf-8") if path.is_file() else ""
-
-
-def test_codex_points_at_the_level_that_holds_the_manifest(tmp_path):
-    """Codex's marketplace root is the directory containing `.agents/`, three levels up
-    from the plugin directory — not the plugin directory, and not `plugins/`.
-
-    Getting it wrong is silent: Codex simply does not list the plugin.
-    """
-    codex(tmp_path)
-    assert "source = '" in config_toml(tmp_path)
-    source = config_toml(tmp_path).split("source = '")[1].split("'")[0]
-    assert source.replace("\\", "/").endswith("agent-avatar-connectors"), source
-
-
-def test_registering_codex_twice_leaves_one_pair_of_tables(tmp_path):
-    codex(tmp_path)
-    codex(tmp_path)
-    assert config_toml(tmp_path).count("[marketplaces.agent-avatar]") == 1
-    assert config_toml(tmp_path).count('[plugins."agent-avatar@agent-avatar"]') == 1
-
-
-def test_the_users_codex_settings_survive_both_ways(tmp_path):
-    """config.toml holds the model, notify and mcp_servers — ours is two tables in it."""
-    theirs = '\n'.join(['model = "gpt-5"', '', "[projects.'c:/code']",
-                        'trust_level = "trusted"', ''])
-    (tmp_path / "config.toml").write_text(theirs, encoding="utf-8")
-    codex(tmp_path)
-    assert 'model = "gpt-5"' in config_toml(tmp_path)
-    assert "trust_level" in config_toml(tmp_path)
-    codex(tmp_path, remove=True)
-    assert config_toml(tmp_path).strip() == theirs.strip()
-
-
-def test_a_table_from_the_older_layout_is_still_ours(tmp_path):
-    """An earlier layout named these `agent-avatar-local`, and anyone who registered by
-    hand may have either name. Leaving one behind points Codex at a tree that is gone."""
-    (tmp_path / "config.toml").write_text('\n'.join([
-        "[marketplaces.agent-avatar-local]", 'source_type = "local"', "source = '/old/path'",
-        '', '[plugins."agent-avatar@agent-avatar-local"]', "enabled = true", '']),
-        encoding="utf-8")
-    codex(tmp_path)
-    assert "/old/path" not in config_toml(tmp_path)
-    assert config_toml(tmp_path).count("[marketplaces.agent-avatar") == 1
-
-    codex(tmp_path, remove=True)
-    assert "agent-avatar" not in config_toml(tmp_path)
-
-
-def test_the_previous_codex_config_is_kept_somewhere(tmp_path):
-    (tmp_path / "config.toml").write_text('model = "gpt-5"', encoding="utf-8")
-    codex(tmp_path)
-    backup = tmp_path / "config.toml.agent-avatar-backup"
-    assert backup.is_file() and "gpt-5" in backup.read_text(encoding="utf-8")
