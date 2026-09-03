@@ -82,6 +82,11 @@ export function readLatest(payload: unknown, current: string): UpdateInfo {
  */
 export async function checkForUpdate(current: string,
                                      fetchImpl: typeof fetch = fetch): Promise<UpdateInfo> {
+  // 🔴 **不知道自己是哪一版就别比。** 空版本号比任何版本都「旧」，于是每次检查都会谎报
+  // 「有新版本」。读不到自己的版本号不是不可能的事（资源目录读不到、命令没注册），
+  // 而那时候正确的回答是「查不到」，不是编一个结论出来 —— 顺带也省掉一次没意义的请求。
+  if (!current.trim()) return { latest: null, newer: false };
+
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), CHECK_TIMEOUT_MS);
   try {

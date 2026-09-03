@@ -67,6 +67,16 @@ describe("update check", () => {
       .resolves.toEqual({ latest: null, newer: false });
   });
 
+  it("does not compare against a version it does not know", async () => {
+    // 空版本号比任何版本都「旧」，于是每次检查都会谎报「有新版本」。读不到自己的版本号
+    // 不是不可能的事，而那时候正确的回答是「查不到」，不是编一个结论出来。
+    let called = false;
+    const spy = (() => { called = true; return Promise.resolve({ ok: true, json: () => Promise.resolve({ tag_name: "v9.9.9" }) } as unknown as Response); }) as unknown as typeof fetch;
+    await expect(checkForUpdate("", spy)).resolves.toEqual({ latest: null, newer: false });
+    await expect(checkForUpdate("  ", spy)).resolves.toEqual({ latest: null, newer: false });
+    expect(called, "不知道自己版本时连请求都不该发").toBe(false);
+  });
+
   it("asks the release API of the repo this app is published from", async () => {
     let asked = "";
     const spy = ((url: string) => {
