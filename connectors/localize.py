@@ -38,12 +38,14 @@ is the layout of the published tree.
 """
 
 import argparse
+import io
 import json
 import os
 import pathlib
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 
 HARNESSES = ("claude-code", "codex", "workbuddy", "dsh", "hermes")
 
@@ -176,6 +178,65 @@ def smoke_test(root, harness):
     return layout["state"]
 
 
+def record_install(harness, root, python, smoke_state):
+    """Leave a record of **what was verified**, next to the state file.
+
+    Why this exists: the app can already learn *that* a plugin is installed from the
+    harness's own ledger, which is more trustworthy than anything we could claim
+    about ourselves. What the ledger cannot answer is whether the hook actually
+    *runs* on this machine — and that is exactly what the smoke test above just
+    established. So this file records the verification, not a claim of installation.
+
+    It closes a real gap in the middle state. "Installed but has never reported" is
+    normal for the first few minutes (no session has started yet) and a symptom after
+    a day. With this record the app can tell those two apart, and say "installed and
+    self-tested at T, waiting for your first session" instead of listing five things
+    that might be wrong.
+
+    🔴 Never raises. This runs after a successful install; failing to write a note
+    about it must not turn a good install into an error.
+    """
+    try:
+        record = {
+            "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "harness": harness,
+            "connector_version": connector_version(root),
+            "python": python,
+            # The honest field: what we actually proved, not "it is installed"
+            "smoke_test": "passed" if smoke_state else "skipped",
+            "source": os.path.abspath(root),
+        }
+        path = os.path.join(tempfile.gettempdir(), "agent-avatar-install.%s.json" % harness)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, ensure_ascii=False, sort_keys=True)
+        return path
+    except Exception:                      # noqa: BLE001 - see the docstring
+        return None
+
+
+def connector_version(root):
+    """Read the version out of the plugin tree we just localised.
+
+    Taken from the tree rather than hardcoded here: this script and the plugin can be
+    updated independently, and a version we made up would be worse than none.
+    """
+    for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json",
+                     ".codebuddy-plugin/plugin.json"):
+        path = os.path.join(root, relative)
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    return json.load(handle).get("version")
+            except (OSError, ValueError):
+                return None
+    path = os.path.join(root, "plugin.yaml")
+    if os.path.isfile(path):
+        for line in io.open(path, encoding="utf-8"):
+            if line.startswith("version:"):
+                return line.split(":", 1)[1].strip().strip('"')
+    return None
+
+
 def print_registration(harness, root=None):
     """Print the configuration lines to register — **print only, touch no files**.
 
@@ -274,11 +335,14 @@ def main():
         count = rewrite_hooks_json(config, python, arguments.harness)
 
     state = smoke_test(root, arguments.harness)
+    recorded = record_install(arguments.harness, root, python, state)
     print("interpreter: %s" % python)
     if python != sys.executable.replace("\\", "/"):
         print("  (the original path contains spaces; using the 8.3 short path on the command line)")
     print("rewrote %d command(s) -> %s" % (count, config))
     print("smoke test passed: one event wrote %s" % state)
+    if recorded:
+        print("recorded the verification -> %s" % recorded)
     return 0
 
 

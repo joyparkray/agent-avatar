@@ -118,6 +118,25 @@ fn hermes_homes() -> Vec<PathBuf> {
     roots
 }
 
+/// harness 账本里记的安装时间（ISO 8601）。只有 Claude Code 系的账本带这个字段。
+///
+/// 有它就能区分「刚装完，当然还没上报」和「装了一天还是没上报」——
+/// 后者才是故障。没有就返回 None，界面退回只说「还没上报过」。
+fn ledger_installed_at(harness: &str) -> Option<String> {
+    let ledger = match harness {
+        "claude-code" => harness_home("CLAUDE_CONFIG_DIR", ".claude").join("plugins/installed_plugins.json"),
+        "workbuddy" => harness_home("WORKBUDDY_HOME", ".workbuddy").join("plugins/installed_plugins.json"),
+        _ => return None,
+    };
+    let document: Value = serde_json::from_str(&fs::read_to_string(ledger).ok()?).ok()?;
+    let plugins = document.get("plugins")?.as_object()?;
+    plugins.iter()
+        .filter(|(name, _)| name.starts_with("agent-avatar@"))
+        .filter_map(|(_, entries)| entries.as_array()?.first()?.get("installedAt")?.as_str())
+        .map(str::to_owned)
+        .next()
+}
+
 /// 首选位置（新布局）。卸载与「装到哪」的显示用它。
 pub fn plugin_dir(harness: &str) -> Option<PathBuf> {
     plugin_dirs(harness).into_iter().next()
@@ -198,6 +217,12 @@ pub fn list_connectors() -> Vec<Value> {
             // hook 跑起来了但出错时留下的那条记录（第 2 层诊断）。界面据此说出**具体原因**，
             // 而不是只给一串「可能是这些」。
             "diagnostic": crate::hermes::last_diagnostic(harness),
+            // 装机时那次验证的记录（`localize.py` 跑通了冒烟自检才会有）。
+            // 它不是「装没装」的证据 —— 那个读账本；它是「这台机器上跑得起来」的证据。
+            "installRecord": crate::hermes::install_record(harness),
+            // 账本里的安装时间。mac 那条路不跑 localize，没有上面那条记录，
+            // 但账本有时间戳 —— 「刚装完还没上报」在两个平台上都该说得出来。
+            "installedAt": ledger_installed_at(harness),
         })
     }).collect()
 }

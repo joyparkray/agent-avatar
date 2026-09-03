@@ -23,6 +23,13 @@ export const HARNESS_LABELS: Record<Harness, string> = {
   workbuddy: "WorkBuddy",
 };
 
+/**
+ * 装完多久之内算「刚装好」。**这不是超时**：过了这个点插件照样可能正常，
+ * 只是我们不再默认「他还没开新会话」——那时候把排查清单摊开才是有用的。
+ * 半小时足够任何人开一个新会话，又短到不会让真出问题的人一直等。
+ */
+const FRESH_INSTALL_MS = 30 * 60 * 1000;
+
 export interface ConnectorState {
   harness: string;
   installed: boolean;
@@ -33,6 +40,10 @@ export interface ConnectorState {
   connectorVersion?: string | null;
   /** hook 最后一次出错留下的记录（第 2 层诊断）。从没出过错 = null。 */
   diagnostic?: { at?: string; message?: string; python?: string } | null;
+  /** 装机时那次验证的记录：`localize.py` 跑通冒烟自检才会有。不是「装没装」的证据。 */
+  installRecord?: { at?: string; smoke_test?: string; python?: string; connector_version?: string } | null;
+  /** harness 账本里的安装时间（ISO 8601）。只有 Claude Code 系的账本带。 */
+  installedAt?: string | null;
 }
 
 /**
@@ -90,6 +101,8 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "diagnosis.said": "插件自己报的错：",
     "diagnosis.python": "它用的解释器：",
     "diagnosis.title": "一直没通？可能是这些原因：",
+    "diagnosis.fresh": "刚装好，等你开一个新会话就会生效。",
+    "diagnosis.freshVerified": "刚装好，安装时已自检通过 —— 等你开一个新会话就会生效。",
     "diagnosis.ask": "复制排查提示词",
     uninstall: "卸载", done: "完成",
     "stage.removed": "已卸载",
@@ -118,6 +131,8 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "diagnosis.said": "The plugin reported: ",
     "diagnosis.python": "Interpreter it used: ",
     "diagnosis.title": "Still not connected? It could be:",
+    "diagnosis.fresh": "Just installed. It takes effect when you start a new session.",
+    "diagnosis.freshVerified": "Just installed and self-tested at install time — it takes effect when you start a new session.",
     "diagnosis.ask": "Copy a prompt for your agent",
     uninstall: "Uninstall", done: "Done",
     "stage.removed": "Uninstalled",
@@ -321,8 +336,16 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
       const diagnosis = document.createElement("div");
       if (state === "unconfigured") {
         diagnosis.className = "connector-diagnosis";
+        // 「装了但从没上报」在刚装完的几分钟里是**正常的**（还没开新会话），
+        // 过了一天才是故障。原来这两种情况给的是同一段五条排查清单 ——
+        // 对刚装完的人来说，那等于告诉他「你可能哪儿都错了」，而其实他什么都没做错。
+        const installed = entry.installRecord?.at || entry.installedAt;
+        const freshInstall = installed ? Date.now() - Date.parse(installed) < FRESH_INSTALL_MS : false;
         const title = document.createElement("p");
-        title.className = "connector-diagnosis-title"; title.textContent = text("diagnosis.title");
+        title.className = "connector-diagnosis-title";
+        title.textContent = freshInstall
+          ? text(entry.installRecord?.smoke_test === "passed" ? "diagnosis.freshVerified" : "diagnosis.fresh")
+          : text("diagnosis.title");
         diagnosis.append(title);
         // hook 自己留下的那条**具体原因**排在所有猜测之前 —— 有实据时不该让用户先读五条
         // 「可能是」。它只在这一档显示：已经通了的时候，那多半是一条陈年旧错。
@@ -336,8 +359,10 @@ ${text("diagnosis.python")}${entry.diagnostic.python}`;
           diagnosis.append(said);
         }
         const reasons = document.createElement("ul");
-        for (const reason of diagnosisReasons(harness, locale)) {
-          const item = document.createElement("li"); item.textContent = reason; reasons.append(item);
+        if (!freshInstall) {
+          for (const reason of diagnosisReasons(harness, locale)) {
+            const item = document.createElement("li"); item.textContent = reason; reasons.append(item);
+          }
         }
         const ask = document.createElement("button");
         ask.type = "button"; ask.className = "ghost"; ask.textContent = text("diagnosis.ask");

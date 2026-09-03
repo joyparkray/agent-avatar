@@ -65,6 +65,23 @@ fn state_file_name(harness: &str) -> String {
     else { format!("agent-avatar-state.{harness}.json") }
 }
 
+/// 装机时留下的那条**验证**记录；没有 = None。
+///
+/// 注意它记的不是「我装了」——「装没装」的权威答案在 harness 自己的账本里，
+/// 自报一句反而更弱。它记的是账本答不了的那件事：**装的时候在这台机器上把 hook
+/// 真正跑通过一次**（`localize.py` 的冒烟自检：喂一条真事件、验到状态文件落盘）。
+///
+/// 它补的是中间那一档的空白：「装了但从没上报」在刚装完的几分钟里是**正常的**
+/// （还没开新会话），过了一天就是**故障**。有了这条记录，界面能把两者分开说。
+pub fn install_record(harness: &str) -> Option<Value> {
+    let name = format!("agent-avatar-install.{}.json", harness);
+    let newest = candidates(&name).into_iter()
+        .filter_map(|path| Some((fs::metadata(&path).ok()?.modified().ok()?, path)))
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, path)| path)?;
+    serde_json::from_str(&fs::read_to_string(newest).ok()?).ok()
+}
+
 /// hook 最后一次出错时留下的那条记录；从没出过错 = None。
 ///
 /// 这是三层诊断里的**第 2 层**：hook 跑起来了、但事件没处理成

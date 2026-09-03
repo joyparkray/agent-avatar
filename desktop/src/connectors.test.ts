@@ -101,6 +101,21 @@ describe("connector install wizard", () => {
     expect(JSON.parse(manifest).version).toBe(CONNECTOR_VERSION);
   });
 
+  it("does not accuse a fresh install of being broken", () => {
+    // 「装了但从没上报」在刚装完的几分钟里是**正常的**（还没开新会话），过了一天才是故障。
+    // 两者给同一段排查清单，等于告诉刚装完的人「你可能哪儿都错了」——而他什么都没做错。
+    const zh = CONNECTOR_TEXT["zh-CN"];
+    expect(zh["diagnosis.fresh"]).toMatch(/新会话/);
+    expect(zh["diagnosis.freshVerified"]).toMatch(/自检/);
+    // 三句话必须各不相同，否则这个区分在界面上根本看不出来
+    expect(new Set([zh["diagnosis.title"], zh["diagnosis.fresh"], zh["diagnosis.freshVerified"]]).size).toBe(3);
+    for (const key of ["diagnosis.fresh", "diagnosis.freshVerified"]) {
+      expect(CONNECTOR_TEXT.en[key]).toBeTruthy();
+      // 刚装完那两句里不该出现「杀软删了文件」这类猜测 —— 那是给真卡住的人的
+      expect(CONNECTOR_TEXT.en[key]).not.toMatch(/antivirus|quarantine/i);
+    }
+  });
+
   it("treats a connector that reports nothing as outdated", () => {
     // 旧版 connector 根本不写这个字段。把它当成「最新」的话，装着老版本的用户
     // 永远不会被告知该更新 —— 而 Windows 上那份收不到 harness 的自动更新。
