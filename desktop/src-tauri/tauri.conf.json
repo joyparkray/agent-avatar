@@ -31,7 +31,7 @@
       "infoPlist": "Info.plist"
     },
     "resources": [
-      "resources/connectors/**/*"
+      "resources/connectors"
     ]
   }
 }
