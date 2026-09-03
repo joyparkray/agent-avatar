@@ -160,72 +160,9 @@ for harness in ("claude-code", "codex", "workbuddy", "dsh", "hermes"):
     assert os.path.isdir(os.path.join(root, "plugins", harness, "agent-avatar")), harness
 PY
 
-cat > "$out/README.md" <<MD
-# Agent Avatar connectors
-
-让桌面形象跟着你的 agent 变表情。这个仓库就是五家 harness 的插件本体 ——
-**它同时是三家的 plugin marketplace**（三份清单文件名互不相同，互不干扰）。
-
-版本：$version
-
-## 装法
-
-装 connector 这件事交给你的 agent 做 —— 你本来就坐在一个能执行命令的 agent 面前。
-把对应的那段贴给它即可。命令都是钉死的，你可以先读一遍再让它跑。
-
-### Claude Code
-
-\`\`\`
-claude plugin marketplace add $REPO
-claude plugin install agent-avatar@agent-avatar
-\`\`\`
-
-**Windows 上多一步**：\`python3\` 在 Windows 不是 Python（是 0 字节的应用商店存根），
-所以要先把插件树本地化到这台机器：
-
-\`\`\`
-git clone https://github.com/$REPO agent-avatar-connectors
-cd agent-avatar-connectors
-python localize.py claude-code
-claude plugin marketplace add .
-claude plugin install agent-avatar@agent-avatar
-\`\`\`
-
-### WorkBuddy（CodeBuddy Code）
-
-把上面的 \`claude\` 换成 \`codebuddy\`，\`localize.py\` 的参数换成 \`workbuddy\`。
-
-### Codex
-
-\`\`\`
-codex plugin marketplace add $REPO
-codex plugin install agent-avatar@agent-avatar
-\`\`\`
-
-装好后**必须你自己**在 Codex 会话里跑 \`/hooks\` 逐条授信 ——
-启用插件不会自动信任它的 hook，未授信的 hook 会被一直跳过。这是安全设计，不是故障。
-
-### DeepSeek Harness (dsh) / Hermes
-
-见各自 \`plugins/<harness>/agent-avatar/\` 下的说明。
-
-## 这里面是什么
-
-- \`plugins/<harness>/agent-avatar/\` —— 五家各自的插件树（纯观察者：只读事件、
-  写一个本地状态文件，从不返回指令、不拦工具、不参与审批）
-- \`localize.py\` —— Windows 上把解释器换成本机绝对路径的那一步，跑完会自检到
-  「状态文件真的落盘」为止
-- 三份 marketplace 清单
-
-## 怎么确认它真的通了
-
-不要看「有没有报错」—— hook 的设计是**永远 exit 0**（退出码 2 会 block 住 agent），
-所以退出码说明不了任何事。要看**状态文件**：
-
-- Windows: \`%TEMP%\agent-avatar-state.<harness>.json\`
-- macOS / Linux: \`\$TMPDIR/agent-avatar-state.<harness>.json\`
-
-内容应当随会话变化（idle / writing / executing / awaiting）。
-MD
+# 用户看到的第一份东西就是它，所以内容单独放一个模板文件，别埋在 heredoc 里 ——
+# 埋在里面的话每加一段反引号都要转义，改起来没人愿意改，而这份指引恰恰要经常改
+# （每次实机撞到新坑都该往「装了却一直不动」那节里加一条）。
+sed -e "s|{{VERSION}}|$version|g" -e "s|{{REPO}}|$REPO|g"     "$here/marketplace-README.md" > "$out/README.md"
 
 echo "marketplace v$version -> $out"
