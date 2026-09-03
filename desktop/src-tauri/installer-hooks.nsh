@@ -9,6 +9,15 @@
 ; 而不是在这里去猜五家的配置格式在哪、长什么样 —— 那正是我们花了两天才学会不要做的事。
 
 !macro NSIS_HOOK_PREUNINSTALL
+  ; 🔴 **升级不是卸载。** 升级时安装器会带 /UPDATE 去跑老卸载器（installer.nsi 里
+  ; `StrCpy $R1 "$R1 /UPDATE"` 那一句），Section Uninstall 照样执行到这里。不挡住的话，
+  ; 每升一次级就把五家的登记全收回来一次，然后新版本装上、记录没了、reconcile 无事可做 ——
+  ; 用户升个级，所有 agent 就都不连了。Tauri 自己删用户数据那两处也是这么挡的。
+  ${If} $UpdateMode = 1
+    DetailPrint "升级中，连接器保持原样。"
+    Goto done
+  ${EndIf}
+
   ; 设置和模型是**用户的东西**，默认留着。问一句，默认「否」—— 卸载器顺手带走用户内容
   ; 是一种很容易被原谅、但不该犯的错。
   MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 \
