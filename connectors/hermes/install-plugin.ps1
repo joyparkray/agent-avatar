@@ -19,7 +19,12 @@ param([string]$Target)
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-$hermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { Join-Path $env:USERPROFILE ".hermes" }
+# 🔴 Windows 上 Hermes 的 home 是 %LOCALAPPDATA%\hermes，**不是** ~/.hermes
+# （官方安装器放在那儿，而且不设 HERMES_HOME）。照 POSIX 那套装会装到一个
+# Hermes 根本不看的目录里 —— 表现是「装完了、启用不了、也没有任何报错」。
+$hermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME }
+              elseif (Test-Path (Join-Path $env:LOCALAPPDATA "hermes")) { Join-Path $env:LOCALAPPDATA "hermes" }
+              else { Join-Path $env:USERPROFILE ".hermes" }
 if (-not $Target) { $Target = Join-Path $hermesHome "plugins\agent-avatar" }
 
 & (Join-Path $here "..\assemble.ps1") -Harness hermes -Target $Target

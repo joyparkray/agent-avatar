@@ -97,14 +97,74 @@ fn plugin_dirs(harness: &str) -> Vec<PathBuf> {
         // dsh 与 hermes 不走 marketplace：dsh 是 cordis patch 指过来的目录，
         // hermes 是 in-process 的 Python 包，两家的位置没变过。
         "dsh" => vec![harness_home("DSH_HOME", ".dsh").join("plugins/agent-avatar")],
-        "hermes" => vec![harness_home("HERMES_HOME", ".hermes").join("plugins/agent-avatar")],
+        "hermes" => hermes_homes().into_iter().map(|root| root.join("plugins/agent-avatar")).collect(),
         _ => Vec::new(),
     }
+}
+
+/// Hermes 的 home 在两个平台上**不是同一个约定**（2026-09-03 实机确认）。
+///
+/// POSIX 上是 `~/.hermes`，而 Windows 官方安装器把它放在 `%LOCALAPPDATA%\hermes`，
+/// 并且**不设 `HERMES_HOME`**。照 POSIX 那套找的话，界面永远说「未安装」——
+/// 而用户明明装好了。两个都认，Windows 优先本地约定。
+fn hermes_homes() -> Vec<PathBuf> {
+    if let Ok(explicit) = env::var("HERMES_HOME") {
+        if !explicit.is_empty() { return vec![PathBuf::from(explicit)]; }
+    }
+    let mut roots = Vec::new();
+    #[cfg(windows)]
+    if let Ok(local) = env::var("LOCALAPPDATA") { roots.push(PathBuf::from(local).join("hermes")); }
+    roots.push(home().join(".hermes"));
+    roots
 }
 
 /// 首选位置（新布局）。卸载与「装到哪」的显示用它。
 pub fn plugin_dir(harness: &str) -> Option<PathBuf> {
     plugin_dirs(harness).into_iter().next()
+}
+
+/// 「装没装」的**权威答案在 harness 自己的账本里**，不在我们猜的目录里。
+///
+/// 🔴 装是 harness 干的（用户的 agent 跑它自己的 CLI），所以另记一本账必然会漂 ——
+/// 2026-09-03 一天之内漂了两次：claude-code / codex 改成本地 marketplace 布局，
+/// 以及 Hermes 在 Windows 上根本不住 `~/.hermes`（住 `%LOCALAPPDATA%\hermes`）。
+/// 每漂一次，界面就把装好的说成没装。
+///
+/// 所以这里读各家自己记下的那一份：
+/// - claude-code / workbuddy：`plugins/installed_plugins.json`
+/// - codex：`config.toml` 里的 `[plugins."agent-avatar@…"]`
+/// - dsh：`cordis.patch.yml` 里那段 insert
+///
+/// 返回值分三种：`Some(true)` 账本说装了；`Some(false)` 账本在、但没有我们这一条
+/// （**文件在也算没装** —— 那正是「拷了文件却没登记」，harness 根本不会加载它）；
+/// `None` 账本读不到（这家没有账本，或者从没用过），退回去看目录。
+fn installed_by_record(harness: &str) -> Option<bool> {
+    let listed = |path: PathBuf, needle: &str| -> Option<bool> {
+        let raw = fs::read_to_string(path).ok()?;
+        Some(raw.contains(needle))
+    };
+    match harness {
+        "claude-code" => listed(
+            harness_home("CLAUDE_CONFIG_DIR", ".claude").join("plugins/installed_plugins.json"),
+            "\"agent-avatar@"),
+        // WorkBuddy 的同一个 CLI 有两个 home：app 读 .workbuddy，独立 CLI 默认读 .codebuddy。
+        // 任一本账记着就算装了 —— 用户可能只用其中一个。
+        "workbuddy" => {
+            let app = listed(harness_home("WORKBUDDY_HOME", ".workbuddy").join("plugins/installed_plugins.json"),
+                             "\"agent-avatar@");
+            let cli = listed(harness_home("CODEBUDDY_CONFIG_DIR", ".codebuddy").join("plugins/installed_plugins.json"),
+                             "\"agent-avatar@");
+            match (app, cli) {
+                (None, None) => None,
+                (a, c) => Some(a.unwrap_or(false) || c.unwrap_or(false)),
+            }
+        }
+        "codex" => listed(harness_home("CODEX_HOME", ".codex").join("config.toml"),
+                          "[plugins.\"agent-avatar@"),
+        "dsh" => listed(harness_home("DSH_HOME", ".dsh").join("cordis.patch.yml"), "id: agent-avatar"),
+        // Hermes 没有我们读得懂的账本（它记在自己的 sqlite 里），只能看目录
+        _ => None,
+    }
 }
 
 /// 实际存在的那个位置。没有就是没装。
@@ -121,9 +181,11 @@ fn installed_dir(harness: &str) -> Option<PathBuf> {
 pub fn list_connectors() -> Vec<Value> {
     HARNESSES.iter().map(|harness| {
         let found = installed_dir(harness);
+        // 账本优先；这家没有账本（或从没用过）才退回看目录
+        let installed = installed_by_record(harness).unwrap_or_else(|| found.is_some());
         json!({
             "harness": harness,
-            "installed": found.is_some(),
+            "installed": installed,
             // 装了就报实际位置，没装就报**将要**装到哪 —— 后者也是有用的信息
             // （用户拿它去看杀软的隔离区里那条路径对不对得上）
             "path": found.or_else(|| plugin_dir(harness)).map(|path| path.display().to_string()),
@@ -243,7 +305,8 @@ pub fn uninstall_connector(harness: String) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_path, home, plugin_dir, plugin_dirs, strip_managed_block, tail,
+    use super::{command_path, home, installed_by_record, installed_dir, plugin_dir, plugin_dirs,
+                strip_managed_block, tail,
                 without_marketplace_entry, HARNESSES, LOCAL_MARKETPLACE};
     use std::{env, fs};
 
@@ -266,6 +329,41 @@ mod tests {
         }
         assert!(plugin_dir("hermes").unwrap().ends_with("plugins/agent-avatar"));
         assert!(plugin_dir("dsh").unwrap().ends_with("plugins/agent-avatar"));
+    }
+
+    #[test]
+    fn the_harness_ledger_beats_our_guess_about_directories() {
+        // 装是 harness 干的，所以「装没装」的权威答案在它自己的账本里。
+        // 我们另记一本账必然会漂 —— 2026-09-03 一天之内漂了两次。
+        let scratch = std::env::temp_dir().join(format!("agent-avatar-ledger-{}", std::process::id()));
+        let claude = scratch.join(".claude");
+        fs::create_dir_all(claude.join("plugins")).unwrap();
+        let previous = env::var("CLAUDE_CONFIG_DIR").ok();
+        env::set_var("CLAUDE_CONFIG_DIR", &claude);
+
+        // 账本在、但没有我们这一条 —— **文件在也算没装**：拷了文件却没登记的话，
+        // harness 根本不会加载它（实测撞到过：重启 app 后 Plugins 页里什么都没有）。
+        fs::write(claude.join("plugins/installed_plugins.json"), r#"{"plugins":{}}"#).unwrap();
+        fs::create_dir_all(claude.join(LOCAL_MARKETPLACE)).unwrap();
+        assert_eq!(installed_by_record("claude-code"), Some(false));
+
+        // 账本记着就算装了
+        fs::write(claude.join("plugins/installed_plugins.json"),
+                  r#"{"plugins":{"agent-avatar@agent-avatar-local":[{"scope":"user"}]}}"#).unwrap();
+        assert_eq!(installed_by_record("claude-code"), Some(true));
+
+        // 账本读不到（这家没用过）→ 退回去看目录，别把没账本当成没装
+        fs::remove_file(claude.join("plugins/installed_plugins.json")).unwrap();
+        assert_eq!(installed_by_record("claude-code"), None);
+        assert!(installed_dir("claude-code").is_some(), "退路还得能认出目录");
+
+        match previous {
+            Some(value) => env::set_var("CLAUDE_CONFIG_DIR", value),
+            None => env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+        let _ = fs::remove_dir_all(&scratch);
+        // Hermes 记在自己的 sqlite 里，我们读不懂 —— 那一家只能看目录
+        assert_eq!(installed_by_record("hermes"), None);
     }
 
     #[test]

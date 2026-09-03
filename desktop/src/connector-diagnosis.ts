@@ -189,8 +189,8 @@ export function installPrompt(harness: string, locale: Language, platform: Platf
   } else {
     // Hermes 是 in-process 的 Python 包，拷进插件目录再启用即可。五家里唯一不需要本地化的。
     steps = [...clone,
-      zh ? "把 plugins/hermes/agent-avatar 整个目录拷到 $HERMES_HOME/plugins/agent-avatar（默认 ~/.hermes）"
-         : "Copy the whole plugins/hermes/agent-avatar directory to $HERMES_HOME/plugins/agent-avatar (default ~/.hermes)",
+      zh ? "用 hermes plugins install <仓库地址> 装（Hermes 自己有插件 CLI，会跑一遍安全扫描）；它的 home 在 Windows 上是 %LOCALAPPDATA%\hermes，不是 ~/.hermes"
+         : "Install with hermes plugins install <repo> (Hermes has its own plugin CLI and runs a security scan); its home is %LOCALAPPDATA%\hermes on Windows, not ~/.hermes",
       "hermes plugins enable agent-avatar"];
   }
 
