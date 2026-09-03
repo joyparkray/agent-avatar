@@ -117,6 +117,12 @@ input[type="number"] {
   background: color-mix(in srgb, CanvasText 6%, transparent);
 }
 .row:has(input[type="number"]) { grid-template-columns: 1fr auto; align-items: center; }
+/* 复选框和 select、number 一样是「左边说明、右边控件」。.row 默认单列，不写这条的话
+   勾选框会掉到说明下面居中显示 —— 和这一页其他行完全不是一个排版。 */
+.row:has(input[type="checkbox"]) { grid-template-columns: 1fr auto; align-items: center; }
+/* 「关于」里那一行：状态在左，「现在检查」和「去看看」在右。第三列在没有新版本时
+   宽度为 0，所以不写两套。 */
+.row.actions { grid-template-columns: 1fr auto auto; align-items: center; gap: 8px; }
 
 .state-motions { display: flex; flex-direction: column; gap: 8px; }
 .state-motion-row { display: grid; grid-template-columns: minmax(92px, .8fr) minmax(150px, 1.2fr); align-items: center; gap: 10px; }

@@ -888,6 +888,20 @@ fn needs_refresh(installed: Option<&str>, bundled: &str) -> bool {
     matches!(installed, Some(version) if version != bundled)
 }
 
+/// app 自己的版本号，和它**自带的** connector 版本号。
+///
+/// 两个都要报，因为它们回答的是不同的问题：前者是用户在关于里看到、报 bug 时会贴的那个；
+/// 后者是「harness 里现在跑的是哪一版观察者」。打包之后两者是绑在一起发布的，
+/// 但仍然不是同一个数字 —— connector 的版本跟着状态文件的格式走，app 的跟着发布走。
+#[tauri::command(async)]
+pub fn app_versions(app: tauri::AppHandle) -> Value {
+    let connector = bundled(&app).map(|(tree, _)| bundled_version(&tree)).ok();
+    json!({
+        "app": app.package_info().version.to_string(),
+        "connector": connector,
+    })
+}
+
 /// 把已经装着的那几家**对齐到 app 自带的这一版**。
 ///
 /// 🔴 connector 随 app 一起发布，所以 app 一升级，五家里装着的就都是上一版了。没有这一步，

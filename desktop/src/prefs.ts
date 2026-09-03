@@ -166,6 +166,28 @@ function readChoice<T extends string>(key: string, allowed: readonly T[], fallba
   return typeof raw === "string" && (allowed as readonly string[]).includes(raw) ? raw as T : fallback;
 }
 
+/**
+ * 要不要**联网查一次版本号**。默认开。
+ *
+ * 🔴 关掉就是「不要联网」，没有例外 —— 有例外的话这个开关就成了摆设，而用户是认真的。
+ * 查的只是一个版本字符串：不下载、不安装、不执行任何东西，发现有新版也只是告诉他一声。
+ *
+ * 默认开的理由：connector 随 app 一起发布，所以「有没有新 connector」这个问题现在等价于
+ * 「有没有新 app」—— 用户不知道有新版本时，他连同 connector 一起停在旧版上。
+ */
+export function readUpdateCheck(): boolean {
+  const raw = readRaw("updateCheck");
+  return raw === undefined || raw === null ? true : Boolean(raw);
+}
+export function writeUpdateCheck(value: boolean): void { writeRaw("updateCheck", value); }
+
+/** 上次自动检查的时间戳。手动点「检查更新」不写它 —— 那不该影响自动检查的节奏。 */
+export function readLastUpdateCheck(): number | null {
+  const raw = readRaw("lastUpdateCheck");
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+}
+export function writeLastUpdateCheck(value: number): void { writeRaw("lastUpdateCheck", value); }
+
 export function readStateSource(): StateSource { return readChoice("stateSource", STATE_SOURCES, "auto"); }
 export function writeStateSource(value: StateSource): void { writeRaw("stateSource", value); }
 

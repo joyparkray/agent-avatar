@@ -17,10 +17,12 @@ import {
   aliasMapKey, hasStored, heldActionPoolKey, idleActionPoolKey, readStringMap, triggerMapKey, writeStringMap,
   idleDelaySeconds, rememberIdleDelay, rememberStatusPosition, statusPosition, STATUS_LABELS, STATUS_POSITIONS,
   currentModelSource, language, LANGUAGES, modelBaseUrl, readStateMotions, rememberLanguage, rememberStateMotions,
-  readHiddenModels, writeHiddenModels, SETTINGS_EVENT, SHORTCUT_STATUS_EVENT, type Language, type SettingsChange, type StatusPosition,
+  readHiddenModels, writeHiddenModels, readUpdateCheck, writeUpdateCheck,
+  readLastUpdateCheck, writeLastUpdateCheck, SETTINGS_EVENT, SHORTCUT_STATUS_EVENT, type Language, type SettingsChange, type StatusPosition,
 } from "./prefs";
 import { SEMANTIC_STATES, type SemanticState } from "./types";
 import { renderConnectors } from "./connectors";
+import { checkForUpdate, shouldCheck } from "./updates";
 import { errorMessage } from "./errors";
 
 /** 改动即时广播给主窗口；config.json 只负责持久化，不负责生效。 */
@@ -33,6 +35,7 @@ const TEXT: Record<Language, Record<string, string>> = {
   "zh-CN": {
     "tab.general": "通用", "tab.video": "视频", "tab.agent": "Agent", "tab.behavior": "行为", "tab.models": "模型",
     "general.language": "语言", "general.interfaceLanguage": "界面语言", "general.languageHint": "语言切换会立即应用到设置窗口。", "general.statusBar": "状态栏", "general.statusHint": "显示 Agent 当前在做什么，并可调整到不遮挡模型的位置。", "general.position": "位置",
+    "general.about": "关于", "general.updateCheck": "自动检查更新", "general.updateHint": "只查一个版本号，不会下载或安装任何东西。查不到时（离线、代理、网络限制）不会有任何提示。", "general.checkNow": "现在检查", "general.checking": "查询中…", "general.upToDate": "已是最新版本。", "general.unreachable": "这会儿查不到（离线或网络受限），不影响使用。", "general.newVersion": "有新版本 {version}", "general.openRelease": "去看看",
     "video.display": "显示", "video.scale": "缩放", "video.opacity": "透明度", "video.focus": "聚焦范围：显示顶部", "video.focusHint": "仅在右键菜单启用聚焦模式时生效。", "video.rendering": "渲染", "video.renderHint": "降低画质通常比降低帧率更省 GPU。", "video.quality": "画质", "video.fps": "帧率",
     "agent.connectors": "接入", "agent.connectorsHint": "选一个你在用的 agent，点「安装」就行。连接器和它需要的运行环境都在这个应用里，不联网、不下载；装完如果还需要你做点什么，会显示在下面。", "agent.mapping": "状态与动作", "agent.mappingHint": "为当前模型的每个 Agent 状态选择动作。选择“模型默认”会使用 avatar.json 的映射。", "agent.default": "模型默认",
     "behavior.lipSync": "口型", "behavior.lipHint": "灵敏度决定多小的声音算「在说话」；张嘴幅度决定嘴张多大。对系统音频、音频文件与 Hermes 三种音源都生效。", "behavior.meterHint": "上面是当前听到的口型强度，竖线是张嘴的门槛。放点声音，把灵敏度拉到柱子能稳定越过竖线为止。", "behavior.sensitivity": "灵敏度", "behavior.amplitude": "张嘴幅度",
@@ -44,6 +47,7 @@ const TEXT: Record<Language, Record<string, string>> = {
   en: {
     "tab.general": "General", "tab.video": "Video", "tab.agent": "Agent", "tab.behavior": "Behavior", "tab.models": "Models",
     "general.language": "Language", "general.interfaceLanguage": "Interface language", "general.languageHint": "Language changes apply to this settings window immediately.", "general.statusBar": "Status bar", "general.statusHint": "Show what the agent is doing and place the label where it does not cover the avatar.", "general.position": "Position",
+    "general.about": "About", "general.updateCheck": "Check for updates automatically", "general.updateHint": "It reads a version number and nothing else — no download, no install. If it cannot reach the network, it says nothing.", "general.checkNow": "Check now", "general.checking": "Checking…", "general.upToDate": "You are on the latest version.", "general.unreachable": "Can't reach it right now (offline or restricted). Nothing is affected.", "general.newVersion": "Version {version} is available", "general.openRelease": "Open",
     "video.display": "Display", "video.scale": "Scale", "video.opacity": "Opacity", "video.focus": "Focus crop: show top", "video.focusHint": "Only applies when Focus Mode is enabled from the context menu.", "video.rendering": "Rendering", "video.renderHint": "Lowering quality usually saves more GPU power than lowering frame rate.", "video.quality": "Quality", "video.fps": "Frame rate",
     "agent.connectors": "Connectors", "agent.connectorsHint": "Pick the agent you use and press Install. The connector and the runtime it needs are inside this app — nothing is downloaded. Any remaining manual step is shown below.", "agent.mapping": "Agent state and motion", "agent.mappingHint": "Choose a motion for each agent state on the current model. Model default uses the avatar.json mapping.", "agent.default": "Model default",
     "behavior.lipSync": "Lip sync", "behavior.lipHint": "Sensitivity sets how quiet a sound still counts as speech; mouth range sets how wide it opens. Both apply to system audio, audio files and Hermes alike.", "behavior.meterHint": "The bar is how strongly the app hears speech right now; the line is the threshold to open the mouth. Play something and raise sensitivity until the bar clears the line consistently.", "behavior.sensitivity": "Sensitivity", "behavior.amplitude": "Mouth range",
@@ -490,6 +494,73 @@ async function showIssues(): Promise<void> {
 }
 
 /** 接入区块：与首次运行的向导共用同一份实现（见 connectors.ts）。 */
+/**
+ * 「关于」：版本号，和那个**联网查版本号**的开关。
+ *
+ * 两个版本号都要显示，因为它们回答不同的问题：app 的是报 bug 时会贴的那个；connector 的是
+ * 「五家 harness 里现在跑的观察者是哪一版」。打包之后它们一起发布，但仍不是同一个数字。
+ *
+ * 🔴 **查不到就什么都不说**（自动那次）。离线、公司代理、GitHub 在某些网络下不可达 ——
+ * 这些都不是用户做错了什么，界面上出现一条像 bug 的红字只会让他去查一个不存在的问题。
+ * 手动点「现在检查」时才把「查不到」讲出来，因为那时候他在等一个回答。
+ */
+const showAbout = (): void => {
+  const line = $<HTMLElement>("[data-version=\"app\"]");
+  const box = $<HTMLInputElement>('[data-act="update-check"]');
+  const button = $<HTMLButtonElement>('[data-act="check-update"]');
+  const status = $<HTMLElement>('[data-label="update-status"]');
+  status.textContent = "";
+
+  let version = "";
+  void invoke<{ app?: string; connector?: string | null }>("app_versions").then(versions => {
+    version = versions.app ?? "";
+    line.textContent = versions.connector
+      ? `Agent Avatar ${version} · connector ${versions.connector}`
+      : `Agent Avatar ${version}`;
+    return version;
+  }).then(current => {
+    // 自动检查：一天最多一次，而且开关关掉时一次都不发
+    if (!current || !shouldCheck(readUpdateCheck(), readLastUpdateCheck())) return;
+    writeLastUpdateCheck(Date.now());
+    return checkForUpdate(current).then(info => {
+      if (info.newer && info.latest) announceUpdate(status, button, info.latest, info.url);
+    });
+  }).catch(() => undefined);
+
+  box.checked = readUpdateCheck();
+  box.onchange = () => { writeUpdateCheck(box.checked); };
+
+  button.onclick = () => {
+    button.disabled = true;
+    status.textContent = tr("general.checking");
+    void checkForUpdate(version).then(info => {
+      if (info.newer && info.latest) announceUpdate(status, button, info.latest, info.url);
+      // 手动查的时候「查不到」必须讲出来 —— 他正在等一个回答，沉默会被读成「已是最新」
+      else status.textContent = tr(info.latest ? "general.upToDate" : "general.unreachable");
+    }).finally(() => { button.disabled = false; });
+  };
+};
+
+/**
+ * 有新版本时说一句，并给一个能点开发布页的按钮 —— **装不装由用户决定，我们不下载**。
+ *
+ * 那个按钮要放在「现在检查」**旁边**，不能塞进状态文字里：这一页的行是「左边说明、
+ * 右边控件」，把按钮塞进左边那格会把它撑开，「现在检查」就被挤到下一行去了（实机看
+ * 渲染效果才发现）。
+ */
+const announceUpdate = (status: HTMLElement, sibling: HTMLElement,
+                        latest: string, url?: string): void => {
+  status.textContent = tr("general.newVersion").replace("{version}", latest);
+  sibling.parentElement?.querySelector("[data-act=\"open-release\"]")?.remove();  // 重复检查不叠加
+  if (!url) return;
+  const open = document.createElement("button");
+  open.type = "button"; open.className = "ghost";
+  open.dataset.act = "open-release";
+  open.textContent = tr("general.openRelease");
+  open.onclick = () => void invoke("open_in_browser", { url }).catch(console.error);
+  sibling.after(open);
+};
+
 const showConnectors = (): void => renderConnectors($<HTMLElement>('[data-list="connectors"]'), locale);
 
 /** 每一块独立失败：设置页有五组控件，一组坏了不该让其余四组一起消失。 */
@@ -502,7 +573,7 @@ async function boot(): Promise<void> {
   locale = language(); applyLanguage(locale); bindTabs();
   guard("language", () => bindSelect<Language>("language", LANGUAGES,
     value => value === "en" ? "English" : "简体中文", locale,
-    value => { rememberLanguage(value); applyLanguage(value); updateLocalizedSelects(); void showIssues(); void showModels(); showConnectors(); redraws.forEach(redraw => redraw()); announce({ language: value }); }));
+    value => { rememberLanguage(value); applyLanguage(value); updateLocalizedSelects(); void showIssues(); void showModels(); showConnectors(); showAbout(); redraws.forEach(redraw => redraw()); announce({ language: value }); }));
   guard("scale", () => bindSlider("scale", "scale", 100, scalePercent => ({ scalePercent })));
   guard("opacity", () => bindSlider("opacity", "opacity", 100, opacityPercent => ({ opacityPercent })));
   guard("lip-meter", () => bindLipMeter());
@@ -539,6 +610,7 @@ async function boot(): Promise<void> {
     value => announce({ fps: value })));
 
   guard("connectors", showConnectors);
+  guard("about", showAbout);
   guard("install", bindInstall);
   void showIssues(); void showModels();
 
