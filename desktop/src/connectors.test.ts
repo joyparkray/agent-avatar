@@ -1,9 +1,14 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { CONNECTOR_VERSION, diagnosePrompt, diagnosisReasons, installPrompt, isOutdated, MARKETPLACE_REPO, stateFileName, uninstallPrompt, updatePrompt } from "./connector-diagnosis";
+import { diagnosisReasons } from "./connector-diagnosis";
 import { CONNECTOR_HARNESSES, CONNECTOR_TEXT, freshness, HARNESS_LABELS, linkState, postInstallSteps, statusLabel } from "./connectors";
 
 describe("connector install wizard", () => {
+  // 🔴 这里曾经有十五条测试，盯的是「app 出提示词、用户的 agent 去执行安装」那条路。
+  // 那条路被两轮实机测试推翻了（14 个缺陷，全部来自 agent 的自由发挥），装 / 卸搬进了
+  // Rust。它们的意图没有丢，只是搬了家：动词来自 CLI 的 --help、解释器路径在命令行里
+  // 表达得出来、dsh 的托管块幂等、以及真机装卸，都在 connector_install.rs 的测试里。
+  // 留在这里的是**界面自己的判断**：状态分档、文案、以及那些说给卡住的人听的话。
   it("covers exactly the five harnesses the Rust side whitelists", () => {
     // 两侧各写一份名单必然会漂，而漂了之后表现是「界面上有这家、点安装说 unknown harness」
     const rust = readFileSync("src-tauri/src/connectors.rs", "utf8");
@@ -58,135 +63,6 @@ describe("connector install wizard", () => {
     expect(diagnosisReasons("unknown", "en").length).toBeGreaterThan(0);
   });
 
-  it("hands the agent pinned commands, not a treasure hunt", () => {
-    // 🔴 方案 5 的边界：提示词会被复制、转发、改写。只有当它退化成「执行这几条确定的
-    // 命令」时，用户和我们才都能确认它做了什么。
-    for (const locale of ["zh-CN", "en"] as const) {
-      for (const harness of CONNECTOR_HARNESSES) {
-        const prompt = diagnosePrompt(harness, locale);
-        expect(prompt).toContain(stateFileName(harness));       // 查哪个文件，说死
-        expect(prompt).toContain("PDM:Trojan.Win32.Generic");   // 隔离区那条线索
-        expect(prompt).toContain("import sys; print(sys.executable)");
-        // 排查不等于修复：修复里有些步骤（Codex 的 /hooks 授信）只能由人来点
-        expect(prompt).toMatch(/不要改任何配置|Don't change any configuration/);
-      }
-    }
-    expect(diagnosePrompt("claude-code", "en")).toContain("claude plugin list");
-    expect(diagnosePrompt("workbuddy", "en")).toContain("codebuddy plugin list");
-    expect(diagnosePrompt("codex", "en")).toContain("config.toml");
-  });
-
-  it("keeps Hermes on the unsuffixed state file it has always used", () => {
-    // 已经装好的 Hermes 用户不该因为我们给别家加后缀就断掉
-    expect(stateFileName("hermes")).toBe("agent-avatar-state.json");
-    expect(stateFileName("claude-code")).toBe("agent-avatar-state.claude-code.json");
-  });
-
-  it("points the install prompt at the same repo the build script publishes", () => {
-    // 两处各写一份必然会漂，而漂了之后表现是「照提示词跑完，装的是另一个仓库」
-    const script = readFileSync("../connectors/build-marketplace.sh", "utf8");
-    expect(script).toContain(`REPO=${MARKETPLACE_REPO}`);
-    for (const harness of CONNECTOR_HARNESSES) {
-      expect(installPrompt(harness, "zh-CN", "posix")).toContain(MARKETPLACE_REPO);
-    }
-  });
-
-  it("agrees with the core about what version connectors report", () => {
-    // connector 把版本写进每一次状态快照，app 拿它判断该不该提示更新。
-    // 两边对不上的话，用户会被告知一个错误的版本号 —— 或者永远被提示「该更新了」。
-    const core = readFileSync("../bridge/state_machine.py", "utf8");
-    expect(core).toContain(`CONNECTOR_VERSION = "${CONNECTOR_VERSION}"`);
-    // 五家的清单也必须是同一个版本（build-marketplace.sh 会逐个对，这里守住其中一份）
-    const manifest = readFileSync("../connectors/claude-code/plugin/agent-avatar/.claude-plugin/plugin.json", "utf8");
-    expect(JSON.parse(manifest).version).toBe(CONNECTOR_VERSION);
-  });
-
-  it("asks the agent for a verdict, not for a proof", () => {
-    // 2026-09-03 实机：提示词原来在这儿解释「hook 永远 exit 0、退出码说明不了任何事、
-    // 你去看状态文件」—— 那是写给开发者的认识论，等于向 agent 下战书。
-    // 它照做了：三条独立证据、md5、排除假阳性。做得没错，但**装 connector 的用户
-    // 多半不是开发者**，那一大段只会让他犯嘀咕「到底成了没有」。
-    for (const locale of ["zh-CN", "en"] as const) {
-      for (const harness of CONNECTOR_HARNESSES) {
-        for (const platform of ["windows", "posix"] as const) {
-          const prompt = installPrompt(harness, locale, platform);
-          // 不再要求 agent 自己去证明
-          expect(prompt).not.toContain(stateFileName(harness));
-          expect(prompt).not.toMatch(/永远 exit 0|always exits 0/);
-          // 改成明确要求「只报结论」
-          expect(prompt).toMatch(/只回一句|reply with one line/i);
-          expect(prompt).toMatch(/不用贴过程|No transcript/i);
-          // 下一步仍然要说 —— 否则用户装完会以为没生效
-          expect(prompt).toMatch(/新会话|new session/i);
-        }
-      }
-    }
-  });
-
-  it("never tells a user who is ahead to update", () => {
-    // app 不联网，它唯一知道的「新」就是自己构建时配套的版本。connector 和 app 分开发布，
-    // 所以用户完全可能装到比 app 还新的 —— 那时候提示更新等于催他装一个更旧的。
-    expect(isOutdated("0.9.0")).toBe(true);
-    expect(isOutdated(CONNECTOR_VERSION)).toBe(false);
-    expect(isOutdated("99.0.0")).toBe(false);
-    expect(isOutdated("1.0.1")).toBe(false);
-    // 没上报版本的（旧 connector 根本不写这个字段）恰恰最该更新
-    expect(isOutdated(null)).toBe(true);
-    // 认不出的版本串不该催错方向
-    expect(isOutdated("weird")).toBe(false);
-  });
-
-  it("updates with a pull, not a clone", () => {
-    // 🔴 2026-09-03 发现：「复制更新提示词」那个按钮给的是**安装**那段，
-    // 而它第一步是 git clone —— 目录已经存在，agent 一跑就失败。
-    const clone = "C:/Users/x/agent-avatar-connectors/plugins/claude-code/agent-avatar";
-    const windows = updatePrompt("claude-code", "zh-CN", "windows", clone);
-    expect(windows).toContain("git pull");
-    expect(windows).not.toContain("git clone");
-    // 装机记录里的 source 指到插件树，往上三层才是仓库根 —— agent 不用猜
-    expect(windows).toContain("cd C:/Users/x/agent-avatar-connectors");
-    expect(windows).toContain("python localize.py claude-code");
-    // 先卸再装：同名插件 install 只会说「已安装」，不刷新缓存里那份副本
-    expect(windows.indexOf("plugin uninstall")).toBeLessThan(windows.indexOf("plugin install"));
-    // 没有装机记录时不能编一个路径出来
-    expect(updatePrompt("claude-code", "zh-CN", "windows")).not.toContain("cd undefined");
-    // mac 现在走同一条：也 pull、也本地化
-    const posix = updatePrompt("claude-code", "zh-CN", "posix", clone);
-    expect(posix).toBe(windows);
-    // Codex 升级后必须重新授信 —— 不说的话表现是「升级后失灵」
-    expect(updatePrompt("codex", "zh-CN", "posix")).toMatch(/重新授信/);
-  });
-
-  it("hands uninstall to the harness's own CLI", () => {
-    // app 那个卸载按钮曾经删掉零个文件却报告成功（2026-09-03 实测）——
-    // 因为插件实际在 harness 的缓存里，而我们删的是自己猜的目录。
-    for (const locale of ["zh-CN", "en"] as const) {
-      expect(uninstallPrompt("claude-code", locale)).toContain("claude plugin uninstall agent-avatar");
-      // 只 uninstall 会留下市场登记，下次装同名插件容易装到旧版上
-      expect(uninstallPrompt("claude-code", locale)).toContain("marketplace remove");
-      expect(uninstallPrompt("workbuddy", locale)).toContain("codebuddy plugin uninstall");
-      expect(uninstallPrompt("dsh", locale)).toContain("cordis.patch.yml");
-      // `plugins remove` 单独跑会把条目留在 config.yaml 的 plugins.enabled 里 ——
-      // 列表说启用、实际加载不到。先 disable 才干净，而顺序错了就没有意义。
-      const hermes = uninstallPrompt("hermes", locale);
-      expect(hermes.indexOf("plugins disable")).toBeGreaterThan(-1);
-      expect(hermes.indexOf("plugins disable")).toBeLessThan(hermes.indexOf("plugins remove"));
-      // 交代它去编辑 YAML 就等于给了它一个开放任务：实机那次 agent 在这上面跑偏，
-      // 连第 1 步都没执行。而且 Windows 上 HERMES_HOME 根本没设。
-      expect(hermes).not.toMatch(/HERMES_HOME|config\.yaml/);
-    }
-  });
-
-  it("uninstalls by the same name it installed by", () => {
-    // 短名在 WorkBuddy 上失败（`Marketplace undefined is not found.`）而插件留在原地。
-    // 那次看起来成功是因为下一步删 marketplace 顺带带走了它 —— 靠副作用卸载迟早会漏。
-    for (const harness of ["claude-code", "workbuddy", "codex"]) {
-      const prompt = uninstallPrompt(harness, "zh-CN");
-      // 动词按家不同（Codex 是 remove），要盯的是**全名**那一半
-      expect(prompt).toMatch(/plugin (uninstall|remove) agent-avatar@agent-avatar/);
-    }
-  });
-
   it("does not accuse a fresh install of being broken", () => {
     // 「装了但从没上报」在刚装完的几分钟里是**正常的**（还没开新会话），过了一天才是故障。
     // 两者给同一段排查清单，等于告诉刚装完的人「你可能哪儿都错了」——而他什么都没做错。
@@ -199,117 +75,6 @@ describe("connector install wizard", () => {
       expect(CONNECTOR_TEXT.en[key]).toBeTruthy();
       // 刚装完那两句里不该出现「杀软删了文件」这类猜测 —— 那是给真卡住的人的
       expect(CONNECTOR_TEXT.en[key]).not.toMatch(/antivirus|quarantine/i);
-    }
-  });
-
-  it("treats a connector that reports nothing as outdated", () => {
-    // 旧版 connector 根本不写这个字段。把它当成「最新」的话，装着老版本的用户
-    // 永远不会被告知该更新 —— 而 Windows 上那份收不到 harness 的自动更新。
-    expect(isOutdated(null)).toBe(true);
-    expect(isOutdated(undefined)).toBe(true);
-    expect(isOutdated("0.9.0")).toBe(true);
-    expect(isOutdated(CONNECTOR_VERSION)).toBe(false);
-  });
-
-  it("gives both platforms the same shape", () => {
-    // 分叉过的两条路今天各出过一次错（`add .` 少个斜杠、更新按钮发的是安装那段）。
-    // 现在两个平台走同一条：clone → 本地化 → 装成本地 marketplace。
-    for (const harness of ["claude-code", "workbuddy", "dsh"]) {
-      const windows = installPrompt(harness, "zh-CN", "windows");
-      const posix = installPrompt(harness, "zh-CN", "posix");
-      expect(windows).toBe(posix);                       // 逐字一致
-      expect(posix).toContain("git clone");
-      expect(posix).toContain(`localize.py ${harness}`); // mac 上也本地化：顺带拆掉 CLT 占位程序那颗雷
-    }
-    // 🔴 Codex 也走同一条路。**这里原来断言的是相反的事** —— 「Windows 的 ChatGPT app
-    // 不带 codex CLI，只能手工登记进 config.toml」。那是个误判：CLI 确实在，只是不在
-    // PATH 上（`%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`）。据此写出来的那条
-    // 岔路只写 config.toml，而 `codex plugin add` 还会把插件拷进 `~/.codex/plugins/cache/`
-    // 并把那份报成 "Installed plugin root" —— 也就是说手工那条是**半装**：登记好了，
-    // 没有可加载的东西。两个平台的步骤因此逐字一致，只有边界多一句「去哪找 codex.exe」。
-    for (const platform of ["windows", "posix"] as const) {
-      const codex = installPrompt("codex", "zh-CN", platform);
-      expect(codex).toContain("codex plugin marketplace add ./");
-      expect(codex).toContain("codex plugin add agent-avatar@agent-avatar");
-      expect(codex).not.toContain("config.toml");
-    }
-    // 装和卸都要说 —— 只在安装里说的话，用户卸载时会卡在 command not found
-    for (const build of [installPrompt, uninstallPrompt]) {
-      expect(build("codex", "zh-CN", "windows")).toContain("OpenAI\\Codex\\bin");
-      expect(build("codex", "zh-CN", "posix")).not.toContain("OpenAI");
-    }
-    // Hermes 是唯一的例外：它自己的 CLI 只认 git 来源，而且不需要本地化
-    // （in-process Python 包，跑在 Hermes 自己的解释器里）
-    const hermes = installPrompt("hermes", "zh-CN", "posix");
-    expect(hermes).not.toContain("git clone");
-    expect(hermes).not.toContain("localize.py");
-    expect(hermes).toContain("hermes plugins install");
-  });
-
-  it("lets the agent pick the Python name, because picking wrong fails loudly", () => {
-    // 这一处交给 agent 判断是安全的：Windows 上 `python3` 是 0 字节存根、macOS 上通常只有
-    // `python3`，而挑错了会**立刻失败**（存根打印 "Python was not found" 就退出），
-    // 不会静默走下去 —— 与那些一旦猜错就静默失效的地方（解释器路径、file:/// URL）性质不同。
-    for (const locale of ["zh-CN", "en"] as const) {
-      const prompt = installPrompt("claude-code", locale, "windows");
-      expect(prompt).toMatch(/python3/);                 // 提到另一个名字
-      expect(prompt).toMatch(/macOS|Linux/);
-    }
-  });
-
-  it("uses the path form the CLI actually accepts — where there is a CLI at all", () => {
-    // 实测：`claude plugin marketplace add .` 被拒 —— Invalid marketplace source format，
-    // 它要 owner/repo、https://… 或 **./path**。差一个斜杠整条路就断了，
-    // 而这种错只有真跑一遍才发现得了。
-    for (const harness of ["claude-code", "workbuddy"]) {
-      const windows = installPrompt(harness, "zh-CN", "windows");
-      expect(windows).toContain("plugin marketplace add ./");
-      expect(windows).not.toMatch(/marketplace add \.$/m);
-    }
-    // 🔴 **动词按家取。** 三家的插件机制同形，命令名不同：Claude Code 与 WorkBuddy 是
-    // `plugin install` / `plugin uninstall`，Codex 是 `plugin add` / `plugin remove`。
-    // 我们对 Codex 一直写的是 install/uninstall —— 两个平台都错，而且错得很难发现：
-    // 那条提示词从没在真的 codex CLI 上跑过（我们以为 Windows 上没有这个 CLI）。
-    // 在 ChatGPT app 自带的那个 CLI 上问一句 `--help` 就露了。
-    expect(installPrompt("codex", "zh-CN", "windows")).toContain("codex plugin add agent-avatar@agent-avatar");
-    expect(installPrompt("codex", "zh-CN", "windows")).not.toMatch(/codex plugin install/);
-    expect(uninstallPrompt("codex", "zh-CN", "windows")).toContain("codex plugin remove agent-avatar@agent-avatar");
-    expect(uninstallPrompt("codex", "zh-CN", "windows")).not.toMatch(/codex plugin uninstall/);
-    // 另外两家的动词不能被顺手改掉
-    expect(installPrompt("claude-code", "zh-CN", "windows")).toContain("claude plugin install");
-    expect(uninstallPrompt("workbuddy", "zh-CN", "windows")).toContain("codebuddy plugin uninstall");
-  });
-
-  it("does not let the agent hand-write the fiddly bits", () => {
-    // dsh 的 name 在 Windows 上**必须是 file:/// URL**（Node 会把 `C:/…` 的盘符当协议名，
-    // 报 ERR_UNSUPPORTED_ESM_URL_SCHEME）。让模型自己拼十有八九拼错，而错了是静默的。
-    // 2026-09-03：原来这里是「脚本打印那一段、你把它粘进 cordis.patch.yml」。
-    // 粘贴本身就是 agent 在手写那些讲究的东西 —— 而且粘错了没有任何声音
-    // （dsh 把插件的 stderr 丢弃）。现在脚本自己写那个文件。
-    for (const platform of ["windows", "posix"] as const) {
-      const dsh = installPrompt("dsh", "zh-CN", platform);
-      expect(dsh).toContain("localize.py dsh --register");
-      expect(dsh).not.toMatch(/追加|Append|粘/);
-    }
-    // Hermes 的扫描器会拦（sudo 那条误报）——**放不放行是用户的决定**，不能让 agent 代按
-    const hermes = installPrompt("hermes", "zh-CN", "posix");
-    expect(hermes).toContain("hermes plugins install");
-    expect(hermes).toMatch(/别替我加 --force|don't pass --force/i);
-    expect(hermes).toContain("hermes plugins doctor");
-  });
-
-  it("keeps the human steps human", () => {
-    // 授信这类步骤存在的意义就是「让人看一眼再点头」，让 agent 代做等于把这道防线拆了
-    for (const locale of ["zh-CN", "en"] as const) {
-      const codex = installPrompt("codex", locale, "posix");
-      expect(codex).toMatch(/不要替我授信|do not trust the hooks for me/i);
-      // 在别人机器上装软件应当由机器的主人点头
-      for (const harness of CONNECTOR_HARNESSES.filter(name => name !== "hermes")) {
-        expect(installPrompt(harness, locale, "windows")).toMatch(/先问我|ask me first/i);
-      }
-      // Hermes 不问 Python —— 它**本身就是 Python**，跑得起来就说明有。
-      // 它那道人工闸口在别处：安全扫描拦下时，放不放行是用户的决定。
-      expect(installPrompt("hermes", locale, "windows")).toMatch(/停下来告诉我|stop and tell me/i);
     }
   });
 
@@ -330,11 +95,15 @@ describe("connector install wizard", () => {
     // 2026-09-03 实机 workbuddy 就是这样，而它一次新会话都还没跑。
     const now = Date.parse("2026-09-03T12:00:00Z");
     const justInstalled = { installed: true, installRecord: { at: "2026-09-03T11:59:00Z" } };
-    expect(linkState({ ...justInstalled, lastSignalSeconds: 3600 }, now)).toBe("unconfigured");
+    // 上报过、但那次早于这次安装 = **以前是通的，装完还没通**。这一档单独成立，
+    // 因为它和「从没上报过」处境不同：Codex 升级后要重新授信，说「还没上报过」会把人带偏。
+    expect(linkState({ ...justInstalled, lastSignalSeconds: 3600 }, now)).toBe("regressed");
     expect(linkState({ ...justInstalled, lastSignalSeconds: 10 }, now)).toBe("connected");
+    // 从没上报过的仍然是 unconfigured
+    expect(linkState({ ...justInstalled, lastSignalSeconds: null }, now)).toBe("unconfigured");
     // 账本里的时间也算数（Hermes 走目录时间兜底，它没有装机记录）
     expect(linkState({ installed: true, installedAt: "2026-09-03T11:59:00Z",
-                       lastSignalSeconds: 3600 }, now)).toBe("unconfigured");
+                       lastSignalSeconds: 3600 }, now)).toBe("regressed");
     // 时间读不出来时不能反过来谎报没通 —— 老版本 Rust 不带这两个字段
     expect(linkState({ installed: true, installedAt: "who knows", lastSignalSeconds: 3600 }, now))
       .toBe("connected");
@@ -375,15 +144,47 @@ describe("connector install wizard", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("says something different when it used to work", () => {
+    // 「从没上报过」和「以前是通的、升级后断了」是两种处境，话不能一样 ——
+    // 后者最常见的原因是 Codex 按 hook 内容哈希记信任，升级后要重新 /hooks 授信。
+    for (const locale of ["zh-CN", "en"] as const) {
+      const regressed = statusLabel("regressed", "codex", locale);
+      expect(regressed).toBeTruthy();
+      expect(regressed).not.toBe(statusLabel("unconfigured", "codex", locale));
+      expect(CONNECTOR_TEXT[locale]["diagnosis.regressed"]).toBeTruthy();
+      expect(CONNECTOR_TEXT[locale]["diagnosis.regressed.codex"]).toMatch(/hooks/);
+    }
+  });
+
+  it("has every piece of text it asks for", () => {
+    // `text("…")` 拼错一个 key 的表现是界面上直接显示那个 key —— tsc 抓不到，
+    // 而它出现的地方恰恰是用户卡住的时候。
+    const ui = readFileSync("src/connectors.ts", "utf8");
+    const keys = new Set<string>();
+    for (const match of ui.matchAll(/\btext\("([^"]+)"\)/g)) keys.add(match[1]);
+    expect(keys.size).toBeGreaterThan(8);
+    for (const key of keys) {
+      for (const locale of ["zh-CN", "en"] as const) {
+        expect(CONNECTOR_TEXT[locale][key], `${locale} 缺 ${key}`).toBeTruthy();
+      }
+    }
+  });
+
   it("is reachable from the Agent tab and registered as Tauri commands", () => {
     expect(readFileSync("settings.html", "utf8")).toContain('data-list="connectors"');
     const lib = readFileSync("src-tauri/src/lib.rs", "utf8");
-    expect(lib).toContain("connectors::list_connectors");
-    // app **既不装也不卸** connector：两件都是用户的 agent 干的活。
-    // - 装：没有下载、没有解压、没有跑脚本（那三步正是杀软误报的来源，实机被卡巴删过文件）
-    // - 卸：原来那个 uninstall_connector 对「从远程 marketplace 装」的那套完全没用 ——
-    //   删的两个目录都不存在，于是删掉零个文件、报告成功，而账本原封不动（实测）
-    expect(lib).not.toContain("connectors::install_connector");
-    expect(lib).not.toContain("connectors::uninstall_connector");
+    for (const command of ["connectors::list_connectors",
+                           "connector_install::install_connector",
+                           "connector_install::uninstall_connector"]) {
+      expect(lib).toContain(command);
+      // 注册了还不够：不在能力清单里的话，前端一调就被拒（Rust 侧有测试盯着这条，
+      // 这里守住的是「界面确实在调这三个」）
+      expect(readFileSync("src-tauri/permissions/skin.toml", "utf8"))
+        .toContain(command.split("::")[1]);
+    }
+    const ui = readFileSync("src/connectors.ts", "utf8");
+    expect(ui).toContain('invoke(command, { harness })');
+    // 提示词那条路已经拆掉：界面上不该再有任何「复制一段话给你的 agent」
+    expect(ui).not.toMatch(/installPrompt|uninstallPrompt|updatePrompt|diagnosePrompt|clipboard/);
   });
 });
