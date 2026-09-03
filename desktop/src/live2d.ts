@@ -41,6 +41,7 @@ interface InternalModelWithUpdate {
 export class Live2DAvatarModel implements AvatarModel {
   private app?: Application; private model?: Live2DModel; private manifest?: AvatarManifest; private removeContextListeners?: () => void; private renderCount = 0; private baseSize: [number, number] = [1, 1]; private stopResizeWatch?: () => void; private expressionRevert?: number; private framing: Framing = "full";
   private semanticMotions: Partial<Record<SemanticState, [string, number]>> = {};
+  private semanticExpressions: Partial<Record<SemanticState, string>> = {};
   private focusZoomBase = FOCUS_ZOOM;
   /** 用户是否在设置里显式调过。调过就以他为准，不再让自动判断插手。 */
   private focusZoomExplicit = false;
@@ -136,7 +137,9 @@ export class Live2DAvatarModel implements AvatarModel {
     void this.model.motion(group, index).then(started => this.log({ event: "model:motion", state, group, index, started })).catch(error => this.log({ event: "model:motion:error", state, group, index, error: String(error) }));
     if (!applyExpression) return;
     if (state === "idle") { this.resetExpression(); return; }
-    const expression = resolveForState(this.manifest.expressions, state);
+    // 用户配的优先于模型清单里作者写的 —— 界面上能选的东西必须真的生效，
+    // 否则「设了没反应」比根本不给选更让人困惑。
+    const expression = this.semanticExpressions[state] ?? resolveForState(this.manifest.expressions, state);
     if (expression) this.playExpression(expression, 0); else this.resetExpression();
   }
   playReaction(reaction: Reaction, durationMs: number): void {
@@ -393,6 +396,11 @@ export class Live2DAvatarModel implements AvatarModel {
   setSemanticMotions(value: Partial<Record<SemanticState, [string, number]>>): void {
     this.semanticMotions = { ...value };
     this.log({ event: "model:semantic-motions", states: Object.keys(value) });
+  }
+  /** 语义状态 → 表情，用户配的那一份。没配的状态仍然回落到模型清单。 */
+  setSemanticExpressions(value: Partial<Record<SemanticState, string>>): void {
+    this.semanticExpressions = { ...value };
+    this.log({ event: "model:semantic-expressions", states: Object.keys(value) });
   }
   /**
    * 播放表情。Cubism 的表情是持久状态，设上不会自己回去，故默认在 `revertAfterMs` 后复位到中性脸。

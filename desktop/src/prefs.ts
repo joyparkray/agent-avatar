@@ -41,6 +41,8 @@ export interface SettingsChange {
   idleExpressions?: string[];
   /** 键 → 触发方式（`click` / `dblclick` / 快捷键）。见 actions.ts。 */
   triggers?: Record<string, string>;
+  /** 语义状态 → 表情名。用户没配的状态回落到模型清单里作者写的那个。 */
+  stateExpressions?: Partial<Record<SemanticState, string>>;
   /** 键 → 用户改的显示名。只影响显示，不影响播放。 */
   aliases?: Record<string, string>;
   /** 闲置自治的候选（合并后的键）。 */
@@ -294,6 +296,7 @@ export function connectorWizardSeen(): boolean { return readRaw("connectorWizard
 export function rememberConnectorWizardSeen(): void { writeRaw("connectorWizardSeen", true); }
 
 export const stateMotionMapKey = (dir: string): string => `stateMotions:${dir}`;
+export const stateExpressionMapKey = (dir: string): string => `stateExpressions:${dir}`;
 
 /** 只接受已知状态和 [group, non-negative integer]；模型库存校验由设置页负责。 */
 export function readStateMotions(dir: string): Partial<Record<SemanticState, MotionRef>> {
@@ -307,6 +310,28 @@ export function readStateMotions(dir: string): Partial<Record<SemanticState, Mot
 
 export function rememberStateMotions(dir: string, value: Partial<Record<SemanticState, MotionRef>>): void {
   writeRaw(stateMotionMapKey(dir), value);
+}
+
+/**
+ * 语义状态 → 表情。
+ *
+ * 🔴 **原来这一半是配不了的。** 界面只让选动作，而 `playSemantic` 除了播动作还会设一个表情
+ * —— 那个表情只能来自模型自带的 `avatar.json`。于是「思考时换个表情」这种最直觉的需求，
+ * 用户明明看得见表情列表，却无处可设。
+ *
+ * 存的是表情名（Cubism 的 expression id），不是动作那种 `[组, 序号]`：表情本来就按名字寻址。
+ * 空字符串当作没配 —— 否则用户清空选择之后会被存成一个查不到的表情，表现是「设了没反应」。
+ */
+export function readStateExpressions(dir: string): Partial<Record<SemanticState, string>> {
+  const raw = readRaw(stateExpressionMapKey(dir));
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return Object.fromEntries(Object.entries(raw).filter(([state, name]) =>
+    (SEMANTIC_STATES as readonly string[]).includes(state) && typeof name === "string" && name.length > 0,
+  )) as Partial<Record<SemanticState, string>>;
+}
+
+export function rememberStateExpressions(dir: string, value: Partial<Record<SemanticState, string>>): void {
+  writeRaw(stateExpressionMapKey(dir), value);
 }
 
 /** 模型来源：随包的走内嵌资源，用户装的走数据目录（`.app` 只读，装不进去）。 */

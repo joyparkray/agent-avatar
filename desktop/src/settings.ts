@@ -1,4 +1,4 @@
-import { acceleratorFromEvent, actionLabel, groupActions, isUsableShortcut, listActions, defaultTriggers, migrateTriggers, MOTION_GROUP, type ActionItem, type SwitchTable } from "./actions";
+import { acceleratorFromEvent, actionLabel, expressionActionKey, groupActions, isUsableShortcut, listActions, defaultTriggers, migrateTriggers, MOTION_GROUP, motionActionKey, type ActionItem, type SwitchTable } from "./actions";
 import "./settings.css";
 import { invoke } from "@tauri-apps/api/core";
 import { openRawLevelFor } from "./audio-source";
@@ -18,6 +18,7 @@ import {
   idleDelaySeconds, rememberIdleDelay, rememberStatusPosition, statusPosition, STATUS_LABELS, STATUS_POSITIONS,
   currentModelSource, language, LANGUAGES, modelBaseUrl, readStateMotions, rememberLanguage, rememberStateMotions,
   readHiddenModels, writeHiddenModels, readUpdateCheck, writeUpdateCheck,
+  readStateExpressions, rememberStateExpressions,
   readLastUpdateCheck, writeLastUpdateCheck, SETTINGS_EVENT, SHORTCUT_STATUS_EVENT, type Language, type SettingsChange, type StatusPosition,
 } from "./prefs";
 import { SEMANTIC_STATES, type SemanticState } from "./types";
@@ -37,7 +38,8 @@ const TEXT: Record<Language, Record<string, string>> = {
     "general.language": "语言", "general.interfaceLanguage": "界面语言", "general.languageHint": "语言切换会立即应用到设置窗口。", "general.statusBar": "状态栏", "general.statusHint": "显示 Agent 当前在做什么，并可调整到不遮挡模型的位置。", "general.position": "位置",
     "general.about": "关于", "general.updateCheck": "自动检查更新", "general.updateHint": "只查一个版本号，不会下载或安装任何东西。查不到时（离线、代理、网络限制）不会有任何提示。", "general.checkNow": "检查更新", "general.checking": "查询中…", "general.upToDate": "已是最新版本。", "general.unreachable": "这会儿查不到（离线或网络受限），不影响使用。", "general.newVersion": "有新版本 {version}", "general.applyUpdate": "去下载",
     "video.display": "显示", "video.scale": "缩放", "video.opacity": "透明度", "video.focus": "聚焦范围：显示顶部", "video.focusHint": "仅在右键菜单启用聚焦模式时生效。", "video.rendering": "渲染", "video.renderHint": "降低画质通常比降低帧率更省 GPU。", "video.quality": "画质", "video.fps": "帧率",
-    "agent.connectors": "接入", "agent.connectorsHint": "选一个你在用的 agent，点「安装」就行。连接器和它需要的运行环境都在这个应用里，不联网、不下载；装完如果还需要你做点什么，会显示在下面。", "agent.mapping": "状态与动作", "agent.mappingHint": "为当前模型的每个 Agent 状态选择动作。选择“模型默认”会使用 avatar.json 的映射。", "agent.default": "模型默认",
+    "agent.connectors": "接入", "agent.connectorsHint": "选一个你在用的 agent，点「安装」就行。连接器和它需要的运行环境都在这个应用里，不联网、不下载；装完如果还需要你做点什么，会显示在下面。", "agent.mapping": "状态与动作", "agent.mappingHint": "为每个 Agent 状态挑一个动作和一个表情，两者会同时生效。留「模型默认」就用模型作者在 avatar.json 里写的那一份。"
+    , "agent.colMotion": "动作", "agent.colExpression": "表情", "agent.default": "模型默认",
     "agent.removeAll": "移除所有连接器", "agent.removeAllHint": "删除本应用之前先点一下：它会把五家里的登记收回来。不这么做的话，那些登记会留在你的 agent 里，指向一个已经不存在的程序。",
     "agent.removeAgain": "确认移除", "agent.removeConfirm": "再点一次「确认移除」，会把五家里的登记全部收回。",
     "agent.removing": "正在移除…", "agent.removedNone": "本来就没有装。", "agent.removedSome": "已移除：{list}", "agent.removeFailed": "有几家没成功：{list}",
@@ -52,7 +54,8 @@ const TEXT: Record<Language, Record<string, string>> = {
     "general.language": "Language", "general.interfaceLanguage": "Interface language", "general.languageHint": "Language changes apply to this settings window immediately.", "general.statusBar": "Status bar", "general.statusHint": "Show what the agent is doing and place the label where it does not cover the avatar.", "general.position": "Position",
     "general.about": "About", "general.updateCheck": "Check for updates automatically", "general.updateHint": "It reads a version number and nothing else — no download, no install. If it cannot reach the network, it says nothing.", "general.checkNow": "Check for updates", "general.checking": "Checking…", "general.upToDate": "You are on the latest version.", "general.unreachable": "Can't reach it right now (offline or restricted). Nothing is affected.", "general.newVersion": "Version {version} is available", "general.applyUpdate": "Download",
     "video.display": "Display", "video.scale": "Scale", "video.opacity": "Opacity", "video.focus": "Focus crop: show top", "video.focusHint": "Only applies when Focus Mode is enabled from the context menu.", "video.rendering": "Rendering", "video.renderHint": "Lowering quality usually saves more GPU power than lowering frame rate.", "video.quality": "Quality", "video.fps": "Frame rate",
-    "agent.connectors": "Connectors", "agent.connectorsHint": "Pick the agent you use and press Install. The connector and the runtime it needs are inside this app — nothing is downloaded. Any remaining manual step is shown below.", "agent.mapping": "Agent state and motion", "agent.mappingHint": "Choose a motion for each agent state on the current model. Model default uses the avatar.json mapping.", "agent.default": "Model default",
+    "agent.connectors": "Connectors", "agent.connectorsHint": "Pick the agent you use and press Install. The connector and the runtime it needs are inside this app — nothing is downloaded. Any remaining manual step is shown below.", "agent.mapping": "Agent state and motion", "agent.mappingHint": "Pick a motion and an expression for each agent state; both are applied. Leave either on Model default to use what the model author put in avatar.json."
+    , "agent.colMotion": "Motion", "agent.colExpression": "Expression", "agent.default": "Model default",
     "agent.removeAll": "Remove all connectors", "agent.removeAllHint": "Press this before deleting the app: it takes back the registrations in all five harnesses. Otherwise they stay in your agents, pointing at a program that no longer exists.",
     "agent.removeAgain": "Confirm removal", "agent.removeConfirm": "Press \"Confirm removal\" again to take back the registrations in all five harnesses.",
     "agent.removing": "Removing…", "agent.removedNone": "None were installed.", "agent.removedSome": "Removed: {list}", "agent.removeFailed": "Some could not be removed: {list}",
@@ -329,23 +332,82 @@ function showTriggerNote(row: HTMLElement, text: string): void {
 
 function clearTriggerNote(row: HTMLElement): void { row.querySelector(".trigger-note")?.remove(); }
 
-function bindStateMotions(dir: string, motions: { key: string; label: string; ref: MotionRef }[]): void {
+/**
+ * 每个语义状态挑一个动作**和**一个表情。
+ *
+ * 🔴 **表情这一半原来是配不了的。** 运行时的 `playSemantic` 一直是「播一个动作，再设一个
+ * 表情」两件事，但表情只能来自模型自带的 `avatar.json`，界面上只给选动作。于是
+ * 「思考的时候换个表情」这种最直觉的需求，用户明明在隔壁表格里看得见所有表情，却无处可设。
+ *
+ * 两个下拉而不是一个合并的：运行时本来就同时应用两者，合成一个等于逼用户二选一，
+ * 反而砍掉了现有能力。
+ *
+ * 名字用**别名优先**（`actionLabel`）——隔壁「表情与动作」表里用户刚给它起的名字，
+ * 在这里必须是同一个，否则同一个东西在两处叫两个名字。
+ */
+function bindStateActions(dir: string, items: readonly ActionItem[]): void {
   const host = $<HTMLElement>('[data-list="state-motions"]');
-  const configured = readStateMotions(dir);
-  const commit = () => { rememberStateMotions(dir, configured); announce({ stateMotions: { ...configured } }); };
+  // 两个下拉挨在一起，不标注的话没人知道哪个是哪个 —— 尤其在别名之后，
+  // 「微笑」既可能是表情也可能是动作。
+  const head = document.createElement("div");
+  head.className = "state-motions-head";
+  head.append(document.createElement("span"));  // 状态那一列的表头留空 —— 行首已经写着状态名
+  for (const key of ["agent.colMotion", "agent.colExpression"]) {
+    const cell = document.createElement("span");
+    cell.dataset.i18n = key; cell.textContent = tr(key);
+    head.append(cell);
+  }
+  host.append(head);
+  const aliases = readStringMap(aliasMapKey(dir));
+  const motions = readStateMotions(dir);
+  const expressions = readStateExpressions(dir);
+  const commitMotions = () => { rememberStateMotions(dir, motions); announce({ stateMotions: { ...motions } }); };
+  const commitExpressions = () => {
+    rememberStateExpressions(dir, expressions);
+    announce({ stateExpressions: { ...expressions } });
+  };
+
+  /** 一个下拉：首项是「模型默认」，其余按 `groupActions` 的分组塞进 optgroup。 */
+  const picker = (state: SemanticState, kind: ActionItem["kind"], value: string,
+                  onPick: (item: ActionItem | undefined) => void) => {
+    const select = document.createElement("select");
+    select.dataset.state = state; select.dataset.kind = kind;
+    select.append(new Option(tr("agent.default"), ""));
+    const pool = items.filter(item => item.kind === kind);
+    const blocks = groupActions(pool);
+    for (const { group, items: grouped } of blocks) {
+      // 只有一组时不套 optgroup —— 一个孤零零的分组标题只是噪音
+      const target = blocks.length > 1
+        ? select.appendChild(Object.assign(document.createElement("optgroup"),
+            { label: group === MOTION_GROUP ? tr("behavior.kindMotion") : group || tr("behavior.groupOther") }))
+        : select;
+      for (const item of grouped) target.append(new Option(actionLabel(item, aliases), item.key));
+    }
+    select.value = value;
+    // 选到一个已经不存在的项时（模型换过、表情被删），浏览器会把 value 置空 ——
+    // 那正好等于「回到模型默认」，不需要额外处理，但要把存下来的那条也清掉。
+    if (select.value !== value) onPick(undefined);
+    select.addEventListener("change", () => onPick(pool.find(item => item.key === select.value)));
+    return select;
+  };
+
   for (const state of SEMANTIC_STATES) {
     const row = document.createElement("div"); row.className = "state-motion-row";
     const label = document.createElement("label"); label.dataset.i18n = `state.${state}`; label.textContent = tr(`state.${state}`);
-    const select = document.createElement("select"); select.dataset.state = state;
-    select.append(new Option(tr("agent.default"), ""));
-    motions.forEach(item => select.append(new Option(item.label, item.key)));
-    const current = configured[state]; select.value = current ? motionKey(current) : "";
-    select.addEventListener("change", () => {
-      const picked = motions.find(item => item.key === select.value);
-      if (picked) configured[state] = picked.ref; else delete configured[state];
-      commit();
+
+    const motion = motions[state];
+    const motionSelect = picker(state, "motion", motion ? motionActionKey(motion) : "", item => {
+      if (item?.motion) motions[state] = item.motion; else delete motions[state];
+      commitMotions();
     });
-    row.append(label, select); host.append(row);
+
+    const expression = expressions[state];
+    const expressionSelect = picker(state, "expression", expression ? expressionActionKey(expression) : "", item => {
+      if (item) expressions[state] = item.origin; else delete expressions[state];
+      commitExpressions();
+    });
+
+    row.append(label, motionSelect, expressionSelect); host.append(row);
   }
 }
 
@@ -718,7 +780,7 @@ async function boot(): Promise<void> {
   // 触发那一列不给默认值 —— 从旧版本升上来的走迁移，全新模型让用户自己挑。
   const idleDefault = actions.map(item => item.key);
 
-  guard("state-motions", () => bindStateMotions(dir, motions));
+  guard("state-motions", () => bindStateActions(dir, actions));
 
   guard("actions", () => bindActions(dir, actions, idleDefault));
 }

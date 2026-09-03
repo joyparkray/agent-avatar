@@ -129,7 +129,11 @@ input[type="number"] {
 .row.actions { grid-template-columns: 1fr auto auto; align-items: center; gap: 8px; }
 
 .state-motions { display: flex; flex-direction: column; gap: 8px; }
-.state-motion-row { display: grid; grid-template-columns: minmax(92px, .8fr) minmax(150px, 1.2fr); align-items: center; gap: 10px; }
+/* 状态 | 动作 | 表情。表情那一列是后加的 —— 运行时一直同时应用两者，
+   只是以前表情只能由模型作者在 avatar.json 里写死。 */
+.state-motion-row { display: grid; grid-template-columns: minmax(72px, .7fr) minmax(110px, 1fr) minmax(110px, 1fr); align-items: center; gap: 8px; }
+/* 表头用同一套列宽，否则两行对不齐 —— 对不齐的表头比没有表头更糟。 */
+.state-motions-head { display: grid; grid-template-columns: minmax(72px, .7fr) minmax(110px, 1fr) minmax(110px, 1fr); gap: 8px; margin-bottom: 2px; font-size: 12px; opacity: .55; }
 .state-motion-row label { font-weight: 600; }
 
 /* 口型电平条。柱子是当前强度，竖线是张嘴门槛 —— 有它才能把「盲调灵敏度」变成「看着调」。 */

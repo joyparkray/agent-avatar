@@ -1,7 +1,7 @@
 import { actionLabel, actionsFor, CLICK, DBLCLICK, defaultTriggers, heldParameters, listActions, migrateTriggers, pickAction, shortcutsIn, type ActionItem, type SwitchTable, type Trigger } from "./actions";
 import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 import "./style.css"; import "./state.css"; import { invoke } from "@tauri-apps/api/core"; import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleActionPoolKey, heldActionPoolKey, aliasMapKey, hasStored, readStringMap, triggerMapKey, SHORTCUT_STATUS_EVENT, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, lipSensitivityPercent, mouthAmplitudePercent, readStateSource, writeStateSource, connectorWizardSeen, rememberConnectorWizardSeen, type Language, type StateSource, type SettingsChange } from "./prefs";
+import { loadPrefs, language, quality, rememberLanguage, rememberQuality, focusPercent, focusZoomFromPercent, hasFocusPercent, idleDelaySeconds, idleActionPoolKey, heldActionPoolKey, aliasMapKey, hasStored, readStringMap, triggerMapKey, SHORTCUT_STATUS_EVENT, rememberIdleDelay, rememberStatusPosition, statusPosition, currentModelDir, currentModelSource, expressionPoolKey, lastGoodModel, modelBaseUrl, motionPoolKey, prefs, readHiddenModels, readPool, readStateMotions, readStateExpressions, UNSUPPORTED_CUBISM_TEXT, rememberGoodModel, rememberModel, writePool, SETTINGS_EVENT, readAudioSource, writeAudioSource, lipSensitivityPercent, mouthAmplitudePercent, readStateSource, writeStateSource, connectorWizardSeen, rememberConnectorWizardSeen, type Language, type StateSource, type SettingsChange } from "./prefs";
 import type { ModelChoice } from "./native-menu";
 import type { ModelSource } from "./prefs";
 import type { AvatarSource } from "./types";
@@ -660,6 +660,7 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
   setLipSensitivity(lipSensitivityPercent());
   model.setMouthAmplitude(mouthAmplitudePercent() / 100);
   model.setSemanticMotions(readStateMotions(dir));
+  model.setSemanticExpressions(readStateExpressions(dir));
 
   const buildState = () => ({
     models, currentDir: dir, inventory, audioSource, stateSource,
@@ -704,6 +705,7 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
     if (payload.shortcutsSuspended !== undefined) { shortcutsSuspended = payload.shortcutsSuspended; refreshShortcuts = true; }
     if (refreshShortcuts) void applyShortcuts();
     if (payload.stateMotions) model.setSemanticMotions(payload.stateMotions);
+    if (payload.stateExpressions) model.setSemanticExpressions(payload.stateExpressions);
     if (payload.language) { uiLanguage = payload.language; renderStatus(); }
     if (payload.hiddenModels) hiddenModels = payload.hiddenModels;
     log({ event: "settings:applied", keys: Object.keys(payload) });
