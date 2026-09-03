@@ -9,9 +9,24 @@
 ; 而不是在这里去猜五家的配置格式在哪、长什么样 —— 那正是我们花了两天才学会不要做的事。
 
 !macro NSIS_HOOK_PREUNINSTALL
-  DetailPrint "正在从各个 agent 里移除连接器…"
-  ; 无界面地跑，等它结束再继续删文件。失败不阻断卸载：用户要的是把这个 app 弄走，
-  ; 而收不回来的那几家，设置里那个「移除所有连接器」按钮仍然能补一次。
-  nsExec::ExecToLog '"$INSTDIR\agent-avatar.exe" --remove-connectors'
-  Pop $0
+  ; 设置和模型是**用户的东西**，默认留着。问一句，默认「否」—— 卸载器顺手带走用户内容
+  ; 是一种很容易被原谅、但不该犯的错。
+  MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 \
+    "同时删除你的设置和已导入的模型吗？$\r$\n$\r$\n选「否」的话它们会留在 %APPDATA% 下，重装后仍在。" \
+    /SD IDNO IDYES purge_data IDNO keep_data
+
+  purge_data:
+    DetailPrint "正在移除连接器，并清除设置与模型…"
+    nsExec::ExecToLog '"$INSTDIR\agent-avatar.exe" --uninstall --purge'
+    Pop $0
+    Goto done
+
+  keep_data:
+    DetailPrint "正在从各个 agent 里移除连接器…"
+    nsExec::ExecToLog '"$INSTDIR\agent-avatar.exe" --uninstall'
+    Pop $0
+
+  done:
+  ; 失败不阻断卸载：用户要的是把这个 app 弄走，而收不回来的那几家，
+  ; 设置里那个「移除所有连接器」按钮仍然能补一次。
 !macroend

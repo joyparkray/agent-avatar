@@ -352,15 +352,50 @@ fn spawn_hit_test(app: tauri::AppHandle) {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 让命令行那几个开关的输出**有地方可去**。
+///
+/// 🔴 发布版声明了 `windows_subsystem = "windows"`（否则每次启动都会弹一个控制台常驻），
+/// 而那意味着进程**没有控制台**：`println!` 打进虚空。于是免安装版那个卸载 .cmd 跑完
+/// 一个字都不显示，用户完全无从判断成没成 —— 而卸载恰恰是最需要一句「完成」的时刻。
+///
+/// 挂到调用方那个控制台上就好。从资源管理器双击时没有父控制台，附加失败，照旧安静 ——
+/// 那也正是我们要的。
+#[cfg(windows)]
+fn attach_parent_console() {
+    use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+    unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+}
+
+#[cfg(not(windows))]
+fn attach_parent_console() {}
+
 /// 无界面地把连接器从五家 harness 里取回来，然后退出。
 ///
 /// 装它的时候用户在界面上点了按钮；**卸的时候界面往往已经不在了** —— 卸载器正在删文件，
 /// 或者用户直接把免安装版的文件夹拖进了回收站。留在别人应用里的登记不会自己消失。
 const REMOVE_CONNECTORS_FLAG: &str = "--remove-connectors";
 
+/// 免安装版没有卸载器，所以包里放一个一行的启动器来调它：收回连接器、删掉我们自己的缓存，
+/// 然后如实说出还剩什么（用户导入的模型不动）。
+const UNINSTALL_FLAG: &str = "--uninstall";
+
+/// 连设置和模型一起删。**只在用户明确选了的时候加**（卸载器会问一句，默认否）。
+const PURGE_FLAG: &str = "--purge";
+
 pub fn run() {
-    if std::env::args().any(|argument| argument == REMOVE_CONNECTORS_FLAG) {
+    let flags: Vec<String> = std::env::args().collect();
+    if flags.iter().any(|argument| argument == REMOVE_CONNECTORS_FLAG || argument == UNINSTALL_FLAG) {
+        attach_parent_console();
+    }
+    if flags.iter().any(|argument| argument == REMOVE_CONNECTORS_FLAG) {
         println!("{}", connector_install::remove_all_headless());
+        return;
+    }
+    if flags.iter().any(|argument| argument == UNINSTALL_FLAG) {
+        // 🔴 默认**不删**用户的设置和模型。卸载器顺手带走用户内容是一种很容易被原谅、
+        // 但不该犯的错 —— 要删得他明确说，所以是一个单独的开关。
+        let purge = flags.iter().any(|argument| argument == PURGE_FLAG);
+        println!("{}", connector_install::uninstall_everything_of_ours(purge));
         return;
     }
     tauri::Builder::default()

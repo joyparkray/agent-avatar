@@ -36,4 +36,4 @@ wasapi = "0.24"
 # express: the interpreter token cannot be quoted (PowerShell reads a quoted *first*
 # token as a string expression and errors out). The 8.3 short path has no spaces and
 # both shells accept it. Already in the lock file transitively, so this adds no fetch.
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console"] }

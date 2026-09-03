@@ -54,6 +54,35 @@ for (const needed of ["resources/connectors/marketplace", "resources/connectors/
   }
 }
 
+// 🔴 **免安装版没有卸载器，所以自己放一个。** 直接删掉这个文件夹是带不走两样东西的：
+// 五家 harness 里还登记着 agent-avatar（那些 hook 指向一个刚被删掉的解释器），
+// 以及 %APPDATA% 下的数据目录。用户没有理由知道要去哪清。
+//
+// 真正的活全在**签过名的 exe** 里（`--uninstall`），这个 .cmd 只是一行启动器加一句问话 ——
+// 一个未签名的脚本自己去改别的应用的配置，正是当初被卡巴斯基删掉的那种形状。
+writeFileSync(join(stage, "卸载 Uninstall.cmd"), [
+  "@echo off",
+  "chcp 65001 >nul",
+  "cd /d \"%~dp0\"",
+  "echo.",
+  "echo   卸载 Agent Avatar",
+  "echo   ------------------",
+  "echo   这会把 Agent Avatar 的连接器从你的各个 agent 里移除。",
+  "echo.",
+  "set /p PURGE=  同时删除设置和已导入的模型吗？(y/N) ",
+  "echo.",
+  "if /i \"%PURGE%\"==\"y\" (",
+  "  \"%~dp0Agent Avatar.exe\" --uninstall --purge",
+  ") else (",
+  "  \"%~dp0Agent Avatar.exe\" --uninstall",
+  ")",
+  "echo.",
+  "echo   完成。现在可以删掉这个文件夹了。",
+  "echo.",
+  "pause",
+  "",
+].join("\r\n"), "utf8");
+
 // 说明写进包里：免安装版没有安装器那一步，用户拿到的就是一个 exe，
 // 而「设置和模型存在哪」「怎么装模型」这两件事没人会去仓库里翻文档。
 writeFileSync(join(stage, "读我 README.txt"), [
@@ -64,6 +93,12 @@ writeFileSync(join(stage, "读我 README.txt"), [
   "  首次运行 Windows 可能提示“无法验证发布者”（本版本未签名）——",
   "  点“更多信息”→“仍要运行”。",
   "",
+  "【不想要了】",
+  "  先双击 “卸载 Uninstall.cmd”，再删掉这个文件夹。",
+  "  直接删文件夹是带不走两样东西的：各个 agent 里还登记着连接器（它们会去",
+  "  启动一个已经不存在的程序），以及 %APPDATA% 下的数据目录。",
+  "  卸载时会问一句要不要连设置和模型一起删 —— 默认不删。",
+  "",
   "【安装模型】",
   "  本程序不内置 Live2D 模型。",
   "  右键人物 → 设置 → 模型，把解压后的模型文件夹拖进去即可。",
@@ -72,7 +107,7 @@ writeFileSync(join(stage, "读我 README.txt"), [
   "【数据存放位置】",
   "  设置与已装模型不在本目录里，而在：",
   "    %APPDATA%\\io.github.joyparkray.agentavatar",
-  "  所以换目录、换盘符都不影响；要彻底清理请手动删除该文件夹。",
+  "  所以换目录、换盘符都不影响；要彻底清理，用上面那个卸载脚本并选“y”。",
   "",
   "【系统要求】",
   "  Windows 10 或更高版本 + WebView2 运行时（Win11 已内置；",

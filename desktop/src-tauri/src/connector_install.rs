@@ -27,6 +27,10 @@ use tauri::Manager;
 
 use crate::connectors::{harness_home, home, hermes_homes, rfc3339, HARNESSES};
 
+/// app 的 bundle identifier。**必须与 tauri.conf.json 的 `identifier` 一致**（有测试盯着）——
+/// 数据目录就是按它命名的，而无界面卸载那条路径拿不到 AppHandle，只能自己算。
+const APP_IDENTIFIER: &str = "io.github.joyparkray.agentavatar";
+
 /// 各家插件树在 marketplace 里的相对位置 + 本地化要改的那个文件 + 冒烟自检要看的状态文件。
 ///
 /// 与 `connectors/localize.py` 的 `LAYOUT` 同源。布局一变这张表就要跟着改，否则症状是
@@ -993,6 +997,88 @@ pub fn remove_all_headless() -> String {
         report.push_str(&format!("\ncould not remove {line}"));
     }
     report
+}
+
+/// app 的数据目录，**不经过 AppHandle** —— 无界面卸载那条路上没有一个跑起来的 app。
+///
+/// 口径抄的是 Tauri 自己的 `app_data_dir()`（`dirs::data_dir()/<identifier>`）：
+/// Windows 是 `%APPDATA%`（Roaming），macOS 是 `~/Library/Application Support`，
+/// 其余按 XDG。为一个路径引一整个 crate 不划算，但**这两处口径必须一致** ——
+/// 不一致的话卸载会去删一个空目录，而真正占着 21 MB 的那份留在原地。
+fn app_data_dir() -> PathBuf {
+    let base = if cfg!(windows) {
+        env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| joined(&home(), "AppData/Roaming"))
+    } else if cfg!(target_os = "macos") {
+        joined(&home(), "Library/Application Support")
+    } else {
+        env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| joined(&home(), ".local/share"))
+    };
+    base.join(APP_IDENTIFIER)
+}
+
+/// `--uninstall` 干的事：收回连接器 + 删掉**我们自己的**那份缓存，然后**如实报告剩下什么**。
+///
+/// 🔴 **不碰 `models/`。** 那是用户自己导入的 Live2D 模型（这台机器上 266 MB），是他的内容，
+/// 不是我们的缓存。卸载器顺手删掉用户内容是一种很容易被原谅、但不该犯的错 —— 所以这里
+/// 只说它在哪、多大，删不删由他决定。`config.json` 同理：几 KB，留着也不碍事，
+/// 而重装之后他的设置还在。
+///
+/// 这条路径**不解析资源目录**（理由同 `remove_all_headless`：app 可能已经删了一半），
+/// 数据目录则是照 Tauri 的规则自己算的 —— 那时候已经没有 AppHandle 可用了。
+pub fn uninstall_everything_of_ours(purge: bool) -> String {
+    let mut report = remove_all_headless();
+    let data = app_data_dir();
+
+    // 我们自己的缓存无论如何都删：21 MB 的解释器副本，留着没有任何意义
+    let ours = data.join("connectors");
+    if ours.is_dir() {
+        force_remove_dir(&ours);
+        report.push_str(&format!("\nremoved {}", ours.display()));
+    }
+
+    // 设置和模型是**用户的东西**。默认留着并说清它们在哪、多大；只有他明确选了才删。
+    let mut listed = Vec::new();
+    for (name, label) in [("models", "models"), ("config.json", "settings")] {
+        let path = data.join(name);
+        if !path.exists() { continue; }
+        let size = directory_size(&path).map(|bytes| format!(", {}", human_size(bytes))).unwrap_or_default();
+        if purge {
+            force_remove_dir(&path);
+            let _ = fs::remove_file(&path);          // config.json 是文件，上面那个只删目录
+            listed.push(format!("  removed {} ({label}{size})", path.display()));
+        } else {
+            listed.push(format!("  {} ({label}{size})", path.display()));
+        }
+    }
+    if !listed.is_empty() {
+        report.push_str(if purge { "\nalso removed:\n" } else {
+            "\nleft alone — run with --purge, or delete these yourself:\n"
+        });
+        report.push_str(&listed.join("\n"));
+    }
+    // 目录空了就把它也收掉，别留一个空壳
+    if purge { let _ = fs::remove_dir(&data); }
+    report
+}
+
+/// 体积说给人看：几 KB 的设置文件写成「0 MB」只会让人以为读错了。
+fn human_size(bytes: u64) -> String {
+    if bytes >= 1_048_576 {
+        format!("{:.0} MB", bytes as f64 / 1_048_576.0)
+    } else {
+        format!("{:.0} KB", (bytes as f64 / 1024.0).max(1.0))
+    }
+}
+
+/// 目录大小，用来把「剩下什么」说具体。算不出来就不说数字。
+fn directory_size(path: &Path) -> Option<u64> {
+    let metadata = path.metadata().ok()?;
+    if metadata.is_file() { return Some(metadata.len()); }
+    let mut total = 0;
+    for entry in fs::read_dir(path).ok()?.flatten() {
+        total += directory_size(&entry.path()).unwrap_or(0);
+    }
+    Some(total)
 }
 
 /// 把我们放进**别人应用里**的东西全部取回来。
