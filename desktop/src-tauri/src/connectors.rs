@@ -47,6 +47,25 @@ pub(crate) fn harness_home(var: &str, fallback: &str) -> PathBuf {
     env::var(var).ok().filter(|value| !value.is_empty()).map(PathBuf::from).unwrap_or_else(|| home().join(fallback))
 }
 
+/// app 登记时用的**完整插件 id**，形如 `<插件名>@<marketplace 名>`。两边都叫
+/// `agent-avatar`：marketplace 名来自打包树里那三份清单（`connectors/build-bundle.sh`
+/// 写死的 `"name": "agent-avatar"`），装和卸用的都是这个 id。
+///
+/// 🔴 **检测必须认全名，不能只认 `agent-avatar@` 前缀。** 认前缀的话，
+/// **别的 marketplace 里同名的那个插件也算数** —— 而那一个我们既没装、也卸不掉，
+/// 于是「装没装」和「卸得掉吗」给出的是两个不同的答案。2026-09-03 在 macOS 上
+/// 同时撞到两种表现，机器上留着早先按提示词装的两条登记：
+///
+/// - Claude Code 账本里是 `agent-avatar@agent-avatar-local` → 界面说「已安装」，
+///   点卸载得到 `Plugin "agent-avatar@agent-avatar" is not installed in user scope.`
+/// - Codex 账本里是 `agent-avatar@local` → 卸载**报成功**（`codex plugin remove` 对
+///   没装的插件照样返回 0：`Removed plugin \`agent-avatar\` from marketplace
+///   \`agent-avatar\`.`），可界面卸完还是「已安装」，因为剩下的那条仍然匹配前缀。
+///
+/// 收尾的 `agent-avatar@agent-avatar` 后面那个引号是判据的一部分：少了它，
+/// `agent-avatar@agent-avatar-local` 会照样命中。
+pub(crate) const PLUGIN_ID: &str = "agent-avatar@agent-avatar";
+
 /// 「自包含的本地 marketplace」里插件树的相对位置。三家同形（Claude Code / Codex /
 /// WorkBuddy 的插件机制本来就是一套），只有清单文件名各不相同。
 const LOCAL_MARKETPLACE: &str = "local-marketplaces/agent-avatar-local/plugins/agent-avatar";
@@ -112,7 +131,7 @@ fn ledger_installed_at(harness: &str) -> Option<String> {
         let document: Value = serde_json::from_str(&fs::read_to_string(ledger).ok()?).ok()?;
         let plugins = document.get("plugins")?.as_object()?;
         plugins.iter()
-            .filter(|(name, _)| name.starts_with("agent-avatar@"))
+            .filter(|(name, _)| name.as_str() == PLUGIN_ID)
             .filter_map(|(_, entries)| entries.as_array()?.first()?.get("installedAt")?.as_str())
             .map(str::to_owned)
             .next()
@@ -185,6 +204,10 @@ pub fn plugin_dir(harness: &str) -> Option<PathBuf> {
 /// 返回值分三种：`Some(true)` 账本说装了；`Some(false)` 账本在、但没有我们这一条
 /// （**文件在也算没装** —— 那正是「拷了文件却没登记」，harness 根本不会加载它）；
 /// `None` 账本读不到（这家没有账本，或者从没用过），退回去看目录。
+/// Claude Code 系账本里那把键的样子：`"agent-avatar@agent-avatar"`，**带两端引号**。
+/// 引号不是装饰 —— 没有收尾那个引号，`"agent-avatar@agent-avatar-local"` 也会命中。
+fn json_key() -> String { format!("\"{PLUGIN_ID}\"") }
+
 pub(crate) fn installed_by_record(harness: &str) -> Option<bool> {
     let listed = |path: PathBuf, needle: &str| -> Option<bool> {
         let raw = fs::read_to_string(path).ok()?;
@@ -193,21 +216,21 @@ pub(crate) fn installed_by_record(harness: &str) -> Option<bool> {
     match harness {
         "claude-code" => listed(
             harness_home("CLAUDE_CONFIG_DIR", ".claude").join("plugins/installed_plugins.json"),
-            "\"agent-avatar@"),
+            &json_key()),
         // WorkBuddy 的同一个 CLI 有两个 home：app 读 .workbuddy，独立 CLI 默认读 .codebuddy。
         // 任一本账记着就算装了 —— 用户可能只用其中一个。
         "workbuddy" => {
             let app = listed(harness_home("WORKBUDDY_HOME", ".workbuddy").join("plugins/installed_plugins.json"),
-                             "\"agent-avatar@");
+                             &json_key());
             let cli = listed(harness_home("CODEBUDDY_CONFIG_DIR", ".codebuddy").join("plugins/installed_plugins.json"),
-                             "\"agent-avatar@");
+                             &json_key());
             match (app, cli) {
                 (None, None) => None,
                 (a, c) => Some(a.unwrap_or(false) || c.unwrap_or(false)),
             }
         }
         "codex" => listed(harness_home("CODEX_HOME", ".codex").join("config.toml"),
-                          "[plugins.\"agent-avatar@"),
+                          &format!("[plugins.\"{PLUGIN_ID}\"]")),
         "dsh" => listed(harness_home("DSH_HOME", ".dsh").join("cordis.patch.yml"), "id: agent-avatar"),
         // Hermes 没有我们读得懂的账本（它记在自己的 sqlite 里），只能看目录
         _ => None,
@@ -308,10 +331,18 @@ mod tests {
         fs::create_dir_all(claude.join(LOCAL_MARKETPLACE)).unwrap();
         assert_eq!(installed_by_record("claude-code"), Some(false));
 
-        // 账本记着就算装了
+        // 账本记着**我们这个 id** 才算装了
+        fs::write(claude.join("plugins/installed_plugins.json"),
+                  r#"{"plugins":{"agent-avatar@agent-avatar":[{"scope":"user"}]}}"#).unwrap();
+        assert_eq!(installed_by_record("claude-code"), Some(true));
+
+        // 🔴 别的 marketplace 里同名的那个**不是我们的**：我们没装它，也卸不掉它。
+        // 认前缀的那一版在这里说「已安装」，于是点卸载得到
+        // `Plugin "agent-avatar@agent-avatar" is not installed in user scope.`
         fs::write(claude.join("plugins/installed_plugins.json"),
                   r#"{"plugins":{"agent-avatar@agent-avatar-local":[{"scope":"user"}]}}"#).unwrap();
-        assert_eq!(installed_by_record("claude-code"), Some(true));
+        assert_eq!(installed_by_record("claude-code"), Some(false),
+                   "agent-avatar@agent-avatar-local 是别人的登记，不能算我们装了");
 
         // 账本读不到（这家没用过）→ 退回去看目录，别把没账本当成没装
         fs::remove_file(claude.join("plugins/installed_plugins.json")).unwrap();
@@ -325,6 +356,34 @@ mod tests {
         let _ = fs::remove_dir_all(&scratch);
         // Hermes 记在自己的 sqlite 里，我们读不懂 —— 那一家只能看目录
         assert_eq!(installed_by_record("hermes"), None);
+    }
+
+    /// Codex 那一半：账本是 `config.toml`，判据是整行 `[plugins."<id>"]`。
+    ///
+    /// 🔴 这一条钉的是实机撞到的那个组合：`codex plugin remove` 对**没装的**插件照样
+    /// 返回 0（原话：``Removed plugin `agent-avatar` from marketplace `agent-avatar`.``），
+    /// 所以「卸载成功」这个结论完全靠账本。账本认前缀的话，机器上早先按提示词装的
+    /// `agent-avatar@local` 会一直命中 —— 表现就是卸载报成功、界面还是「已安装」。
+    #[test]
+    fn codex_only_counts_our_own_marketplace() {
+        let scratch = std::env::temp_dir().join(format!("agent-avatar-codex-{}", std::process::id()));
+        fs::create_dir_all(&scratch).unwrap();
+        let previous = env::var("CODEX_HOME").ok();
+        env::set_var("CODEX_HOME", &scratch);
+        let config = scratch.join("config.toml");
+
+        fs::write(&config, "[plugins.\"agent-avatar@agent-avatar\"]\nenabled = true\n").unwrap();
+        assert_eq!(installed_by_record("codex"), Some(true));
+
+        fs::write(&config, "[plugins.\"agent-avatar@local\"]\nenabled = true\n").unwrap();
+        assert_eq!(installed_by_record("codex"), Some(false),
+                   "agent-avatar@local 是别人的登记，卸载动不了它");
+
+        match previous {
+            Some(value) => env::set_var("CODEX_HOME", value),
+            None => env::remove_var("CODEX_HOME"),
+        }
+        let _ = fs::remove_dir_all(&scratch);
     }
 
     #[test]

@@ -1593,9 +1593,12 @@ mod tests {
     fn a_relative_path_is_joined_one_segment_at_a_time() {
         let base = PathBuf::from("base");
         assert_eq!(joined(&base, "a/b/c"), base.join("a").join("b").join("c"));
-        // 拼出来的东西里不能留下正斜杠
-        assert!(!joined(&base, "a/b").to_string_lossy().contains('/'),
-                "{}", joined(&base, "a/b").display());
+        // 「不留正斜杠」是 Windows 专属性质：那边分隔符是 `\`，verbatim 路径里残留的 `/`
+        // 正是这个函数要消灭的东西。POSIX 上 `/` 就是分隔符，拼对了必然含 `/`。
+        if cfg!(windows) {
+            assert!(!joined(&base, "a/b").to_string_lossy().contains('/'),
+                    "{}", joined(&base, "a/b").display());
+        }
         assert_eq!(joined(&base, "one"), base.join("one"));
         assert_eq!(joined(&base, ""), base);
     }
