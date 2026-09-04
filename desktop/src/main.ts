@@ -462,6 +462,11 @@ async function boot() { log({ event: "boot:start" });
   // 配置必须在任何读取之前就位：它是同步 API + 内存缓存，只有这一次是异步的
   log({ event: "prefs:loaded", ...await loadPrefs() });
   uiLanguage = language();   // 模块级默认值只是占位，真正的值要等配置读完
+  // 🔴 同上，而且这一个不补的话会**主动把功能关掉**：模块顶层那次 `readActivityDetail()`
+  // 跑在 `loadPrefs()` 之前，读到的是空 store，`Boolean(undefined)` = false。下面那句
+  // 「每次启动都重申一遍」于是拿着这个假的 false 去写开关文件，把用户明明开着的详情
+  // 写成关 —— 正好是它自己要防的那个病（界面打着勾，hook 不报详情）。
+  detailEnabled = readActivityDetail();
   // 设置窗口在「还没有模型」时也能安装/选择模型，因此切换监听必须早于模型加载。
   void listen<SettingsChange>(SETTINGS_EVENT, ({ payload }) => {
     if (payload.modelDeleted === currentModelDir()) location.reload();
