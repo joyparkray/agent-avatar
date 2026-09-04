@@ -29,6 +29,39 @@ Windows support, and the model handling needed to make third-party models work t
 
 ### The avatar
 
+- **The status bar can say what the agent is actually doing.** A second line under the
+  state names the current step — the tool's own one-line description ("Run the test suite"),
+  the file name it is editing, the host it is fetching, the term it is searching. Off by
+  default; Settings → Status bar. The data was always in the event the connector already
+  receives, so nothing new is read from your machine — but with the switch off the
+  connector does not touch those fields at all, and nothing about the tool is written to
+  the state file. A command line, file contents and replacement strings are never taken:
+  a command line can carry an auth header. Measured on real transcripts before building
+  it: a Bash description was present in 1567 of 1567 calls, median 32 characters.
+- Both lines keep their place. The pill is bottom-anchored, so a second line would have
+  pushed the state up every time it appeared; the box is a fixed size while the detail is
+  on, and the first line never moves. The first line no longer wraps either — wrapping
+  would have moved it just the same.
+- **Rename the states.** `writing` and `researching` both read "Thinking" out of the box,
+  which is deliberate — a tool that flashes past should not make the label flicker — but
+  it also hid which one was happening. Every state now takes a name of your own ("生气中"
+  for error, whatever you like), and the settings row shows both the current wording and
+  the internal state so two rows that read alike are still tellable apart. The name is
+  stored once, not per language: it is what you called your character, not a string to be
+  translated back.
+- **State mapping covers expressions, not just motions.** The runtime always played a
+  motion *and* set an expression for each state; only the motion was configurable, so the
+  expression could only come from whatever the model author wrote in `avatar.json`. Both
+  are pickable now, grouped by the author's categories and labelled with your aliases.
+- **An About page** — Settings → About: the app icon, the author, copyright, the version,
+  the repository, and the third-party components with their licences (Live2D Cubism Core
+  is proprietary and its EULA asks for exactly this).
+- Fixed: the first-run card was taller than the window and got clipped — half the drop
+  zone and all of the download button were off-screen, with no scrollbar to say so. The
+  window now sizes itself to the card, measured rather than hardcoded, because the
+  Chinese and English wordings differ in height.
+- Removing every connector at once now asks twice.
+
 - **Expressions and motions are one table now**, with a trigger per entry: click,
   double-click, or a **global shortcut**. The avatar is always on top and usually
   click-through, so it almost never holds focus and in-app keys never reach it; shortcuts
@@ -66,6 +99,20 @@ Windows support, and the model handling needed to make third-party models work t
 - Fixed: the **Idle** column in Settings was written to the config but never read. Idle
   autonomy was actually drawing from the double-click pool, so turning entries off for
   idle did nothing. It now uses the column you set.
+
+### Uninstalling
+
+- The uninstaller asked whether to delete your data **on top of** the installer's own
+  "delete application data" checkbox. It now reads that checkbox instead of asking again.
+- **Uninstalling with your data kept now keeps your connectors too.** Uninstalling has to
+  take the registrations back — those hooks point at an interpreter that is about to
+  disappear — but "keep my data" that still made you re-connect five harnesses by hand was
+  not keeping much. The harnesses you had connected are written down, and reinstalling
+  puts them back. (The note is written by the uninstaller of the version being removed, so
+  the first upgrade into this behaviour cannot benefit from it.)
+- Upgrading no longer takes the connectors back at all. The installer runs the old
+  uninstaller with `/UPDATE` on the way through, and the hook did not check for it — every
+  upgrade disconnected all five harnesses.
 
 ### Models
 

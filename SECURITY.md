@@ -50,13 +50,26 @@ Agent Avatar is a desktop application with a few capabilities worth knowing abou
 - **It reads a state file** in the platform temp directory, written by the connector. It
   holds the agent's current state — one of eight fixed words, a fixed phrase naming the
   harness, a counter and a timestamp — plus, for Hermes only, the session token the hook
-  picked up. It does **not** contain your prompts, the agent's output, commands it ran or
-  files it touched. `AGENT_AVATAR_STATE_PATH` overrides where the app looks for it.
+  picked up. It does **not** contain your prompts or the agent's output.
+
+  **One line is added only if you switch it on** (Settings → Status bar → *Show what it is
+  doing*, off by default). With it on, the connector also writes a short line naming the
+  current step: the tool's own one-line description, or a file **name** (never the path),
+  or a **host** (never the rest of the URL), or a search term — capped at 40 characters.
+  It never writes a command line, file contents or a replacement string: a command line
+  can carry an auth header, and that is the one thing nobody expects to see on screen.
+  With the switch off the connector does not read those fields at all, so nothing about
+  the tool reaches disk — the switch is a file the app writes for the connector to read,
+  not a display filter. `AGENT_AVATAR_STATE_PATH` overrides where the app looks for it.
   The file is created `0600` on Unix, where the `/tmp` fallback is shared between users;
   on Windows the temp directory is per-user and the file inherits an ACL granting only
   you, Administrators and SYSTEM. It also optionally
   connects to a local Hermes endpoint on the loopback interface. URLs handed to the
-  system opener are restricted to `http://localhost` and `http://127.0.0.1`.
+  system opener are restricted to `http://localhost`, `http://127.0.0.1`, and a short
+  named list of the links the app itself prints on its About page (this project's
+  repository, the author's profile, the Live2D pages). Anything else is refused —
+  the list is a hardcoded allowlist, not a filter, because the webview it is called from
+  renders content we do not control (model names, a harness's own error text).
 - **It serves your model files** to its own webview from the app's data directory, with
   path traversal rejected.
 
