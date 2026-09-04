@@ -47,8 +47,21 @@ hash, so you approve again after updating.
 
 The same CodeBuddy CLI reads `~/.codebuddy` when run standalone and `~/.workbuddy` when
 run by the WorkBuddy app. A plugin installed into the wrong one tests perfectly from the
-command line and does nothing inside the app. The installer targets the app's home by
-default.
+command line and does nothing inside the app. The installer registers into both homes it
+finds, and reads both when reporting whether the connector is installed.
+
+`CODEBUDDY_CONFIG_DIR` is the variable that decides where plugins are recorded — measured
+against the real CLI, `WORKBUDDY_CONFIG_DIR` does not move them.
+
+### WorkBuddy's command line is inside the app
+
+Installing the WorkBuddy desktop app does not put a `codebuddy` on your PATH; the CLI it
+uses lives inside the application directory. Agent Avatar looks there as well as in the
+npm global directory, so you do not need to install the npm package separately.
+
+On Windows that bundled file is a Node script with no extension, which Windows cannot
+launch on its own, so it is run through Node — meaning this path needs a Node on your
+machine. If you have neither a Node nor the npm `codebuddy`, install the npm package.
 
 ## Per-harness details
 

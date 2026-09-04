@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://github.com/joyparkray/agent-avatar/actions/workflows/ci.yml"><img src="https://github.com/joyparkray/agent-avatar/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/macOS-14.2%2B-lightgrey" alt="macOS 14.2+">
+  <img src="https://img.shields.io/badge/Windows-10%2B-lightgrey" alt="Windows 10+">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT licence">
 </p>
 
@@ -19,7 +20,7 @@
 Agent Avatar 在桌面上放一个 Live2D 形象，把你的 AI 编程 agent 正在做的事演出来 ——
 思考、跑工具、等你输入、审阅、卡住 —— agent 开口说话时还会实时对口型。
 
-**需要 macOS 14.2 或更新。Windows 支持是下一步。**
+**需要 macOS 14.2 或更新，或 Windows 10 或更新。**
 
 <p align="center">
   <img src="assets/screenshots/desktop.png" width="900" alt="桌面上的 Agent Avatar，旁边是 agent 会话，状态显示「Thinking」">
@@ -115,9 +116,11 @@ connector 只告诉形象 **agent 正在做什么**，形象根据你的模型�
 
 ## 系统要求
 
-- **macOS 14.2 或更新**（系统音频捕获走 Core Audio process tap）。
+- **macOS 14.2 或更新**，或 **Windows 10 或更新**。
 - 一个 Live2D 模型 —— **不随包分发**，见下。
-- 暂不支持 Windows —— 这是下一步要做的。
+
+系统音频口型同步只有 macOS 有 —— 它走 Core Audio process tap，Windows 上没有对应能力。
+其余功能（包括五家连接器）两个平台都一样；Windows 上只是没有口型，不会因此起不来。
 
 ## 安装
 
@@ -129,6 +132,10 @@ connector 只告诉形象 **agent 正在做什么**，形象根据你的模型�
    | Intel | `Agent-Avatar-1.0.0-Intel.dmg` |
 
    已用 Apple Developer ID 签名并通过公证，**直接双击打开即可**，不需要右键。
+
+   Windows 用 `-setup.exe` 安装器，不想装的话用免安装 zip。Windows 构建**还没有代码签名**，
+   首次运行 SmartScreen 会拦一下 —— 更多信息 → 仍要运行。卸载 app 时安装器会自动把五家
+   agent 里的连接器一并收回。
 2. 启动。没装模型时会看到引导卡片，附 Live2D 官方免费模型的链接。
 3. 装模型 —— 把模型文件夹拖进**设置 → 模型**，或直接拖到引导卡片上。
    详见 [docs/MODELS.md](docs/MODELS.md)。
@@ -172,7 +179,7 @@ Codex 那条最容易被当成 bug：插件显示已安装已启用，hook 却�
 ## 目录结构
 
 ```
-desktop/      macOS 应用：Live2D 渲染、音频口型、窗口与菜单（Tauri + Rust + TypeScript）
+desktop/      桌面应用：Live2D 渲染、音频口型、窗口与菜单（Tauri + Rust + TypeScript）
 bridge/       两边共用的协议与状态机 —— 真正可被别人拿走的部分
 connectors/   五家 harness 各自的适配层与安装脚本
 docs/         模型安装、接入、排查

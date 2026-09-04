@@ -2,16 +2,44 @@
 
 ## Build from source
 
-Requirements: macOS 14.2+, Node 20+, Rust (stable), Xcode command line tools.
+Requirements: macOS 14.2+ (with Xcode command line tools) or Windows 10+, Node 20+,
+Rust (stable), and a real Python 3.
+
+The app **ships the connectors inside itself**, so a release build has two steps before
+the Tauri build: fetch the interpreter it will hand to the harnesses, and assemble the
+connector tree.
 
 ```bash
+bash connectors/fetch-python.sh    # embedded interpreter (skipped if already present)
+bash connectors/build-bundle.sh    # assemble all five connectors into the app resources
+
 cd desktop
 npm ci
 npm run tauri dev      # run with hot reload
-npm run tauri build    # produce Agent Avatar.app
+npm run tauri build    # produce the installer
 ```
 
-The app bundle lands in `desktop/src-tauri/target/release/bundle/macos/`.
+Re-run `build-bundle.sh` after touching anything in `bridge/` or `connectors/` —
+otherwise the change is simply not in the package you just built.
+
+**Check that `build-bundle.sh` exited 0.** Do not pipe it into `tail`/`head` and read the
+exit code of that instead; a shell pipeline reports the *last* command's status, which is
+how a failed bundle got packaged and shipped once already. On success it prints
+`connector bundle v<version> -> <path>` as its last line.
+
+The build picks its own interpreter, trying `python3`, then `python`, then `py`, and
+running each one to check it really is Python 3 — on Windows the name `python3` usually
+resolves to a Microsoft Store placeholder that prints an advert and exits, and on a Mac
+without the command line tools `/usr/bin/python3` opens an install dialog. Set
+`AGENT_AVATAR_PYTHON` to choose explicitly; when you do, a bad value is an error rather
+than a silent fallback.
+
+Output:
+
+| Platform | Where the build lands |
+| --- | --- |
+| macOS | `desktop/src-tauri/target/release/bundle/macos/` |
+| Windows | `desktop/src-tauri/target/release/bundle/nsis/` (`npm run pack:portable` for the no-install zip) |
 
 ## Tests
 
@@ -26,6 +54,8 @@ cargo test --manifest-path src-tauri/Cargo.toml   # Rust
 cd ../connectors                                  # connector tests, all five harnesses
 python3 -m pytest -q                              # needs pytest; see below
 ```
+
+On Windows use `python` rather than `python3` here, for the reason given above.
 
 **The connector tests need pytest.** They use `tmp_path` and bare `assert`, which
 `unittest discover` cannot collect — it reports `Ran 0 tests ... OK`, a green result for

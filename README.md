@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://github.com/joyparkray/agent-avatar/actions/workflows/ci.yml"><img src="https://github.com/joyparkray/agent-avatar/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/macOS-14.2%2B-lightgrey" alt="macOS 14.2+">
+  <img src="https://img.shields.io/badge/Windows-10%2B-lightgrey" alt="Windows 10+">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT licence">
 </p>
 
@@ -20,7 +21,7 @@ Agent Avatar puts a Live2D character on your desktop that acts out what your AI 
 agent is doing — thinking, running a tool, waiting on you, reviewing, stuck — and
 lip-syncs whenever the agent speaks.
 
-**macOS 14.2 or newer. Windows is what comes next.**
+**macOS 14.2 or newer, or Windows 10 or newer.**
 
 <p align="center">
   <img src="assets/screenshots/desktop.png" width="900" alt="Agent Avatar on a desktop next to an agent session, the status pill reading Thinking">
@@ -124,9 +125,12 @@ Plus two reactions layered on top: `blocked` (permission denied) and `interrupte
 
 ## Requirements
 
-- **macOS 14.2 or newer** (the system-audio capture path uses Core Audio process taps).
+- **macOS 14.2 or newer**, or **Windows 10 or newer**.
 - A Live2D model — **none is bundled**, see below.
-- Windows is not supported yet — it is what comes next.
+
+Lip sync from system audio is macOS only — it uses Core Audio process taps, which have no
+Windows equivalent. Everything else, including every connector, works on both; on Windows
+the app simply runs without lip sync rather than refusing to start.
 
 ## Install
 
@@ -140,6 +144,11 @@ Plus two reactions layered on top: `blocked` (permission denied) and `interrupte
 
    Signed with an Apple Developer ID and notarised, so **a normal double-click works** —
    no right-click → Open needed.
+
+   On Windows, take the `-setup.exe` installer, or the portable zip if you would rather not
+   install. Windows builds are **not code-signed yet**, so SmartScreen will warn on first
+   run — More info → Run anyway. The installer removes the connectors from all five agents
+   when you uninstall.
 2. Launch it. With no model installed you get a short onboarding card with a link to
    Live2D's free sample models.
 3. Install a model — drag its folder onto **Settings → Models**, or onto the card the app
@@ -188,7 +197,7 @@ quality, frame rate), **Agent** (connectors, and a motion for each agent state),
 ## Project layout
 
 ```
-desktop/      The macOS app: Live2D rendering, audio lip sync, window and menus (Tauri + Rust + TypeScript)
+desktop/      The desktop app: Live2D rendering, audio lip sync, window and menus (Tauri + Rust + TypeScript)
 bridge/       The protocol and the state machine both sides share — the reusable part
 connectors/   One adapter per harness, plus the installers
 docs/         Model installation, connectors, troubleshooting

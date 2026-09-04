@@ -12,6 +12,23 @@ Windows support, and the model handling needed to make third-party models work t
 - Fixed: launching the app also opened a console window that stayed for the whole session.
   The Windows GUI subsystem was never declared — it had never been needed on macOS.
 
+- Fixed: the connector build could ship a broken app. `build-bundle.sh` asked for `python3`,
+  which on Windows is the Microsoft Store placeholder rather than an interpreter, so the build
+  stopped after the first harness — but only after deleting the previous tree, leaving a partial
+  one that still satisfied the app's "did you run build-bundle.sh" check. The installer built and
+  packaged without complaint, and the failure only surfaced when a user pressed Install. The script
+  now probes for a real Python 3 (`python`, `py`, or `AGENT_AVATAR_PYTHON`), assembles into a
+  staging directory that replaces the live tree only once all five harnesses are built, and the app
+  refuses an incomplete tree while naming what is missing.
+- Fixed: WorkBuddy installed as a desktop app was reported as "command line program not found".
+  Its CLI ships inside the app rather than on PATH, and the lookup for it was macOS-only. On
+  Windows that file is a Node script with no extension, which the process API cannot launch
+  directly (`The specified executable is not a valid application for this OS platform`), so it is
+  now run through Node, and only offered when a Node is actually available.
+- Fixed: the Hermes reachability probe failed roughly two runs in five. The request was written in
+  five separate socket writes, and a server that answered and closed after the first one left the
+  rest to be written to a closed socket. The whole request goes out in one write now. The test that
+  covers it had been disabled on Windows and is running again.
 - Runs on Windows 10 and later. The transparent, always-on-top window and hardware
   accelerated Live2D rendering coexist on WebView2 — verified on real hardware, not CI,
   which has no GPU.
@@ -38,6 +55,11 @@ Windows support, and the model handling needed to make third-party models work t
   the state file. A command line, file contents and replacement strings are never taken:
   a command line can carry an auth header. Measured on real transcripts before building
   it: a Bash description was present in 1567 of 1567 calls, median 32 characters.
+- Fixed: the second line stayed blank for WorkBuddy in headless mode, and the avatar sat on
+  "Thinking" through every tool call. WorkBuddy does not announce the start of a turn there, and
+  tool events belonging to an unannounced turn were being discarded by the guard that stops
+  finished turns from wedging the avatar. Tool events now register their own turn where the
+  harness is known not to announce one.
 - Both lines keep their place. The pill is bottom-anchored, so a second line would have
   pushed the state up every time it appeared; the box is a fixed size while the detail is
   on, and the first line never moves. The first line no longer wraps either — wrapping
@@ -61,6 +83,9 @@ Windows support, and the model handling needed to make third-party models work t
   window now sizes itself to the card, measured rather than hardcoded, because the
   Chinese and English wordings differ in height.
 - Removing every connector at once now asks twice.
+- Fixed: uninstalling left a backup file of ours behind in dsh's configuration directory, holding
+  our own block and a path that no longer existed. Backups left by earlier versions in Codex's and
+  Hermes's directories are cleaned up too.
 
 - **Expressions and motions are one table now**, with a trigger per entry: click,
   double-click, or a **global shortcut**. The avatar is always on top and usually
