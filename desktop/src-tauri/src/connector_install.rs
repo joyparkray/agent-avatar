@@ -1403,7 +1403,7 @@ pub fn uninstall_connector(app: tauri::AppHandle, harness: String) -> Result<Val
 
 #[cfg(test)]
 mod tests {
-    use super::{command_line_path, edit_dsh_registration, file_url, harness_relative, joined,
+    use super::{command_line_path, edit_dsh_registration, file_url, harness_relative, interpreter_token, joined,
                 python_relative, restore_list, restore_list_path, rewrite_hooks_json, rewrite_index_mjs, smoke_test};
     use std::{env, fs, path::PathBuf, sync::{Mutex, MutexGuard}};
 
@@ -1553,7 +1553,11 @@ mod tests {
     /// /bin/sh: -c: line 0: unexpected EOF while looking for matching `"'
     /// ```
     ///
-    /// Windows 的数据目录不带空格，所以那边永远碰不到；**只装一次的测试也永远碰不到**。
+    /// Windows 那边碰不到，但原因和这里不同：数据目录（`AppData\Roaming\…`）本来就不带
+    /// 空格，万一带了（用户名有空格）也会先换成 8.3 短路径；短路径拿不到时冒烟自检会当场
+    /// 失败，根本轮不到写进配置。**只装一次的测试同样永远碰不到**。
+    ///
+    /// 首 token 的形状两个平台不同（见断言处），所以这条断言问 `interpreter_token`。
     #[test]
     fn rewriting_twice_is_idempotent_even_when_the_interpreter_path_has_spaces() {
         let dir = scratch("hooks-twice");
@@ -1569,7 +1573,12 @@ mod tests {
 
         rewrite_hooks_json(&path, spaced, "claude-code").unwrap();
         let once = read(&path);
-        assert_eq!(once, format!("\"{spaced}\" \"${{PLUGIN_ROOT}}/hooks/agent-avatar-hook.py\" ; exit 0"));
+        // 首 token 的形状**两个平台不一样**，所以问 `interpreter_token` 而不是写死引号：
+        // POSIX 加引号，Windows 不加（那边引号会噎住 PowerShell，靠 8.3 短路径避空格）。
+        // 写死引号的话这条在 Windows 上必挂 —— 而它要验的不变量（改两遍不变、引号成对）
+        // 在两个平台上都成立。
+        assert_eq!(once, format!("{} \"${{PLUGIN_ROOT}}/hooks/agent-avatar-hook.py\" ; exit 0",
+                                 interpreter_token(spaced)));
 
         // 第二遍必须原地不动
         rewrite_hooks_json(&path, spaced, "claude-code").unwrap();
