@@ -1043,10 +1043,13 @@ pub fn remove_all_headless() -> String {
             Err(error) => failed.push(format!("{harness}: {error}")),
         }
     }
-    let mut report = if removed.is_empty() {
-        "no connectors were installed".to_string()
-    } else {
-        format!("removed: {}", removed.join(", "))
+    // 「一个都没装」和「装了但没收掉」是两回事。原来只看 removed 是不是空的，于是
+    // 隔离环境里跑出过「no connectors were installed」紧跟着「could not remove claude-code」
+    // 这种自相矛盾的报告 —— 而这份报告正是卸载出问题时用户唯一能看到的线索。
+    let mut report = match (removed.is_empty(), failed.is_empty()) {
+        (true, true) => "no connectors were installed".to_string(),
+        (true, false) => "none could be removed".to_string(),
+        _ => format!("removed: {}", removed.join(", ")),
     };
     for line in &failed {
         report.push_str(&format!("\ncould not remove {line}"));
@@ -1086,6 +1089,21 @@ fn app_data_dir() -> PathBuf {
 /// 选了清除数据的话整个数据目录都没了，这个文件跟着消失，于是「全清」仍然是全清。
 fn restore_list_path() -> PathBuf {
     app_data_dir().join("connectors-restore.json")
+}
+
+/// 解析恢复名单。写的那一头在 `uninstall_everything_of_ours`，读的这一头在 reconcile ——
+/// 两头隔着一次「卸载、装新版本、再启动」，中间没有任何编译期约束把它们绑在一起。
+/// 所以拎出来单独测：那条测试里用的就是写出来的原文。
+fn restore_list(raw: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(raw).ok()
+        .and_then(|value| value.get("harnesses").and_then(Value::as_array).cloned())
+        .map(|list| list.iter()
+            .filter_map(|item| item.as_str())
+            // 名字会被当成 harness 用（拼文件名、选安装路径），只认认识的那五个
+            .filter(|name| HARNESSES.contains(name))
+            .map(str::to_owned)
+            .collect())
+        .unwrap_or_default()
 }
 
 pub fn uninstall_everything_of_ours(purge: bool) -> String {
@@ -1208,11 +1226,7 @@ pub fn reconcile_connectors(app: tauri::AppHandle) -> Result<Value, String> {
 
     // 上一次卸载（保留数据）记下的那份名单，装回来时照着恢复。消费一次就删掉 ——
     // 留着的话，一家永远装不上的 harness 会每次打开设置都重试一遍。
-    let restore: Vec<String> = fs::read_to_string(restore_list_path()).ok()
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-        .and_then(|value| value.get("harnesses").and_then(Value::as_array).cloned())
-        .map(|list| list.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect())
-        .unwrap_or_default();
+    let restore = restore_list(&fs::read_to_string(restore_list_path()).unwrap_or_default());
     if !restore.is_empty() { let _ = fs::remove_file(restore_list_path()); }
     let mut restored = Vec::new();
     for harness in HARNESSES {
@@ -1262,13 +1276,28 @@ pub fn uninstall_connector(app: tauri::AppHandle, harness: String) -> Result<Val
 #[cfg(test)]
 mod tests {
     use super::{command_line_path, edit_dsh_registration, file_url, harness_relative, joined,
-                python_relative, restore_list_path, rewrite_hooks_json, rewrite_index_mjs, smoke_test};
+                python_relative, restore_list, restore_list_path, rewrite_hooks_json, rewrite_index_mjs, smoke_test};
     use std::{env, fs, path::PathBuf, sync::{Mutex, MutexGuard}};
 
     /// 🔴 改环境变量的测试必须串行。cargo 默认并行跑，而 `DSH_HOME` 是**进程级**的 ——
     /// 三条测试各自设一遍再还原，交错起来就会有人读到别人的值。
     /// 症状是随机失败（同一份代码，上一轮全绿，这一轮红一条）。
     static ENVIRONMENT: Mutex<()> = Mutex::new(());
+
+    /// 🔴 写的那一头和读的这一头隔着「卸载 → 装新版本 → 再启动」，中间没有任何编译期
+    /// 约束把它们绑在一起。这里用的**就是真卸载器写出来的那一行原文**（隔离环境跑出来的）。
+    #[test]
+    fn the_restore_list_reads_back_exactly_what_uninstall_writes() {
+        assert_eq!(restore_list(r#"{"harnesses":["claude-code"]}"#), vec!["claude-code"]);
+        assert_eq!(restore_list(r#"{"harnesses":["claude-code","codex","hermes"]}"#),
+                   vec!["claude-code", "codex", "hermes"]);
+        // 名字会被拿去拼文件名、挑安装路径 —— 只认那五个，别的一律丢掉
+        assert!(restore_list(r#"{"harnesses":["../../etc","",null,7]}"#).is_empty());
+        // 文件没了 / 空的 / 坏的，都当作没有要恢复的
+        for bad in ["", "{}", "not json", r#"{"harnesses":"claude-code"}"#] {
+            assert!(restore_list(bad).is_empty(), "{bad}");
+        }
+    }
 
     /// 🔴 恢复名单必须落在**数据目录根上**，不能在 `connectors/` 里面 —— 卸载几行之后
     /// 就把那个目录整个删了，写在里面等于写完就没。这条测试钉住的是位置，不是格式。
