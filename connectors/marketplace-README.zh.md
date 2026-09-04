@@ -42,7 +42,7 @@ cd connector-tree/marketplace
 这一步需要一个 shell 和一个 Python —— 就是你接下来要给连接器用的那个。构建过程会
 **逐家跑一次冒烟自检**，所以能装配出来的树，它的核心就是完整的。
 
-（每个 release 也会附一个构建好的 `agent-avatar-connectors.zip`，不想自己构建就用它。）
+（构建只需要一个 shell 和一个 Python —— 这棵树是从本仓库组装出来的，不下载任何东西。）
 
 ---
 

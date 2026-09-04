@@ -1,43 +1,57 @@
-# Claude Code 接入指南
+# Claude Code connector
 
-> 让 Agent Avatar 随 Claude Code 的思考 / 跑工具 / 派子代理变表情。
-> **DeepSeek Harness 与 WorkBuddy 复用同一份 hook**（见 §5）。
+<p align="center">
+  <b>English</b> · <a href="README.zh.md">简体中文</a>
+</p>
 
-事件形状取自实机抓取（**Claude Code 2.1.212**，macOS，隔离 `--settings` 取样器），
-不是照文档猜的。
+> Makes Agent Avatar change expression as Claude Code thinks, runs a tool or spawns a
+> subagent. **WorkBuddy reuses this same hook** (see §5).
+
+The event shapes below were captured from a real run (**Claude Code 2.1.212**, macOS,
+sampler running under an isolated `--settings`), not guessed from the docs.
 
 ---
 
-## 1. 安装（插件）
+## 1. Install
+
+**The app does this for you**: Settings → Agent → Connectors → Install. It ships the plugin
+and a Python interpreter inside itself, registers it through `claude` and reports whatever
+the CLI said if it fails.
+
+By hand — for a Claude Code the app cannot see (WSL, a container, another machine), or if
+you want to read the commands first:
 
 ```bash
-connectors/claude-code/install-plugin.sh
+sh connectors/build-bundle.sh ./connector-tree
+cd connector-tree/marketplace
+python localize.py claude-code
+claude plugin marketplace add ./
+claude plugin install agent-avatar@agent-avatar
 ```
 
-> **Windows** 用 `install-plugin.ps1`（PowerShell，与 `.sh` 同义）：
-> ```powershell
-> powershell -ExecutionPolicy Bypass -File connectors\claude-code\install-plugin.ps1
-> ```
-> 它比 `.sh` 版多做一件事：**把解释器换成本机实测可用的绝对路径**。
-> Windows 上 `python3` 解析到一个 0 字节的应用商店存根 —— 能启动、打印
-> 「Python was not found」、以 9009 退出，而 9009 不是 2，所以**不会被拦下，
-> 只会安静地什么都不发生**。详见 `private/WINDOWS-PORT.md` 的「WP4」几节。
+**Start a new session** afterwards — plugins load at session start. Full details, including
+the other four harnesses, are in [the connectors README](../marketplace-README.md).
 
-脚本把插件组装到 `~/.claude/plugins/local/agent-avatar/`（**必须自包含**：hook 脚本 +
-Bridge 的两个模块；状态机的单一真相在 `../../bridge/`，不在 connector 里放副本）。然后：
+> `localize.py` writes the interpreter that is running it into the hook command line. It is
+> **not optional on Windows**, where `python3` is not Python: it resolves to a 0-byte
+> Microsoft Store placeholder that starts, prints "Python was not found" and exits 9009.
+> 9009 is not 2, so no harness treats it as a failure — the only symptom is an avatar that
+> never moves. Worth running on macOS too: it pins the interpreter rather than leaving
+> `/usr/bin/python3`, which on a Mac without the Xcode command line tools is itself a
+> placeholder that pops an install dialog.
+
+The tree is **self-contained** by construction: the hook script plus the two Bridge
+modules. The single source of truth for the state machine stays in `../../bridge/` and is
+copied in at build time, never by hand.
+
+During development you can skip installing and load the tree directly (`/reload-plugins`
+after an edit):
 
 ```bash
-claude plugin marketplace add ~/.claude/plugins/local
-claude plugin install agent-avatar@agent-avatar-local
+claude --plugin-dir <tree>/plugins/claude-code/agent-avatar
 ```
 
-开发期也可以不装，直接加载（改完 `/reload-plugins` 即可）：
-
-```bash
-claude --plugin-dir ~/.claude/plugins/local/agent-avatar
-```
-
-装好后 `claude plugin details agent-avatar@agent-avatar-local` 应显示：
+Once installed, `claude plugin details agent-avatar@agent-avatar` should show:
 
 ```
 Hooks (10)  SessionStart, SessionEnd, UserPromptSubmit, PreToolUse, PostToolUse,
@@ -47,145 +61,151 @@ Projected token cost
   Always-on:   ~0 tok   added to every session
 ```
 
-**零上下文开销**是纯观察者设计的直接回报 —— Claude Code 认出这是 harness 层的东西，
-不往对话里塞任何内容。
+**Zero context cost** is the direct payoff of the pure-observer design — Claude Code
+recognises this as harness-level and puts nothing into the conversation.
 
-### 布局（与 Codex 相反，别搞混）
+### Layout (the opposite of Codex — don't mix them up)
 
 ```
 agent-avatar/
-├── .claude-plugin/plugin.json   ← 只有 manifest 能放这里
-└── hooks/hooks.json             ← hooks 在 **hooks/ 子目录**
+├── .claude-plugin/plugin.json   ← only the manifest may live here
+└── hooks/hooks.json             ← hooks go in the **hooks/ subdirectory**
 ```
 
-⚠️ Codex 要求 `hooks.json` 在**插件根目录**，Claude Code 要求在 **`hooks/` 子目录**里，
-而且 CC 官方明确警告：除 `plugin.json` 外任何目录都**不能**放进 `.claude-plugin/`。
+⚠️ Codex wants `hooks.json` at the **plugin root**; Claude Code wants it inside
+**`hooks/`**, and the CC docs explicitly warn that **no** directory other than
+`plugin.json` may be placed in `.claude-plugin/`.
 
-路径变量是 **`${CLAUDE_PLUGIN_ROOT}`**（Codex 是 `${PLUGIN_ROOT}`），照官方 `hookify`
-插件的惯例带引号写：`python3 "${CLAUDE_PLUGIN_ROOT}/hooks/agent-avatar-hook.py" ; exit 0`。
+The path variable is **`${CLAUDE_PLUGIN_ROOT}`** (Codex uses `${PLUGIN_ROOT}`), quoted the
+way the official `hookify` plugin does it:
+`python3 "${CLAUDE_PLUGIN_ROOT}/hooks/agent-avatar-hook.py" ; exit 0`.
 
-### 不需要额外的 hook 授信
+### No separate hook approval
 
-Claude Code **没有** Codex 那种逐条 hook 审阅。官方安全模型是：
+Claude Code has **no** per-hook review of the kind Codex has. The official security model
+is:
 
 > "Plugins and marketplaces are highly trusted components that can execute arbitrary code
 > on your machine with your user privileges. Only install plugins and add marketplaces
 > from sources you trust."
 
-**安装即信任。** 审阅发生在安装前 —— `/plugin` 详情页的 "Will install" 区块会列出
-这个插件会装哪些 hooks / agents / MCP。
+**Installing is trusting.** The review happens *before* installing — the "Will install"
+block on the `/plugin` details page lists the hooks, agents and MCP servers a plugin
+brings.
 
-### 备用：手工写进 settings.json
+### Fallback: write it into settings.json by hand
 
-不走插件的话，也可以把 hooks 直接写进 `~/.claude/settings.json`（格式与
-`hooks/hooks.json` 里的 `hooks` 对象相同）。**但要自己写绝对路径**，于是要自己承担 §2
-那个风险，并且**务必加 `; exit 0`**。插件路径没有这个问题。
+Without the plugin, the hooks can go straight into `~/.claude/settings.json` (the format
+matches the `hooks` object in `hooks/hooks.json`). **But then you own the absolute path**,
+which means you take on the risk in §2 — and you **must** add `; exit 0`. The plugin path
+does not have this problem.
 
-## 2. 🔴 装之前必须知道的一件事
+## 2. 🔴 One thing to know before installing
 
-**Claude Code 把退出码 2 当作 block**，且**本脚本挂掉的后果按事件不同**：
+**Claude Code treats exit code 2 as a block**, and **what a crash in this script costs
+depends on the event**:
 
-| 事件 | exit 2 的后果 |
+| Event | Consequence of exit 2 |
 |:--|:--|
-| `PreToolUse` | **拦掉工具调用** |
-| `Stop` | **阻止停止 —— 对话停不下来** |
-| `SubagentStop` | 阻止子代理结束 |
-| `UserPromptSubmit` | 拒掉你的提示词 |
-| `PostToolUse` / `PostToolUseFailure` / `SessionStart` / `SessionEnd` / `SubagentStart` / `PermissionDenied` | 忽略（安全） |
+| `PreToolUse` | **the tool call is blocked** |
+| `Stop` | **stopping is blocked — the conversation cannot end** |
+| `SubagentStop` | the subagent cannot finish |
+| `UserPromptSubmit` | your prompt is rejected |
+| `PostToolUse` / `PostToolUseFailure` / `SessionStart` / `SessionEnd` / `SubagentStart` / `PermissionDenied` | ignored (safe) |
 
-脚本自身永远 `exit 0`（任何异常都被吞掉）。**危险的是脚本根本没跑起来**：
-`python3 <不存在的文件>` 的退出码**恰好是 2**。所以
+The script itself always exits 0 (every exception is swallowed). **The danger is the
+script never running at all**: `python3 <a file that does not exist>` exits with **exactly
+2**. So:
 
-> **路径写错 / 移动了 checkout / 换了 Python** = 你的工具被拦、对话停不下来。
+> **A wrong path / a moved checkout / a different Python** = your tools get blocked and
+> the conversation will not stop.
 
-这在 Hermes 上已经真实发生过一次（2026-08-28）。**移动或重命名脚本前，先撤注册。**
+This actually happened once, on Hermes (2026-08-28). **Unregister before you move or
+rename the script.**
 
-**我们刻意不注册**这些事件：`PermissionRequest`（阻塞式决策 hook；没响应时 CC 会直接
-拒绝工具调用而不是回落到确认框，见 [anthropics/claude-code#46193](https://github.com/anthropics/claude-code/issues/46193)）、
-`WorktreeCreate`（要求往 stdout 打印路径，被动 hook 会让 `claude -w` 报
-"no successful output"）、`PreCompact` 及其余可阻塞事件。
-**表情系统绝不进决策链路。**
+**We deliberately do not register** these events: `PermissionRequest` (a blocking decision
+hook — with no response CC denies the tool call outright rather than falling back to the
+confirmation prompt, see
+[anthropics/claude-code#46193](https://github.com/anthropics/claude-code/issues/46193)),
+`WorktreeCreate` (requires printing a path to stdout, so a passive hook makes `claude -w`
+report "no successful output"), `PreCompact` and the remaining blockable events.
+**The expression system never enters a decision path.**
 
 ---
 
-## 3. 事件映射
+## 3. Event mapping
 
-| Claude Code | 内部事件 | 说明 |
+| Claude Code | Internal event | Note |
 |:--|:--|:--|
-| `SessionStart(source=startup\|clear)` | `on_session_start` | 只有这两个是「开新局」 |
-| `SessionStart(source=resume\|compact\|fork)` | *忽略* | 同一局的延续，重置会清掉活着的子代理 |
+| `SessionStart(source=startup\|clear)` | `on_session_start` | only these two start a new session |
+| `SessionStart(source=resume\|compact\|fork)` | *ignored* | continuation of the same session; a reset would drop live subagents |
 | `UserPromptSubmit` | `pre_llm_call` | |
 | `PreToolUse` | `pre_tool_call` | |
 | `PostToolUse` | `post_tool_call` | |
-| `PostToolUseFailure` | `post_tool_call` + `status=error` | 比 Hermes 从 status 反推更明确 |
-| `PermissionDenied` | `post_tool_call` + `status=blocked` | 触发 blocked 叠加反应 |
+| `PostToolUseFailure` | `post_tool_call` + `status=error` | more explicit than Hermes inferring it from status |
+| `PermissionDenied` | `post_tool_call` + `status=blocked` | triggers the `blocked` overlay reaction |
 | `SubagentStart` / `SubagentStop` | `subagent_start` / `subagent_stop` | `agent_id` → `child_session_id` |
-| `Stop`（`stop_hook_active` 为真时忽略） | `post_llm_call` | 不清子代理：后台子代理会活过 Stop |
+| `Stop` (ignored while `stop_hook_active`) | `post_llm_call` | subagents are not cleared: background ones outlive Stop |
 | `SessionEnd` | `on_session_finalize` | |
 
-**字段对应**：`prompt_id` → `turn_id`、`tool_use_id` → 工具配对键、`agent_id` → 子代理 ID。
+**Field mapping**: `prompt_id` → `turn_id`, `tool_use_id` → the tool pairing key,
+`agent_id` → subagent id.
 
 ---
 
-## 4. 三处和 Hermes 不一样的地方（实测）
+## 4. Three ways it differs from Hermes (measured)
 
-1. **子代理事件带的是父会话的 `session_id`**，靠 `agent_id` 区分。
-   Hermes 是子代理有自己的 session_id，需要一份「忽略名单」——**CC 不需要那套**。
-   规则：带 `agent_id` 的事件一律不驱动形象，`SubagentStart/Stop` 除外（那是父会话的记账）。
-2. **孤儿 `SubagentStop`**：`/compact` 会发一条 ID 从没出现过的 stop。
-   CC 用 `ignore`（只处理配得上的），Hermes 用 `dequeue-oldest`——**两家要求相反**，
-   所以这条是 `bridge/state_machine.py` 里唯一参数化的策略。
-3. **`prompt_id` 就是 turn id**：实测同一轮从 `UserPromptSubmit` 到 `Stop` 全程不变，
-   下一轮换新值，`session_id` 不变。所以 Hermes 那套 turn 记账原样复用，
-   工具收尾后不会掉回 idle。
+1. **Subagent events carry the *parent* `session_id`**, distinguished by `agent_id`. On
+   Hermes a subagent has its own session_id and needs an ignore-list — **CC needs none of
+   that**. The rule: an event carrying `agent_id` never drives the avatar, except
+   `SubagentStart/Stop`, which is the parent session's bookkeeping.
+2. **Orphan `SubagentStop`**: `/compact` emits a stop for an id that was never seen. CC
+   wants `ignore` (handle only what pairs up), Hermes wants `dequeue-oldest` — **the two
+   requirements are opposites**, which is why this is the one parameterised policy in
+   `bridge/state_machine.py`.
+3. **`prompt_id` *is* the turn id**: measured, it stays constant from `UserPromptSubmit`
+   to `Stop` within a turn and changes on the next one, while `session_id` does not. So the
+   Hermes turn bookkeeping is reused unchanged, and the avatar does not drop back to idle
+   between tools.
 
-**已知未实现**：`SubagentStop` 被别的 hook block 时同一个子代理会复活
-（官方：exit 2 on `SubagentStop` 阻止停止）。我们会短暂少算一个 `awaiting`，
-直到真正的 stop 到达。只在别的 hook 主动 block 时发生，未做处理。
-
----
-
-## 5. DeepSeek Harness / WorkBuddy
-
-两家都用 Claude Code 兼容的 hook 格式与 stdin 形状，**直接复用本目录的脚本**，
-只是配置文件位置不同：
-
-### WorkBuddy
-
-有自己的配置文件与入口脚本，见 `../workbuddy/README.md`。
-
-### DeepSeek Harness —— **不需要任何额外配置**
-
-dsh 自带 Claude Code 与 Codex 的 hook bridge：
-
-> "DeepSeek Harness ships hook bridges for Claude Code and Codex that **run your existing
-> hooks.json**... `dsh-hooks-claude-code` executes your existing `.claude/hooks.json`."
-
-也就是说，**你在本页 §1 注册的那一份，dsh 会直接执行**。装了 dsh 的 hook bridge 之后，
-Echo 就跟着 dsh 一起动，我们这边零改动。
-
-两条限制：
-
-1. **走 bridge 时 dsh 与 Claude Code 无法区分** —— 事件从同一份配置来、写进同一个
-   `agent-avatar-state.claude-code.json`，`detail` 也会显示 "Claude Code"。
-   想分开就得让 dsh 走它自己的插件/stdio 模式单独注册，那需要实机验证，尚未做。
-2. **未实机验证**：本机没装 dsh。bridge 的存在有厂商文档背书，但它转发的 stdin 是否
-   保留了 `session_id` / `tool_use_id` / `prompt_id` 的 CC 形状**没有验证过** ——
-   丢了 `prompt_id` 的话 turn 记账会空，表现为工具之间闪 idle。
-
-**能力更少，按实际支持的事件裁剪注册清单**：两家都没有子代理事件
-（去掉 `SubagentStart` / `SubagentStop`），WorkBuddy 没有 `PostToolUseFailure`。
-少发的事件不影响——映射表里查不到就忽略。
+**Known, unhandled**: if another hook blocks `SubagentStop`, the same subagent comes back
+(officially, exit 2 on `SubagentStop` prevents stopping). We under-count one `awaiting`
+briefly, until the real stop arrives. It only happens when another hook actively blocks,
+so it is left alone.
 
 ---
 
-## 6. 自测
+## 5. WorkBuddy reuses this hook
+
+WorkBuddy's agent core is CodeBuddy Code — shaped like Claude Code: the same
+`hook_event_name` stdin contract, the same `hooks/hooks.json` plugin layout, and even
+`${CLAUDE_PLUGIN_ROOT}` is set. So **the scripts in this directory are reused as they
+are**; only the config directory differs (the app reads `~/.workbuddy`, the standalone CLI
+reads `~/.codebuddy`). The install steps and the trap those two homes set are in
+[`../workbuddy/README.md`](../workbuddy/README.md).
+
+WorkBuddy has no `PostToolUseFailure`. Events that are never sent do no harm — anything
+missing from the mapping table is ignored.
+
+> **DeepSeek Harness is *not* in this group (an early call that turned out wrong).** The
+> design note used to say "dsh ships a Claude Code hook bridge, so the registration on this
+> page can be reused unchanged". A real run on 2026-08-28 disproved it: the dsh 0.1.1-rc.2
+> on that machine had no hook bridge package at all. Its extension point is **cordis
+> events**, whose names, payloads and registration have nothing in common with CC. dsh
+> therefore has its own translation layer and in-process plugin — see
+> [`../dsh/README.md`](../dsh/README.md).
+
+---
+
+## 6. Checking it yourself
 
 ```bash
 echo '{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt_id":"t1"}' | \
   /usr/bin/python3 /path/to/agent-avatar/connectors/claude-code/agent-avatar-hook.py
-cat "$TMPDIR/agent-avatar-state.json"     # 应见 state: writing
+cat "$TMPDIR/agent-avatar-state.json"     # expect state: writing
 ```
 
-不碰自己的 `~/.claude/settings.json` 做整链路验证（推荐）：把上面 §1 那段写成一个独立文件，
-然后 `claude -p --settings <那个文件> '...'`。这正是本适配层的事件基线的取得方式。
+To exercise the whole chain without touching your own `~/.claude/settings.json`
+(recommended): put the §1 block into a standalone file, then run
+`claude -p --settings <that file> '...'`. That is exactly how the event baseline for this
+connector was obtained.

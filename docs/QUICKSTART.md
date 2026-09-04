@@ -1,19 +1,22 @@
 # Quick Start — getting it to react to your agent in 10 minutes
 
 This is the "I downloaded the app and want it to work now" path. It assumes you have
-**not** cloned the source — you just grabbed the `.dmg` download. Everything below is doable
+**not** cloned the source — you just grabbed the installer. Everything below is doable
 from the app plus one small download.
 
 > Building from source instead? See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## 1. Install & launch
 
-1. Download the build for your chip from the [Releases](../../releases) page:
-   - Apple Silicon (M1/M2/M3/M4): `Agent-Avatar-1.0.0-Apple-Silicon.dmg`
-   - Intel: `Agent-Avatar-1.0.0-Intel.dmg`
-2. Open the `.dmg`, drag `Agent Avatar.app` into `Applications`.
-3. Double-click to open — the build is signed with an Apple Developer ID and notarised,
-   so Gatekeeper lets it through.
+1. Download the build for your platform from the [Releases](../../releases) page:
+   - macOS (Apple Silicon): `Agent.Avatar_<version>_aarch64.dmg`
+   - Windows (x64): `Agent.Avatar_<version>_x64-setup.exe`
+2. **macOS**: open the `.dmg`, drag `Agent Avatar.app` into `Applications`, then
+   double-click it — the build is signed with an Apple Developer ID and notarised, so
+   Gatekeeper lets it through. Only an Apple Silicon build is published; on an Intel Mac,
+   [build from source](../CONTRIBUTING.md).
+3. **Windows**: run the installer. It is not code-signed, so SmartScreen warns on first
+   run — **More info → Run anyway**. See [SECURITY.md](../SECURITY.md#sandboxing-and-notarisation).
 4. Launch it. A card appears asking for a model — you need one to see the character at all.
 
 ## 2. Get a model
@@ -34,8 +37,9 @@ If you dismissed it, right-click the avatar → **Settings → Agent → Connect
 same screen.
 
 1. Find the harness you use (Claude Code / Codex / Hermes / DeepSeek / WorkBuddy).
-2. Click **Install**. The app downloads the connector bundle, extracts it and runs that
-   harness's own install script, showing Downloading / Extracting / Installing as it goes.
+2. Click **Install**. The connectors and a Python interpreter ship inside the app, so
+   nothing is downloaded — it installs the right adapter and registers it by calling that
+   harness's own CLI, showing each step as it goes.
 3. When it finishes, the row shows **what you still need to do** (some harnesses need
    nothing — see the table below).
 
