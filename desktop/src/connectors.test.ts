@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { diagnosisReasons } from "./connector-diagnosis";
-import { CONNECTOR_HARNESSES, CONNECTOR_TEXT, freshness, HARNESS_LABELS, linkState, postInstallSteps, statusLabel } from "./connectors";
+import { CONNECTOR_HARNESSES, CONNECTOR_TEXT, freshness, HARNESS_LABELS, linkState, postInstallSteps, statusLabel, installedMessage } from "./connectors";
 
 describe("connector install wizard", () => {
   // 🔴 这里曾经有十五条测试，盯的是「app 出提示词、用户的 agent 去执行安装」那条路。
@@ -201,5 +201,37 @@ describe("connector install wizard", () => {
     expect(ui).toContain('invoke(command, { harness })');
     // 提示词那条路已经拆掉：界面上不该再有任何「复制一段话给你的 agent」
     expect(ui).not.toMatch(/installPrompt|uninstallPrompt|updatePrompt|diagnosePrompt|clipboard/);
+  });
+});
+
+describe("装完之后该让用户做什么", () => {
+  // 🔴 「开一个新会话就会生效」对 in-process 的两家是**错的**，而且是会稳定误导的那种错：
+  // 用户照做、不生效、以为坏了。Hermes 是 in-process 的 Python 包、dsh 是 in-process 的
+  // cordis 插件 —— 模块加载进内存之后换磁盘文件不会重新加载，必须重启进程。
+  // 其余三家每个事件起一个独立 hook 进程，每次重新读文件，所以换了立刻生效。
+  // 2026-09-04 实机连撞两次（连接器 10:41 装，hermes 进程 10:23 起的，一直跑旧模块）。
+  it("in-process 的两家要说重启进程，并带上它自己的名字", () => {
+    for (const harness of ["hermes", "dsh"] as const) {
+      const zh = installedMessage("zh-CN", harness);
+      expect(zh).toContain("重启");
+      expect(zh).toContain(HARNESS_LABELS[harness]);
+      expect(zh, "不能再说「开一个新会话就会生效」").not.toContain("开一个新会话就会生效");
+      expect(installedMessage("en", harness)).toContain("Restart");
+    }
+  });
+
+  it("其余三家仍然说新会话 —— 它们确实是那样生效的", () => {
+    for (const harness of ["claude-code", "codex", "workbuddy"] as const) {
+      expect(installedMessage("zh-CN", harness)).toContain("新会话");
+      expect(installedMessage("en", harness)).toContain("next session");
+    }
+  });
+
+  it("占位符必须被换掉，别把 {name} 直接显示给用户", () => {
+    for (const harness of CONNECTOR_HARNESSES) {
+      for (const locale of ["zh-CN", "en"] as const) {
+        expect(installedMessage(locale, harness)).not.toContain("{name}");
+      }
+    }
   });
 });

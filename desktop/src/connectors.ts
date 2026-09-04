@@ -15,6 +15,19 @@ export const CONNECTOR_HARNESSES = ["claude-code", "codex", "dsh", "hermes", "wo
 export type Harness = typeof CONNECTOR_HARNESSES[number];
 
 /** 各家自己的写法，不翻译 —— 用户要在自己的工具里找到同一个名字。 */
+/**
+ * 插件**装在 harness 自己的进程里**的那几家 —— 装完必须重启进程，开新会话没用。
+ *
+ * 🔴 其余三家（Claude Code / Codex / WorkBuddy）每个事件起一个独立的 hook 进程，
+ * 每次都重新读文件，所以换了文件立刻生效。而 Hermes 是 in-process 的 Python 包、
+ * dsh 是 in-process 的 cordis 插件 —— Python/Node 把模块加载进内存之后，
+ * 换磁盘上的文件不会重新加载。
+ *
+ * 统一说「开一个新会话就会生效」会稳定误导这两家的用户：照做、不生效、以为坏了。
+ * 2026-09-04 实机连撞两次（连接器 10:41 装，hermes 进程 10:23 起的，一直跑旧模块）。
+ */
+export const IN_PROCESS_HARNESSES: readonly Harness[] = ["hermes", "dsh"];
+
 export const HARNESS_LABELS: Record<Harness, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
@@ -22,6 +35,16 @@ export const HARNESS_LABELS: Record<Harness, string> = {
   hermes: "Hermes",
   workbuddy: "WorkBuddy",
 };
+
+/**
+ * 安装成功后说什么。in-process 的两家要说「重启进程」，不能说「开新会话」——
+ * 后者对它们是错的（见 IN_PROCESS_HARNESSES）。
+ */
+export function installedMessage(locale: Language, harness: Harness): string {
+  const key = IN_PROCESS_HARNESSES.includes(harness) ? "action.installed.inProcess" : "action.installed";
+  return tr(locale, key).replace("{name}", HARNESS_LABELS[harness]);
+}
+
 
 /**
  * 装完多久之内算「刚装好」。**这不是超时**：过了这个点插件照样可能正常，
@@ -126,6 +149,7 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "action.uninstall": "卸载",
     "action.working": "正在处理…",
     "action.installed": "装好了。开一个新会话就会生效。",
+    "action.installed.inProcess": "装好了。**要重启 {name} 进程**才生效 —— 它把插件加载在自己进程里，开新会话不会重新加载。",
     "action.removed": "已卸载。",
     "action.failed": "没成功：",
     "diagnosis.said": "插件自己报的错：",
@@ -134,6 +158,7 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "diagnosis.regressed": "以前是通的，这次安装之后还没有上报过 —— 开一个新会话试试。",
     "diagnosis.regressed.codex": "Codex 按 hook 的内容哈希记忆信任，所以 connector 一升级就要重新授信：在 Codex 会话里跑 /hooks，逐条通过。",
     "diagnosis.fresh": "刚装好，等你开一个新会话就会生效。",
+    "diagnosis.fresh.inProcess": "刚装好，但**还没重启 {name}** —— 它把插件加载在自己进程里，开新会话不会重新加载。",
     "diagnosis.freshVerified": "刚装好，安装时已自检通过 —— 等你开一个新会话就会生效。",
     done: "完成",
     listFailed: "读不到接入状态：",
@@ -156,6 +181,7 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "action.uninstall": "Uninstall",
     "action.working": "Working…",
     "action.installed": "Installed. It takes effect in your next session.",
+    "action.installed.inProcess": "Installed. **Restart the {name} process** for it to take effect — it loads the plugin inside its own process, and a new session does not reload it.",
     "action.removed": "Uninstalled.",
     "action.failed": "Didn't work: ",
     "diagnosis.said": "The plugin reported: ",
@@ -164,6 +190,7 @@ export const CONNECTOR_TEXT: Record<Language, Record<string, string>> = {
     "diagnosis.regressed": "This used to work, but nothing has been reported since this install — start a new session.",
     "diagnosis.regressed.codex": "Codex keys hook trust to the hook's content hash, so a connector upgrade needs re-trusting: run /hooks in a Codex session and approve each one.",
     "diagnosis.fresh": "Just installed. It takes effect when you start a new session.",
+    "diagnosis.fresh.inProcess": "Just installed, but **{name} has not been restarted** — it loads the plugin inside its own process, and a new session does not reload it.",
     "diagnosis.freshVerified": "Just installed and self-tested at install time — it takes effect when you start a new session.",
     done: "Done",
     listFailed: "Could not read connector status: ",
@@ -221,6 +248,7 @@ interface Pending { harness: string; message: string; kind: "ok" | "error" }
  */
 export function renderConnectors(host: HTMLElement, locale: Language, onChange?: () => void, pending?: Pending): void {
   const text = (key: string) => tr(locale, key);
+
   host.textContent = text("loading");
   const rows = new Map<string, HTMLElement>();
   const say = (harness: string, message: string, kind: "" | "ok" | "error" = "") => {
@@ -246,7 +274,7 @@ export function renderConnectors(host: HTMLElement, locale: Language, onChange?:
     void invoke(command, { harness }).then(
       () => renderConnectors(host, locale, onChange, {
         harness,
-        message: text(command === "install_connector" ? "action.installed" : "action.removed"),
+        message: command === "install_connector" ? installedMessage(locale, harness as Harness) : text("action.removed"),
         kind: "ok",
       }),
       (error: unknown) => renderConnectors(host, locale, onChange, {
