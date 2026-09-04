@@ -13,13 +13,34 @@ export function emotionForSemantic(state: SemanticState): EmotionCue { return EM
 
 export interface StateSnapshot {
   state?: string; sequence?: number;
-  /** 「它具体在干嘛」的一行（工具的 description / 文件名 / 域名 / 搜索词）。空 = 没有。 */
+  /** 「它具体在干嘛」的一行（工具的 description / 文件名 / 域名 / 搜索词 / 命令）。空 = 没有。 */
   doing?: string | null;
+  /** 详情的过期时刻（epoch 秒）。过了就不显示 —— 见下面 `liveDoing`。 */
+  doing_until?: number | null;
   reaction?: { kind?: string; sequence?: number; at?: number } | null;
 }
 
 /** 连续几次读不到状态才回落 idle —— 单次抖动不该让形象掉表情。 */
 const MISSES_BEFORE_IDLE = 3;
+
+/**
+ * 还在有效期内的详情，过期了就是空。
+ *
+ * 🔴 **详情比状态活得久，这是它能被看见的前提。** 工具跑完状态立刻回 idle，而快照是
+ * 「当前值」、这边 200 ms 采一次 —— 短工具的窗口根本采不到。2026-09-04 实机量过
+ * （5 ms 高频采样，Hermes）：带详情的状态只停留 62 / 91 / 184 ms，用户看到的是
+ * 「一闪而过一次」。所以写入侧让详情多挂 1 秒并带上明写的过期时刻，这边照它判断。
+ *
+ * 没有 `doing_until` 的是老连接器写的快照 —— 那时候没有这个字段，照旧显示，
+ * 不能因为升级了皮肤就把老连接器的详情全吞掉。
+ */
+export function liveDoing(snapshot: StateSnapshot, now = Date.now()): string {
+  const doing = typeof snapshot.doing === "string" ? snapshot.doing : "";
+  if (!doing) return "";
+  const until = snapshot.doing_until;
+  if (typeof until !== "number" || !Number.isFinite(until)) return doing;
+  return now / 1000 <= until ? doing : "";
+}
 
 export class SemanticDriver {
   private timer?: number; private lastState?: SemanticState; private lastReactionKey?: string; private lastDoing = ""; private idleRounds = 0; private misses = 0;
@@ -68,7 +89,7 @@ export class SemanticDriver {
       if (!snapshot) return this.miss();
       this.idleRounds = 0; this.misses = 0;
       this.emitChanged(mapHookState(snapshot.state));
-      this.emitDoingChanged(typeof snapshot.doing === "string" ? snapshot.doing : "");
+      this.emitDoingChanged(liveDoing(snapshot));
       this.emitSnapshotReaction(snapshot.reaction);
     } catch { this.miss(); }
   }

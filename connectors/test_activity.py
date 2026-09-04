@@ -38,10 +38,23 @@ def test_newlines_never_reach_the_one_line_pill():
     assert field(description="first\nsecond   third") == "first second third"
 
 
-# 🔴 这三条是这个功能的边界，不是补充测试。
-def test_the_command_line_is_not_shown():
-    """命令行里可能有 token —— 那是用户最不会想到会显示在屏幕上的东西。"""
-    assert field(command='curl -H "Authorization: Bearer sk-secret" https://x') is None
+# 🔴 这几条是这个功能的边界，不是补充测试。
+def test_the_command_line_is_shown():
+    """命令行**现在显示**，包括参数。
+
+    🔴 它曾经被排除，理由是「命令行里可能有 token，那是用户最不会想到会显示在屏幕上的
+    东西」。代价在 2026-09-04 的实机测量里显出来了：
+
+        executing    doing=None          5250 ms   ← terminal，唯一跑得够久的，却没详情
+        researching  doing='README.md'     62 ms   ← 有详情，但太短看不见
+
+    两头正好错开 —— 看得见的不描述，能描述的看不见。定案（晓，2026-09-04）：这是本机
+    工具，命令可见可接受。**文件内容仍然排除**（见下一条），那是量级完全不同的东西。
+    """
+    assert field(command='curl -H "Authorization: Bearer sk" https://x') \
+        == 'curl -H "Authorization: Bearer sk" https://x'
+    # description 仍然优先 —— 那是 agent 专门写给人看的
+    assert field(command="npm test", description="跑一遍测试") == "跑一遍测试"
 
 
 def test_file_contents_are_not_shown():
@@ -87,9 +100,13 @@ def test_hermes_names_its_path_fields_differently():
     assert field(path="/tmp/a/b.py", description="整理今天的记录") == "整理今天的记录"
 
 
-def test_command_stays_out_even_next_to_the_new_path_fields():
-    # 新加字段不能顺手把 command 带进来：命令行可能含 token
-    assert field(command="curl -H 'Authorization: Bearer sk-xxx' https://x") is None
+def test_file_contents_stay_out_even_though_command_came_in():
+    # 放行 command 不等于放行一切：文件正文、替换文本仍然排除 —— 那是量级完全不同的东西，
+    # 一整个文件塞进状态栏既没用又危险。
+    assert field(content="the whole file body") is None
+    assert field(new_string="the replacement text") is None
+    # 白名单是有优先级的：path 在场时挑 path，不会因为多了 command 就乱序
+    assert field(command="cat x", path="/tmp/a/b.md") == "b.md"
 
 
 def test_the_arguments_envelope_is_unwrapped():
@@ -107,10 +124,54 @@ def test_the_arguments_envelope_is_unwrapped():
     # 坏 JSON / 不是对象 → 没详情，但不能炸
     assert field(arguments="{not json") is None
     assert field(arguments=["a", "b"]) is None
-    # 信封里也照样排除 command
-    assert field(arguments='{"command": "curl -H \'Authorization: Bearer sk\' x"}') is None
+    # 信封里的 command 同样显示（和扁平形状一致）
+    assert field(arguments='{"command": "npm run build"}') == "npm run build"
 
 
 def test_arguments_is_only_an_envelope_when_it_is_alone():
     # 真有工具的参数就叫 arguments、且还带别的键时，不能当信封拆
     assert field(arguments="whatever", path="/tmp/a/b.md") == "b.md"
+
+
+
+def test_the_detail_outlives_the_tool_that_produced_it(tmp_path, monkeypatch):
+    """🔴 详情必须比状态活得久，否则**根本来不及被看见**。
+
+    工具跑完状态立刻回 idle，而快照是「当前值」、皮肤 200 ms 采一次。
+    2026-09-04 实机高频采样（5 ms）量到的窗口：62 / 91 / 184 ms —— 命中率
+    31% / 46% / 92%，用户的原话是「看到一次一闪而过」。
+
+    所以状态照实回落（不撒谎），详情带一个明写的过期时刻继续挂着。
+    """
+    import json, time
+    from state_machine import update, DOING_HOLD_SECONDS
+
+    state = tmp_path / "agent-avatar-state.json"
+    monkeypatch.setenv("AGENT_AVATAR_STATE_PATH", str(state))
+    (tmp_path / "agent-avatar-options.json").write_text('{"activity": true}', encoding="utf-8")
+
+    def ev(name, **kw):
+        update({"hook_event_name": name, "session_id": "s", "tool_name": kw.get("tool_name"),
+                "tool_input": kw.get("tool_input"), "extra": {}}, "Hermes")
+
+    ev("on_session_start")
+    ev("pre_tool_call", tool_name="read_file", tool_input={"path": "/a/b/README.md"})
+    busy = json.loads(state.read_text(encoding="utf-8"))
+    assert busy["state"] == "researching" and busy["doing"] == "README.md"
+    assert busy["doing_until"] > time.time()
+
+    ev("post_tool_call", tool_name="read_file", tool_input={"path": "/a/b/README.md"})
+    after = json.loads(state.read_text(encoding="utf-8"))
+    # 状态照实回落，详情还在 —— 这一条正是修复的核心
+    assert after["state"] == "idle", after
+    assert after["doing"] == "README.md", "工具一结束详情就没了，短工具永远看不见"
+    assert after["doing_until"] == busy["doing_until"], "过期时刻应当沿用，不该被续命"
+
+    # 过期之后不再沿用。只挪 `time.time`，别整个换掉 time 模块 ——
+    # 锁那一段用的是 `time.monotonic`，换掉会连锁一起弄坏。
+    import state_machine
+    monkeypatch.setattr(state_machine.time, "time", lambda: busy["doing_until"] + 1)
+    ev("pre_llm_call")
+    expired = json.loads(state.read_text(encoding="utf-8"))
+    assert "doing" not in expired, f"过期了还挂着：{expired}"
+    assert DOING_HOLD_SECONDS >= 1.0

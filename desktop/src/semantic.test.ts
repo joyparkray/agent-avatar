@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { emotionForSemantic, mapHookState, SemanticDriver, type StateSnapshot } from "./semantic";
+import { emotionForSemantic, mapHookState, SemanticDriver, type StateSnapshot, liveDoing } from "./semantic";
 
 describe("six-state semantics", () => {
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -88,5 +88,27 @@ describe("详情那一行", () => {
     const { driver, said } = drive([{ state: "executing", doing: "x" }, { state: "executing" }]);
     for (let round = 0; round < 2; round += 1) await (driver as never as { tick(): Promise<void> }).tick();
     expect(said).toEqual(["x", ""]);
+  });
+});
+
+describe("详情的有效期", () => {
+  // 🔴 详情比状态活得久，这是它能被看见的前提：工具跑完状态立刻回 idle，而这边 200ms
+  // 采一次。2026-09-04 实机高频采样量到的窗口是 62 / 91 / 184 ms —— 用户只看到一闪。
+  // 写入侧因此让详情多挂 1 秒并带上明写的过期时刻，这边照它判断。
+  it("有效期内显示，过期了当空", () => {
+    const now = 1_000_000_000_000;             // ms
+    const until = now / 1000 + 0.5;            // 还剩 0.5 秒
+    expect(liveDoing({ doing: "README.md", doing_until: until }, now)).toBe("README.md");
+    expect(liveDoing({ doing: "README.md", doing_until: until }, now + 1000)).toBe("");
+  });
+
+  it("老连接器没有 doing_until —— 照旧显示，不能因为升级皮肤就把它吞掉", () => {
+    expect(liveDoing({ doing: "README.md" }, Date.now())).toBe("README.md");
+    expect(liveDoing({ doing: "README.md", doing_until: null }, Date.now())).toBe("README.md");
+  });
+
+  it("没有详情就是空", () => {
+    expect(liveDoing({}, Date.now())).toBe("");
+    expect(liveDoing({ doing: null }, Date.now())).toBe("");
   });
 });

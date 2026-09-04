@@ -51,6 +51,21 @@ CONNECTOR_VERSION = "1.1.0"
 # How long a reaction signal stays in the snapshot: the skin polls every 200 ms, so
 # 2 s is enough for it to read the signal and fire it once (deduplicated by `at`).
 REACTION_HOLD_SECONDS = 2.0
+# 详情那一行在快照里活多久。**这不是装饰，是它能不能被看见的前提。**
+#
+# 🔴 详情只在工具跑着的那几档写（见 ACTIVITY_STATES），而工具结束时状态立刻回 idle。
+# 快照是「当前值」，皮肤每 200 ms 采一次 —— 短于 200 ms 的窗口基本采不到。
+# 2026-09-04 实机量过（5 ms 高频采样，Hermes）：
+#
+#     researching  doing='README.md'    停留  62 ms
+#     researching  doing='.hermes'      停留  91 ms
+#     researching  doing='README.md'    停留 184 ms
+#     executing    doing=None          停留 5250 ms   ← 唯一够长的那个没有详情
+#
+# 三条带详情的窗口命中率约 31% / 46% / 92%，用户的原话是「看到一次一闪而过」。
+# 所以详情要**比状态活得久一点**：状态照实回 idle（不撒谎），详情带一个明写的过期
+# 时间继续挂着，皮肤过期就不显示。1 s 对 200 ms 轮询是必中，也短到不会让人以为还在跑。
+DOING_HOLD_SECONDS = 1.0
 BACKGROUND_REVIEW_MARKER = (
     "You can only call memory and skill management tools. "
     "Other tools will be denied at runtime"
@@ -116,7 +131,8 @@ ACTIVITY_STATES = frozenset({"executing", "researching", "reviewing", "syncing",
 # `path` and `filename` are the same shape and the same privacy profile as `file_path`
 # — a name on disk — and get the same basename reduction. `command` stays out, for the
 # reason above.
-ACTIVITY_FIELDS = ("description", "file_path", "path", "filename", "url", "query", "pattern")
+ACTIVITY_FIELDS = ("description", "file_path", "path", "filename", "url", "query", "pattern",
+                   "command")
 
 # 只留文件名的那几个 —— 全路径既超长又常常泄露目录结构
 PATH_FIELDS = frozenset({"file_path", "path", "filename"})
@@ -797,8 +813,10 @@ def update(payload, label, audio=None, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDES
         sequence = previous.get("sequence", 0)
         if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 0:
             sequence = 0
-        # 只在忙的时候带详情：idle 还挂着一句 "npm test" 看起来像卡住了，而 writing 本来就
-        # 没有工具在跑。error 带上，因为那时候「是哪个工具错了」正是唯一想知道的事。
+        # 只在忙的时候**产生**详情：writing 本来就没有工具在跑。error 带上，因为那时候
+        # 「是哪个工具错了」正是唯一想知道的事。
+        # 产生之后它会多活 DOING_HOLD_SECONDS（见下），否则短工具的详情根本来不及被看见；
+        # 「idle 还挂着一句 npm test 像卡住了」由那个过期时间挡住，而不是靠立刻抹掉。
         doing = activity_from(payload) if state in ACTIVITY_STATES and activity_allowed() else None
         snapshot = {
             "state": state,
@@ -822,6 +840,15 @@ def update(payload, label, audio=None, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDES
                 data.pop("reaction", None)
         if doing:
             snapshot["doing"] = doing
+            snapshot["doing_until"] = time.time() + DOING_HOLD_SECONDS
+        else:
+            # 这一条没有详情（idle/writing，或者字段不在白名单里）—— 把上一条还没过期的
+            # 带过来，否则一次工具调用的详情会在几十毫秒内被下一个事件抹掉。
+            until = previous.get("doing_until")
+            if isinstance(until, (int, float)) and not isinstance(until, bool) \
+                    and time.time() < until and isinstance(previous.get("doing"), str):
+                snapshot["doing"] = previous["doing"]
+                snapshot["doing_until"] = float(until)
         carried = audio if audio else previous.get("audio")
         if isinstance(carried, dict) and carried:
             snapshot["audio"] = carried
