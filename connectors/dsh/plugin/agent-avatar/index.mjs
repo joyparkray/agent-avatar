@@ -102,9 +102,12 @@ export function apply(ctx) {
         // 🔴 `arguments` 要带上，否则状态栏第二行（「它具体在做什么」）对 dsh **永远是空的**
         // —— 状态机拿 `tool_input` 里的 description/path/query 那几个字段拼那一行，没有
         // 输入就没有可拼的东西。实机 2026-09-03：dsh 只报得出一级状态。
-        // dsh 那边是个 **JSON 字符串**（`arguments: '{"text":"…"}'`，见
-        // dsh-client-connection/lib/client.js），所以要先解析；解析不了就不带，
-        // 少一行详情，不能因此丢掉整个事件。
+        // 出处是 dsh 自己的 agent 循环（`@deepseek-ai/dsh-agent-loop/lib/index.js`）：
+        //     "tool/call", { turn, step, callId: block.id, name: block.name,
+        //                    arguments: block.arguments }
+        // `block.arguments` 按 LLM tool-call 的惯例是 **JSON 字符串**，所以要先解析；
+        // `toolInput` 对字符串和对象都收，解析不了就不带 —— 少一行详情，
+        // 不能因此丢掉整个事件。
         return void emit({ hook_event_name: "pre_tool_call", session_id: id, turn_id: String(data.turn),
                           tool_use_id: data.callId, tool_name: data.name,
                           tool_input: toolInput(data.arguments) });
