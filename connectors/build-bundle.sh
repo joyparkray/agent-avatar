@@ -47,7 +47,13 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 out=${1:-$here/../desktop/src-tauri/resources/connectors}
 mkdir -p "$out"
 out=$(CDPATH= cd -- "$out" && pwd)
+. "$here/pick-python.sh"
+python=$(pick_python) || exit 1
 tree=$out/marketplace
+# 🔴 **先铺进暂存目录，最后再整体换上。** 中途失败（解释器不对、某一家的冒烟自检没过）
+# 时，留在原地的要么是上一棵好树、要么什么都没有 —— 绝不能是一棵**缺几家的半成品**：
+# 那种树能骗过 app 的自检（它只看目录在不在），于是坏包被打出去，装的时候才炸。
+staging=$out/.marketplace-staging
 
 # The version comes from Claude Code's plugin.json — the five ship together, so reading
 # one and comparing the rest turns "are they all the same version" into a check that fails.
@@ -71,9 +77,9 @@ core_version=$(sed -n 's/^CONNECTOR_VERSION = "\([^"]*\)".*/\1/p' "$here/../brid
 
 # assemble.sh runs a smoke test per harness as it goes: a missing core module is silent
 # in a real registration (the hook is skipped, the avatar just never moves).
-rm -rf "$tree"
+rm -rf "$staging"
 for harness in hermes claude-code codex dsh workbuddy; do
-  "$here/assemble.sh" "$harness" "$tree/plugins/$harness/agent-avatar"
+  "$here/assemble.sh" "$harness" "$staging/plugins/$harness/agent-avatar"
 done
 
 description='Aggregates your agent'"'"'s session, tool and subagent events into a semantic state for the Agent Avatar desktop companion to read. A pure observer: it changes nothing about the agent and takes no part in permission decisions.'
@@ -81,8 +87,8 @@ description='Aggregates your agent'"'"'s session, tool and subagent events into 
 # Claude Code: `source` is relative to the marketplace root.
 # **No version field** — official guidance is that plugin.json wins when both carry one,
 # without a warning, so writing it twice only means one day they disagree in silence.
-mkdir -p "$tree/.claude-plugin"
-cat > "$tree/.claude-plugin/marketplace.json" <<JSON
+mkdir -p "$staging/.claude-plugin"
+cat > "$staging/.claude-plugin/marketplace.json" <<JSON
 {
   "name": "agent-avatar",
   "description": "Agent Avatar connectors — let a desktop mascot follow along with your agent",
@@ -102,8 +108,8 @@ JSON
 # Codex: manifest lives in `.agents/plugins/`, `source` is an object, and the path must
 # start with `./` — **an absolute path there is silently dropped** (the plugin simply
 # never appears in the list; measured on macOS).
-mkdir -p "$tree/.agents/plugins"
-cat > "$tree/.agents/plugins/marketplace.json" <<JSON
+mkdir -p "$staging/.agents/plugins"
+cat > "$staging/.agents/plugins/marketplace.json" <<JSON
 {
   "name": "agent-avatar",
   "interface": { "displayName": "Agent Avatar" },
@@ -119,8 +125,8 @@ cat > "$tree/.agents/plugins/marketplace.json" <<JSON
 JSON
 
 # WorkBuddy: same shape as Claude Code, manifest directory is `.codebuddy-plugin/`.
-mkdir -p "$tree/.codebuddy-plugin"
-cat > "$tree/.codebuddy-plugin/marketplace.json" <<JSON
+mkdir -p "$staging/.codebuddy-plugin"
+cat > "$staging/.codebuddy-plugin/marketplace.json" <<JSON
 {
   "name": "agent-avatar",
   "description": "Agent Avatar connectors — let a desktop mascot follow along with your agent",
@@ -141,7 +147,7 @@ JSON
 
 # A broken manifest makes a harness leave that entry out — no error anywhere. So check
 # the three of them here, where a failure is loud.
-AGENT_AVATAR_TREE=$tree "${AGENT_AVATAR_PYTHON:-python3}" - <<'PY'
+AGENT_AVATAR_TREE=$staging "$python" - <<'PY'
 import json, os
 root = os.environ["AGENT_AVATAR_TREE"]
 manifests = {
@@ -167,6 +173,10 @@ PY
 # file nobody wants to edit, and this one should be edited often (every trap a real
 # machine hits belongs in its "installed but nothing moves" section).
 # English is primary; Chinese is one click away, same convention as the app.
+# 全部通过了才换上 —— 这一步之前的任何失败都不会动到已经在用的那棵树。
+rm -rf "$tree"
+mv "$staging" "$tree"
+
 for language in "" ".zh"; do
   sed -e "s|{{VERSION}}|$version|g" -e "s|{{REPO}}|$REPO|g" \
       "$here/marketplace-README$language.md" > "$out/README$language.md"

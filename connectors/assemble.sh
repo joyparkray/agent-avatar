@@ -18,13 +18,14 @@
 # 占位程序（跑它会**弹出安装对话框**），Windows 上它是 0 字节的应用商店存根。
 set -eu
 
-python=${AGENT_AVATAR_PYTHON:-python3}
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$here/pick-python.sh"
+python=$(pick_python) || exit 1
 
 # 自检会 import 组装好的模块，而那会在插件目录里留下 __pycache__ ——
 # 这棵树是要发布给所有人的，字节码是**本机 Python 版本专属**的垃圾，别让它跟着发出去。
 export PYTHONDONTWRITEBYTECODE=1
 
-here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 bridge="$here/../bridge"
 
 assemble_claude_code() {
