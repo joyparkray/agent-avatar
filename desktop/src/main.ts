@@ -15,7 +15,7 @@ import { errorMessage } from "./errors";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { buildFallbackMenu, buildNativeMenu, type NativeMenuHandlers } from "./native-menu";
 import { IdleAutonomy } from "./idle";
-import { CONNECTOR_TEXT, renderConnectors, type ConnectorState } from "./connectors";
+import { CONNECTOR_TEXT, HARNESS_LABELS, renderConnectors, type ConnectorState, type Harness } from "./connectors";
 
 /** 用户装的皮肤（Rust 侧扫数据目录得来）。 */
 type InstalledModel = { dir: string; label: string; model3: string; adapted: boolean; displayNames?: Record<string, string>; switches?: SwitchTable };
@@ -266,6 +266,8 @@ let stateLabels: Partial<Record<SemanticState, string>> = {};
 /** 「它具体在干嘛」的一行。空 = 不显示第二行。 */
 let doing = "";
 let detailEnabled = readActivityDetail();
+/** 「自动」模式下这一条状态是谁写的。钉死某一家时为空 —— Rust 侧只在自动下才标。 */
+let activeSource = "";
 let lastSnapshot: Readonly<AvatarState> | undefined;
 
 function stateText(): string {
@@ -277,7 +279,13 @@ function stateText(): string {
 function renderStatus(): void {
   currentState = stateText();
   const warning = notice ? UNSUPPORTED_CUBISM_TEXT[uiLanguage] : "";
-  const first = [currentState, manualActivity(), warning, clickThroughHint ? CLICK_THROUGH_HINT[uiLanguage] : ""].filter(Boolean).join(" · ");
+  // 🔴 **来源名只在「自动」下出现。** 自动是「谁最近写就听谁的」，同时开着两个 agent 时
+  // 状态栏会在它们之间跳，而用户完全不知道自己在看哪一家 —— 2026-09-04 实机就栽在这儿：
+  // 一个 Claude Code 会话每调一次工具就写一次状态文件，一直压过正在被测的 Hermes，
+  // 看起来像 Hermes 坏了。钉死某一家时用户已经知道在看谁，再加前缀是噪音，所以不加
+  //（判据在 Rust 侧：非自动模式根本不返回 source）。
+  const from = activeSource && currentState ? HARNESS_LABELS[activeSource as Harness] ?? "" : "";
+  const first = [from, currentState, manualActivity(), warning, clickThroughHint ? CLICK_THROUGH_HINT[uiLanguage] : ""].filter(Boolean).join(" · ");
   // 🔴 详情自己一行。挤在第一行里放不下：实测 description 中位 32 字符、90% 分位 45，
   // 而一行的预算约 46 个拉丁字符 —— 再叠上用户自定义的状态显示名（上限 24）就必然折行。
   // 用两个子节点而不是拼一个字符串：第二行要能单独设样式（更小、更淡），也要能整行省略。
@@ -514,7 +522,9 @@ log({ event: "endpoint:discovered", url: discovered?.url ?? null, hasToken: Bool
     // TMPDIR 不一致，看起来都像「接上了但 Echo 不变脸」。只在有无之间翻转时记一条，不刷屏。
     let stateFileSeen: boolean | undefined;
     new SemanticDriver(async () => {
-      const snapshot = await invoke<{ state?: string; sequence?: number; token?: string; reaction?: { kind?: string; sequence?: number; at?: number } | null } | null>("read_semantic_state", { source: stateSource });
+      const snapshot = await invoke<{ state?: string; sequence?: number; token?: string; source?: string; reaction?: { kind?: string; sequence?: number; at?: number } | null } | null>("read_semantic_state", { source: stateSource });
+      // 只有「自动」下 Rust 才带 source 回来；钉死某一家时它是 undefined，前缀自然不出现
+      activeSource = snapshot?.source ?? "";
       if (stateFileSeen !== Boolean(snapshot)) { stateFileSeen = Boolean(snapshot); log({ event: "semantic:state-file", found: stateFileSeen }); }
       const token = snapshot?.token ?? "";
       if (token && token !== currentToken) {

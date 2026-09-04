@@ -52,6 +52,17 @@ fn read_state_file(path: &Path) -> Option<Value> {
 ///
 /// 固定优先级会出事：迁移期两个 hook 的文件并存，只写过一次的那个排在前面就会**盖住正在更新的**，
 /// 表现为状态永远停在某一格。同一个坑也适用于上次开机遗留的文件。取最新的那个才是「谁在写听谁的」。
+/// 同 `newest_first`，但把每条路径原来属于哪一家一起带过去 —— 「自动」模式要把它标进快照。
+fn newest_first_tagged(paths: Vec<(&'static str, PathBuf)>) -> Vec<(&'static str, PathBuf)> {
+    let mut dated: Vec<_> = paths.into_iter()
+        .filter_map(|(harness, path)| {
+            fs::metadata(&path).ok()?.modified().ok().map(|at| (at, harness, path))
+        })
+        .collect();
+    dated.sort_by(|left, right| right.0.cmp(&left.0));
+    dated.into_iter().map(|(_, harness, path)| (harness, path)).collect()
+}
+
 fn newest_first(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut dated: Vec<_> = paths.into_iter()
         .filter_map(|path| fs::metadata(&path).ok()?.modified().ok().map(|at| (at, path)))
@@ -193,8 +204,33 @@ pub fn read_semantic_state(source: Option<String>) -> Option<Value> {
     // 显式指定是用户意图，压过一切
     if let Ok(path) = env::var("AGENT_AVATAR_STATE_PATH") { return read_state_file(&PathBuf::from(path)); }
     let harnesses = sources_to_search(source.as_deref())?;
-    let paths = harnesses.iter().flat_map(|h| candidate_paths(h)).collect();
-    newest_first(paths).into_iter().find_map(|path| read_state_file(&path))
+    // 🔴 **只有「自动」下才标来源。** 钉死某一家时用户已经知道在看谁，多一个前缀是噪音；
+    // 而「自动」是「谁最近写就听谁的」，同时开着两个 agent 时状态栏会在它们之间跳，
+    // 用户完全不知道自己在看哪一家 —— 2026-09-04 实机就栽在这儿：一个 Claude Code 会话
+    // 每调一次工具就写一次状态文件，一直压过正在被测的 Hermes，看起来像 Hermes 坏了。
+    let mark_source = marks_source(source.as_deref());
+    let paths: Vec<(&'static str, PathBuf)> = harnesses.iter()
+        .flat_map(|h| candidate_paths(h).into_iter().map(move |path| (*h, path)))
+        .collect();
+    newest_first_tagged(paths).into_iter().find_map(|(harness, path)| {
+        let mut value = read_state_file(&path)?;
+        if mark_source {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("source".to_owned(), Value::String(harness.to_owned()));
+            }
+        }
+        Some(value)
+    })
+}
+
+/// 这一条状态要不要标出是谁写的。**只有「自动」下才标。**
+///
+/// 🔴 钉死某一家时用户已经知道在看谁，多一个前缀是噪音；而「自动」是「谁最近写就听谁的」，
+/// 同时开着两个 agent 时状态栏会在它们之间跳，用户完全不知道自己在看哪一家。
+/// 2026-09-04 实机就栽在这儿 —— 一个 Claude Code 会话每调一次工具就写一次状态文件，
+/// 一直压过正在被测的 Hermes，看起来像 Hermes 坏了，查了很久才发现是显示被抢。
+fn marks_source(source: Option<&str>) -> bool {
+    matches!(source, None | Some("auto"))
 }
 
 /// 把「状态来源」设置解析成要查的 harness 列表。`None` = 关闭（常驻 idle）。
@@ -293,7 +329,7 @@ fn fetch_path(base_url: &str, path: &str) -> Result<String, ()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_session_token, hermes_status, newest_first, normalize_semantic_state, read_state_file, sources_to_search, state_file_name};
+    use super::{extract_session_token, hermes_status, newest_first, marks_source, normalize_semantic_state, read_state_file, sources_to_search, state_file_name};
     #[cfg(target_os = "macos")]
     use super::parse_listening_ports;
     use std::{env, fs, io::{Read, Write}, net::TcpListener, process, thread, time::{SystemTime, UNIX_EPOCH}};
@@ -435,6 +471,21 @@ mod tests {
     #[test]
     fn state_source_off_reads_nothing() {
         assert_eq!(sources_to_search(Some("off")), None);
+    }
+
+    /// 「自动」下要标出这一条状态是谁写的；钉死某一家时**不标**。
+    ///
+    /// 判据放在 `marks_source` 而不是界面层：那一层已经有语言、手动动作、点击穿透提示
+    /// 四样东西在拼同一行，再塞一个「现在是不是自动模式」的条件进去，下次改的人必然漏掉一个。
+    #[test]
+    fn only_auto_marks_which_harness_the_state_came_from() {
+        assert!(marks_source(None), "没给来源 = 自动");
+        assert!(marks_source(Some("auto")));
+        for pinned in ["hermes", "claude-code", "codex", "workbuddy", "dsh"] {
+            assert!(!marks_source(Some(pinned)), "钉死 {pinned} 时不该标来源");
+        }
+        // 「关闭」根本读不到状态，标不标都无所谓，但也不该标
+        assert!(!marks_source(Some("off")));
     }
 
     #[test]
