@@ -68,11 +68,11 @@ machine. If you have neither a Node nor the npm `codebuddy`, install the npm pac
 Each connector directory has its own guide, including the exact events used and the
 gotchas found while integrating it:
 
-- [Claude Code](../connectors/claude-code/README.md)
-- [Codex](../connectors/codex/README.md) — also covers ChatGPT Voice lip sync
-- [Hermes](../connectors/hermes/README.md)
-- [DeepSeek Harness](../connectors/dsh/README.md)
-- [WorkBuddy](../connectors/workbuddy/README.md)
+- [Claude Code](../connectors/claude-code/README.md) ([中文](../connectors/claude-code/README.zh.md))
+- [Codex](../connectors/codex/README.md) ([中文](../connectors/codex/README.zh.md)) — also covers ChatGPT Voice lip sync
+- [Hermes](../connectors/hermes/README.md) ([中文](../connectors/hermes/README.zh.md))
+- [DeepSeek Harness](../connectors/dsh/README.md) ([中文](../connectors/dsh/README.zh.md))
+- [WorkBuddy](../connectors/workbuddy/README.md) ([中文](../connectors/workbuddy/README.zh.md))
 
 ## Adding a harness
 

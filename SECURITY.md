@@ -40,20 +40,21 @@ Agent Avatar is a desktop application with a few capabilities worth knowing abou
   connectors README — for the cases the app cannot reach (a harness in WSL, a container,
   or on another machine).
 
-  **It can check for a newer version of itself** (Settings → 关于 / About, on by
+  **It can check for a newer version of itself** (Settings → About, on by
   default, switchable off). That reads one version number from this project's GitHub
   releases and nothing else: no download, no install. With the switch off it makes no
   request at all.
-- **It captures system audio** (macOS Core Audio process tap) to drive lip sync, only
-  while that audio source is selected. Audio is reduced to a loudness value and is never
-  recorded or written to disk.
+- **It captures system audio** to drive lip sync, only while that audio source is
+  selected — a Core Audio process tap on macOS, WASAPI loopback on Windows. On either
+  platform the audio is reduced to a loudness value and is never recorded or written to
+  disk.
 - **It reads a state file** in the platform temp directory, written by the connector. It
   holds the agent's current state — one of eight fixed words, a fixed phrase naming the
   harness, a counter and a timestamp — plus, for Hermes only, the session token the hook
   picked up. It does **not** contain your prompts or the agent's output.
 
-  **One line is added only if you switch it on** (Settings → Status bar → *Show what it is
-  doing*, off by default). With it on, the connector also writes a short line naming the
+  **One line is added only if you switch it on** (Settings → General → Status bar →
+  *Show what it is doing*, off by default). With it on, the connector also writes a short line naming the
   current step: the tool's own one-line description, or a file **name** (never the path),
   or a **host** (never the rest of the URL), or a search term — capped at 40 characters.
   It never writes a command line, file contents or a replacement string: a command line
@@ -80,15 +81,27 @@ default log path is world-readable.
 
 ## Sandboxing and notarisation
 
-Release builds are signed with an Apple Developer ID certificate (hardened runtime,
-timestamped) and notarised by Apple, so Gatekeeper accepts a normal double-click. You can
-check any download yourself:
+**macOS release builds** are signed with an Apple Developer ID certificate (hardened
+runtime, timestamped) and notarised by Apple, so Gatekeeper accepts a normal double-click.
+You can check any download yourself:
 
 ```bash
-spctl -a -t open --context context:primary-signature -vv "Agent-Avatar-1.0.0-Intel.dmg"
+spctl -a -t open --context context:primary-signature -vv "Agent.Avatar_1.1.0_aarch64.dmg"
 # expected: source=Notarized Developer ID
 #           origin=Developer ID Application: Xiaoxiao Sun (Z5G598ZZ8S)
 ```
+
+**Windows builds are not code-signed.** I do not hold a Windows code-signing certificate:
+they are issued per year against a paid identity check, and for a free project built in
+spare time that cost is hard to justify. The practical consequence is that SmartScreen
+shows an "unrecognised app" warning on first run (More info → Run anyway), and that the
+installer carries no publisher identity you can verify from the file itself. What you can
+verify instead: release assets are built by the [CI workflow](.github/workflows/ci.yml)
+from the tagged commit, and GitHub attaches a SHA-256 digest to every asset on the
+Releases page — compare it with `Get-FileHash` before running the installer. If you would
+rather not trust an unsigned binary at all, [build from source](CONTRIBUTING.md); that is
+a supported path on Windows, and CI builds the NSIS installer there on every push and
+pull request.
 
 The app is **not** sandboxed: it runs connector install scripts and reads the agent state
 file, both of which a sandbox would block. Download only from the official Releases page.

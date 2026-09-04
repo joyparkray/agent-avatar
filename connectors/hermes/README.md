@@ -1,60 +1,79 @@
-# Hermes 适配层（可整体摘除的边界）
+# Hermes adapter (a boundary that can be removed whole)
 
-> M1 §1.2 的落点：**删掉这条边界，Agent Avatar 仍然完整可用** —— 形象、动作、文件/全局音源都不依赖
-> Hermes。装了 Hermes 的用户额外获得语义表情与 TTS 口型。
+<p align="center">
+  <b>English</b> · <a href="README.zh.md">简体中文</a>
+</p>
 
-## 边界包含什么
+> What M1 §1.2 lands on: **delete this boundary and Agent Avatar is still complete** — the
+> character, the motions and the file/global audio sources depend on nothing from Hermes.
+> Users who do run Hermes get semantic expressions and TTS lip sync on top.
 
-| 位置 | 作用 |
+## What the boundary contains
+
+| Location | Role |
 |:--|:--|
-| `plugin/agent-avatar/` | **默认接入方式**：Hermes 插件（`plugin.yaml` + `__init__.py`），事件翻译 + token 带出 |
-| `install-plugin.sh` | 把插件三个文件拷进 `~/.hermes/plugins/agent-avatar/`，**不碰用户的 config.yaml** |
-| `install-plugin.ps1` | 同上，Windows 侧（PowerShell）。Hermes 是五家里**唯一不需要改解释器**的一家：插件是 in-process 的 Python 包，跑在 Hermes 自己的解释器里、不 spawn 进程，所以「`python3` 在 Windows 上是应用商店存根」那颗雷碰不到它 —— 也因此它是 Windows 接线的**基线** |
-| `agent-avatar-hook.py` | 备用的 shell hook 入口，行为与插件一致 |
-| `test_agent_avatar_hook.py` / `test_agent_avatar_plugin.py` | 两条入口的单测，不依赖皮肤、不依赖任何第三方项目 |
-| `../../src-tauri/src/hermes.rs` | `read_semantic_state` / `discover_audio_endpoint` 两个 Tauri 命令 |
-| `../../../docs/HERMES-SETUP.md` | 用户如何安装 |
+| `plugin/agent-avatar/` | **the default integration**: a Hermes plugin (`plugin.yaml` + `__init__.py`) that translates events and carries the token out |
+| `hermes plugins install` | how the plugin is registered — **without touching the user's config.yaml**. Hermes installs from git only, so the built tree is committed to a throwaway repository first; see [the connectors README](../marketplace-README.md) |
+| — | Hermes is the one harness of the five that **needs no interpreter localisation**: the plugin is an in-process Python package running inside Hermes's own interpreter and spawns nothing, so the "`python3` is a Store stub on Windows" mine cannot go off here — which also made it the **baseline** for the Windows wiring |
+| `agent-avatar-hook.py` | the fallback shell-hook entry point; behaves identically to the plugin |
+| `test_agent_avatar_hook.py` / `test_agent_avatar_plugin.py` | unit tests for both entry points, depending on neither the avatar nor any third-party project |
+| `../../desktop/src-tauri/src/hermes.rs` | the two Tauri commands `read_semantic_state` / `discover_audio_endpoint` |
+| `../../docs/CONNECTORS.md` | how a user installs it |
 
-**不在这条边界里**：`../../bridge/state_machine.py` 是 harness 无关的共用状态机（M3 起由
-Claude Code / Codex 等适配层共用），摘 Hermes 时**不要删它**。
+**Not part of this boundary**: `../../bridge/state_machine.py` is the harness-agnostic
+shared state machine (since M3 it is shared by the Claude Code, Codex and other adapters).
+**Do not delete it** when removing Hermes.
 
-## 两条入口，一个状态机
+## Two entry points, one state machine
 
 ```
-Hermes 插件 (in-process)  ┐
-                          ├─► _payload() 翻译 ─► bridge/state_machine.update() ─► 状态文件
-shell hook (子进程)        ┘
+Hermes plugin (in-process)  ┐
+                            ├─► _payload() translation ─► bridge/state_machine.update() ─► state file
+shell hook (subprocess)     ┘
 ```
 
-`plugin/agent-avatar/__init__.py` 的 `_payload()` 复刻了 `agent/shell_hooks.py:_serialize_payload()`
-的翻译规则，所以**两条入口喂给状态机的 payload 是同一个形状** —— 状态机里没有为插件写的第二套分支。
+`_payload()` in `plugin/agent-avatar/__init__.py` reproduces the translation rules of
+`agent/shell_hooks.py:_serialize_payload()`, so **both entry points feed the state machine
+the same shape** — there is no second branch inside the state machine written for the
+plugin.
 
-Hermes 的事件名**就是**状态机的内部事件词表（历史形成，不是依赖），
-所以 Hermes 这层不需要事件名映射表；别家 harness 需要。
+Hermes's event names simply **are** the state machine's internal vocabulary (a historical
+accident, not a dependency), so this layer needs no event-name mapping table. Other
+harnesses do.
 
-## 为什么插件是默认（而不是 shell hook）
+## Why the plugin is the default (rather than the shell hook)
 
-- 不改用户的 `~/.hermes/config.yaml`（YAML 是 user-owned，改坏了是我们的锅）；
-- 不需要 shell-hook allowlist，也不需要 `hooks_auto_accept: true`
-  —— 那是 Hermes 给 CI/headless 用的全局开关，会让**所有**未见过的 shell hook 免确认；
-- 事件列表在 `plugin.yaml` 里是一个 YAML 列表，「10 段 YAML 漏一段」的坑不存在。
+- it does not modify the user's `~/.hermes/config.yaml` (YAML is user-owned; breaking it
+  would be our fault);
+- it needs neither a shell-hook allowlist nor `hooks_auto_accept: true` — that is Hermes's
+  global switch for CI and headless use, and it exempts **every** unseen shell hook from
+  confirmation;
+- the event list is a YAML list inside `plugin.yaml`, so the "ten YAML blocks and one of
+  them is missing" trap does not exist.
 
-代价：插件 in-process 运行，而 Hermes 的 `invoke_hook` 只包了 try/except、**没有超时**。
-所以 `bridge/state_machine.py` 的落盘是非阻塞的（`LOCK_NB` + 0.5s 有界重试，拿不到就丢事件），
-且不做 `fsync` —— 瞬态状态文件不需要掉电持久性，`os.replace` 的原子性够了。
+The cost: the plugin runs in-process, and Hermes's `invoke_hook` only wraps it in
+try/except — **there is no timeout**. So the write in `bridge/state_machine.py` is
+non-blocking (`LOCK_NB` plus a bounded 0.5s retry; the event is dropped if the lock cannot
+be taken) and does not `fsync` — a transient state file needs no power-loss durability, and
+the atomicity of `os.replace` is enough.
 
-## 怎么摘
+## How to remove it
 
-1. 删掉本目录（保留 `../../bridge/`）。
-2. 删 `src-tauri/src/hermes.rs`，并从 `lib.rs` 去掉 `mod hermes;` 与 `generate_handler!` 里那两个
-   `hermes::` 命令。
+1. Delete this directory (keep `../../bridge/`).
+2. Delete `desktop/src-tauri/src/hermes.rs`, and drop `mod hermes;` plus the two `hermes::`
+   commands from `generate_handler!` in `lib.rs`.
 
-前端不用动：`SemanticDriver` 调不到命令会走失败降级（连续 3 次读不到 → 常驻 `idle`），
-`discover_audio_endpoint` 缺失时不会建立 Hermes WS，右键菜单里 Hermes 音源拿不到端点而已。
-文件 / 全局音源与形象动作完全不受影响。
+The front end needs no changes: when `SemanticDriver` cannot reach the command it falls
+back on failure (three consecutive failed reads → it stays on `idle`), and with
+`discover_audio_endpoint` gone no Hermes WebSocket is established — the Hermes audio source
+in the right-click menu simply has no endpoint. The file and global audio sources, and
+every avatar motion, are entirely unaffected.
 
-## 与上游的关系
+## Relationship to upstream
 
-状态机移植自 `Star-Office-UI-Hermes/integrations/hermes/star_office_hook.py`（MIT，出处保留在文件头）。
-**没有**移植 `push()`（上报 Star Office 后端的 HTTP）与其投递编排 —— Agent Avatar 只消费聚合后的基态。
-运行期对该项目**零依赖**：本目录与 `../../bridge/` 都是 stdlib only，Rust 侧只读自己写的状态文件。
+The state machine was ported from
+`Star-Office-UI-Hermes/integrations/hermes/star_office_hook.py` (MIT; the attribution is
+kept in the file header). `push()` — the HTTP report to the Star Office backend — and its
+delivery orchestration were **not** ported; Agent Avatar only consumes the aggregated base
+state. At runtime there is **zero dependency** on that project: this directory and
+`../../bridge/` are stdlib-only, and the Rust side only reads a state file it wrote itself.

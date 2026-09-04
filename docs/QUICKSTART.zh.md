@@ -1,16 +1,19 @@
 # 快速上手 —— 10 分钟内让形象跟着你的 agent 动
 
-这条路径是给「只想下载 app、没 clone 源码」的你。下面所有步骤只需 app + 一次小下载。
+这条路径是给「只想下载安装包、没 clone 源码」的你。下面所有步骤只需 app + 一次小下载。
 
 > 想从源码构建？见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
 ## 1. 安装并启动
 
-1. 从 [Releases](../../releases) 按你的芯片下载：
-   - Apple 芯片（M1/M2/M3/M4）：`Agent-Avatar-1.0.0-Apple-Silicon.dmg`
-   - Intel：`Agent-Avatar-1.0.0-Intel.dmg`
-2. 打开 `.dmg`，把 `Agent Avatar.app` 拖进「应用程序」。
-3. 直接双击打开 —— 包已签名并通过 Apple 公证，不需要右键。
+1. 从 [Releases](../../releases) 按你的平台下载：
+   - macOS（Apple 芯片）：`Agent.Avatar_<版本>_aarch64.dmg`
+   - Windows（x64）：`Agent.Avatar_<版本>_x64-setup.exe`
+2. **macOS**：打开 `.dmg`，把 `Agent Avatar.app` 拖进「应用程序」，双击打开即可 ——
+   包已用 Apple Developer ID 签名并通过公证，不需要右键。目前只发布 Apple 芯片的包；
+   Intel Mac 请[从源码构建](../CONTRIBUTING.md)。
+3. **Windows**：运行安装器。这个包没有代码签名，首次运行 SmartScreen 会拦一下 ——
+   **更多信息 → 仍要运行**。原因见 [SECURITY.md](../SECURITY.md#sandboxing-and-notarisation)。
 4. 启动。会出现一张卡片提示你装模型 —— 没有模型就看不到形象。
 
 ## 2. 装一个模型
@@ -27,8 +30,8 @@ app 不内置任何模型。下载一个 **Live2D 官方免费示例模型**，�
 右键形象 → **设置 → Agent → 接入** 是同一个界面。
 
 1. 找到你在用的那一家（Claude Code / Codex / Hermes / DeepSeek / WorkBuddy）。
-2. 点 **安装**。app 会自己下载 connector 包、解压、运行对应的安装脚本，
-   过程中那一行会显示「正在下载 / 正在解压 / 正在安装」。
+2. 点 **安装**。Connector 与 Python 解释器都随 app 分发，不下载任何东西 ——
+   它会装好对应的适配层，并调用那家自己的 CLI 完成注册，过程中那一行会显示当前步骤。
 3. 装完那一行会显示**还需要你做的步骤**（有的家没有，见下表）。
 
 每一行还有 **安装说明** 按钮，装之前就能看这一家会要求你做什么。
@@ -51,10 +54,10 @@ app 够不着你的 harness 时用这条：它跑在 **WSL、容器、或另一�
 读一遍再跑。
 
 命令都写在 [连接器 README](../connectors/marketplace-README.zh.md) 里 —— 和 app 替你跑的
-是同一批。要么克隆仓库自己构建那棵树，要么从 [Releases](../../releases) 下
-`agent-avatar-connectors.zip` 解压。
+是同一批。克隆仓库后用 `sh connectors/build-bundle.sh ./connector-tree` 构建出那棵树，
+再用对方自己的 CLI 安装。
 
-   `connectors/` 与 `bridge/` 两棵目录**必须保持解压后的相对位置**，脚本靠相对路径找 core。
+   `connectors/` 与 `bridge/` 两棵目录**必须保持构建时的相对位置**，脚本靠相对路径找 core。
 3. 同样要做上面那张表里的「装完之后」。
 
 clone 了仓库的开发者用仓库里同样的脚本即可。

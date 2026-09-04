@@ -48,8 +48,8 @@ That needs a shell and a Python — the same Python you are about to install the
 connector for. The build step also **runs a smoke test per harness**, so a tree that
 assembles is a tree whose core is complete.
 
-(Every release also attaches a prebuilt `agent-avatar-connectors.zip`, if you would
-rather not build it.)
+(The build step needs nothing but a shell and a Python — the tree is assembled from
+this repository, not downloaded.)
 
 ---
 

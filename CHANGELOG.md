@@ -32,7 +32,8 @@ Windows support, and the model handling needed to make third-party models work t
 - Runs on Windows 10 and later. The transparent, always-on-top window and hardware
   accelerated Live2D rendering coexist on WebView2 — verified on real hardware, not CI,
   which has no GPU.
-- Ships as an NSIS installer and as a no-install zip (`npm run pack:portable`).
+- Ships as an NSIS installer. A no-install portable zip can be built with
+  `npm run pack:portable`, but is not attached to the release.
 - CI now runs the four suites on `windows-latest` as well as `macos-latest`, and builds
   the installer.
 - Diagnostics, the state file and the HTTP log follow the platform temp directory instead
@@ -68,8 +69,8 @@ Windows support, and the model handling needed to make third-party models work t
   would have moved it just the same.
 - **Rename the states.** `writing` and `researching` both read "Thinking" out of the box,
   which is deliberate — a tool that flashes past should not make the label flicker — but
-  it also hid which one was happening. Every state now takes a name of your own ("生气中"
-  for error, whatever you like), and the settings row shows both the current wording and
+  it also hid which one was happening. Every state now takes a name of your own ("Sulking",
+  "生气中", whatever you like), and the settings row shows both the current wording and
   the internal state so two rows that read alike are still tellable apart. The name is
   stored once, not per language: it is what you called your character, not a string to be
   translated back.
@@ -100,7 +101,8 @@ Windows support, and the model handling needed to make third-party models work t
 - **Aliases.** Third-party models name things `F1`, `Q` or `2222333`, which tells you
   nothing about what they do. Most authors did name them, in `.cdi3.json` or
   `.vtube.json`; those names are now read on import and filled in for you (boy8 gets all
-  20: 兽耳, 生气, 星星…). Rename any of them; the name is display only, so playback,
+  20 of its Chinese ones: 兽耳 / 生气 / 星星 — cat ears, angry, stars). Rename any of them;
+  the name is display only, so playback,
   state mapping and the random pools are unaffected.
 - **Keep on.** Most of what third-party models call expressions are single-parameter
   switches — cat ears, a hood, a drink in the hand, a symbol over the head — and those can
@@ -112,7 +114,8 @@ Windows support, and the model handling needed to make third-party models work t
   (hiding head, body and ears together). Entries that change several parameters at once
   cannot be held: those go through the expression manager, which shows one at a time.
 - The table is grouped by the author's own categories from `.cdi3.json` — boy8 arrives
-  sorted into 隐藏 / 表情 / 动作 — with everything else under one heading rather than an
+  sorted into its author's own 隐藏 / 表情 / 动作 (hide / expressions / motions) — with
+  everything else under one heading rather than an
   invented taxonomy.
 - **Lip sync no longer starts by itself.** The audio source defaulted to system audio, so
   the app opened a loopback capture the moment it launched and antivirus software
