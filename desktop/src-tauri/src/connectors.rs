@@ -127,15 +127,37 @@ fn ledger_installed_at(harness: &str) -> Option<String> {
                             harness_home("CODEBUDDY_CONFIG_DIR", ".codebuddy").join("plugins/installed_plugins.json")],
         _ => return None,
     };
+    ledger_field(ledgers, "installedAt").and_then(|value| value.as_str().map(str::to_owned))
+}
+
+/// Claude Code 系账本里我们那一条的某个字段。`installedAt` 与 `installPath` 都出自同一条，
+/// 各写一遍只会让两者有一天从不同的地方读。
+fn ledger_field(ledgers: Vec<PathBuf>, field: &str) -> Option<Value> {
     ledgers.into_iter().find_map(|ledger| {
         let document: Value = serde_json::from_str(&fs::read_to_string(ledger).ok()?).ok()?;
         let plugins = document.get("plugins")?.as_object()?;
         plugins.iter()
             .filter(|(name, _)| name.as_str() == PLUGIN_ID)
-            .filter_map(|(_, entries)| entries.as_array()?.first()?.get("installedAt")?.as_str())
-            .map(str::to_owned)
+            .filter_map(|(_, entries)| entries.as_array()?.first()?.get(field).cloned())
             .next()
     })
+}
+
+/// 账本里记的**实际安装位置**（Claude Code 系的 `installPath`）。
+///
+/// 🔴 **装到哪是各家 CLI 决定的，不是我们。** 它们把插件拷进自己的缓存
+///（`~/.claude/plugins/cache/...`、`~/.codebuddy/plugins/cache/...`），
+/// 而 `plugin_dirs()` 里那几条是**我们期望的**位置 —— 2026-09-04 实机对照，
+/// 五家里有四家那个目录根本不存在。所以这里读账本里它自己写下的那一条。
+fn ledger_install_path(harness: &str) -> Option<PathBuf> {
+    let ledgers: Vec<PathBuf> = match harness {
+        "claude-code" => vec![harness_home("CLAUDE_CONFIG_DIR", ".claude").join("plugins/installed_plugins.json")],
+        "workbuddy" => vec![harness_home("WORKBUDDY_CONFIG_DIR", ".workbuddy").join("plugins/installed_plugins.json"),
+                            harness_home("CODEBUDDY_CONFIG_DIR", ".codebuddy").join("plugins/installed_plugins.json")],
+        _ => return None,
+    };
+    let path = PathBuf::from(ledger_field(ledgers, "installPath")?.as_str()?);
+    path.is_dir().then_some(path)
 }
 
 /// 装机时间的兜底：插件目录自己的修改时间。
@@ -273,14 +295,23 @@ fn installed_dir(harness: &str) -> Option<PathBuf> {
 #[tauri::command(async)]
 pub fn list_connectors() -> Vec<Value> {
     HARNESSES.iter().map(|harness| {
-        let found = installed_dir(harness);
         let installed = is_installed(harness);
+        // 装到哪：优先账本里它自己写下的位置，其次我们找得到的那个目录。
+        // 两个都没有就是 null —— 见下面那条注释。
+        let located = installed.then(|| ledger_install_path(harness).or_else(|| installed_dir(harness))).flatten();
         json!({
             "harness": harness,
             "installed": installed,
-            // 装了就报实际位置，没装就报**将要**装到哪 —— 后者也是有用的信息
-            // （用户拿它去看杀软的隔离区里那条路径对不对得上）
-            "path": found.or_else(|| plugin_dir(harness)).map(|path| path.display().to_string()),
+            // 🔴 **只报能证实的位置，证实不了就报 null。**
+            //
+            // 这里原来是「装了报实际位置，没装报将要装到哪」，而后半句在定案改成
+            // 「交给各家 CLI 去装」之后就不成立了：它们把插件拷进自己的缓存，
+            // `plugin_dirs()` 里那几条只是我们的期望。2026-09-04 实机对照，
+            // 界面报出的五条路径里**四条在磁盘上根本不存在**。
+            //
+            // 这个字段的用途是让用户拿去和杀软隔离区里的路径对照 —— 一条编出来的路径
+            // 对这件事只有反作用。宁可不说。
+            "path": located.map(|path| path.display().to_string()),
             // 用「有没有写过」而不是「最近有没有写过」当门：一周没用那家 agent 的用户
             // 不该被告知需要重新配置。新旧程度另外显示，由前端决定怎么说。
             "lastSignalSeconds": crate::hermes::last_signal_seconds(harness),
