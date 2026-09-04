@@ -105,7 +105,21 @@ ACTIVITY_STATES = frozenset({"executing", "researching", "reviewing", "syncing",
 # (Bash / terminal / exec_command), but the input field that carries the human-readable
 # part is the same. Order is priority — `description` beats a path because the agent
 # wrote it for a human to read.
-ACTIVITY_FIELDS = ("description", "file_path", "url", "query", "pattern")
+#
+# 🔴 **Field names are per-harness, so the list has to cover all five.** Keyed on
+# Claude Code's names alone, Hermes shows almost nothing: its tool schemas mostly say
+# `path` (6 occurrences) and `filename` (2), against only 2 for `file_path` — measured
+# 2026-09-03 across `hermes-agent/tools/`. The user's report was "Hermes only ever
+# shows the top-level state"; `query` / `url` / `pattern` did land, which is why it
+# looked intermittent rather than broken.
+#
+# `path` and `filename` are the same shape and the same privacy profile as `file_path`
+# — a name on disk — and get the same basename reduction. `command` stays out, for the
+# reason above.
+ACTIVITY_FIELDS = ("description", "file_path", "path", "filename", "url", "query", "pattern")
+
+# 只留文件名的那几个 —— 全路径既超长又常常泄露目录结构
+PATH_FIELDS = frozenset({"file_path", "path", "filename"})
 
 
 def _shorten(text):
@@ -125,7 +139,7 @@ def activity_from(payload):
         value = tool_input.get(field)
         if not isinstance(value, str) or not value.strip():
             continue
-        if field == "file_path":
+        if field in PATH_FIELDS:
             value = os.path.basename(value.rstrip("/\\")) or value
         elif field == "url":
             # Host only. A full URL is mostly query string, and that is where the

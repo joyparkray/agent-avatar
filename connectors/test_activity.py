@@ -68,3 +68,25 @@ def test_on_is_a_choice_the_app_writes_down(tmp_path, monkeypatch):
     with open(options_path(), "w", encoding="utf-8") as handle:
         json.dump({"activity": True}, handle)
     assert activity_allowed()
+
+
+def test_hermes_names_its_path_fields_differently():
+    """🔴 白名单原来只有 Claude Code 的字段名，于是 Hermes 几乎什么都显示不出来。
+
+    实测 2026-09-03，`hermes-agent/tools/` 里的参数名频次：
+    `path` 6 次、`filename` 2 次，而 `file_path` 只有 2 次。
+    用户报的是「Hermes 只有一级状态」；`query`/`url`/`pattern` 是命中的，
+    所以看起来像是时灵时不灵，而不是彻底不工作。
+
+    三个都是「磁盘上的一个名字」，同样的隐私档次，同样只留最后一段。
+    """
+    assert field(path="/Users/x/notes/report.md") == "report.md"
+    assert field(filename="/tmp/build/out.log") == "out.log"
+    assert field(path="C:/Agent Avatar/src/main.ts") == "main.ts"
+    # description 仍然优先 —— 那是 agent 专门写给人看的
+    assert field(path="/tmp/a/b.py", description="整理今天的记录") == "整理今天的记录"
+
+
+def test_command_stays_out_even_next_to_the_new_path_fields():
+    # 新加字段不能顺手把 command 带进来：命令行可能含 token
+    assert field(command="curl -H 'Authorization: Bearer sk-xxx' https://x") is None
