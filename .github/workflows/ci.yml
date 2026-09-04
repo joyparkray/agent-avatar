@@ -9,9 +9,13 @@
 # 一律要真机 —— GitHub 的 runner 没有 GPU，WebGL 会回落软件渲染，在那上面测渲染无论红绿都不可信。
 name: CI
 
+# 🔴 **开发分支也要进来。** 原来只有 main，而实际的活全在 windows-port 上 ——
+# 那条分支 70 个提交、八个版本，一次自动 CI 都没触发过。结果是 `resources/connectors`
+# 那个坑（见下面的 Connector bundle 一步）躺了很久没人看见：有资源声明的分支从不跑 CI，
+# 跑 CI 的分支没有那行声明，两边正好互相打掩护。
 on:
   push:
-    branches: [main]
+    branches: [main, windows-port]
   pull_request:
   workflow_dispatch:
 
@@ -39,6 +43,22 @@ jobs:
         run: npx tsc --noEmit
       - name: Front-end unit tests
         run: npx vitest run
+      # 🔴 **必须在 cargo 之前。** `tauri.conf.json` 声明了 `resources/connectors`，
+      # 而 Tauri 在**编译期**就检查它在不在 —— 不在就直接 `resource path ... doesn't exist`
+      # 退出，一行代码都没编、一个测试都没跑。那 68 MB（67 MB 是自带解释器）**故意不进 git**
+      # （.gitignore 第 34 行），因为它不是源码，是两个脚本从上游下载+组装出来的产物。
+      # 开发机上跑过一次就有了，CI 那台全新机器没有 —— 这正是本项目最典型的
+      # 「我这儿能跑」失效方式，也是 CI 存在的理由。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Connector bundle
+        # build-bundle.sh 的自检要一个解释器，默认找 `python3`。Windows 上 `python3` 可能
+        # 是那个 0 字节的 Microsoft Store 空壳（fetch-python.sh 开头的注释就在说这件事），
+        # 所以用 setup-python 保证有的 `python`，别让它去撞空壳。
+        run: |
+          bash ../connectors/fetch-python.sh
+          AGENT_AVATAR_PYTHON=python bash ../connectors/build-bundle.sh
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
@@ -103,6 +123,14 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: npm ci
+      # 理由同上，而且这个 job 是**真打包** —— 连接器树和解释器就是要被塞进安装包的东西
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Connector bundle
+        run: |
+          bash ../connectors/fetch-python.sh
+          AGENT_AVATAR_PYTHON=python bash ../connectors/build-bundle.sh
       - name: Build NSIS installer
         run: npm run tauri build
       - uses: actions/upload-artifact@v4
