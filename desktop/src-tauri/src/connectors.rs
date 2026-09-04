@@ -219,15 +219,33 @@ pub(crate) fn installed_by_record(harness: &str) -> Option<bool> {
             &json_key()),
         // WorkBuddy 的同一个 CLI 有两个 home：app 读 .workbuddy，独立 CLI 默认读 .codebuddy。
         // 任一本账记着就算装了 —— 用户可能只用其中一个。
+        //
+        // 🔴 **两个文件都要看，`installed_plugins.json` 一个人不够。** 从**目录型**
+        // marketplace 装的插件根本不进那本账 —— WorkBuddy 不往 cache 里拷，只在
+        // `settings.json` 的 `enabledPlugins` 里翻一个键。而我们正是目录型
+        //（`plugin marketplace add <打包树>`）。2026-09-03 实机对照：
+        //
+        //   $ codebuddy plugin install agent-avatar@agent-avatar
+        //   ✔ Successfully installed plugin: agent-avatar@agent-avatar.
+        //   installed_plugins.json → 没有这一条（连早先那次装的都没有）
+        //   settings.json         → "agent-avatar@agent-avatar": true
+        //
+        // 只读前者的话，装成功之后界面照样说「未安装」。卸载会把 settings.json 里那个键
+        // 删掉，所以拿它当判据是准的。
         "workbuddy" => {
-            let app = listed(harness_home("WORKBUDDY_HOME", ".workbuddy").join("plugins/installed_plugins.json"),
-                             &json_key());
-            let cli = listed(harness_home("CODEBUDDY_CONFIG_DIR", ".codebuddy").join("plugins/installed_plugins.json"),
-                             &json_key());
-            match (app, cli) {
-                (None, None) => None,
-                (a, c) => Some(a.unwrap_or(false) || c.unwrap_or(false)),
+            let mut ledger_seen = false;
+            for root in [harness_home("WORKBUDDY_HOME", ".workbuddy"),
+                         harness_home("CODEBUDDY_CONFIG_DIR", ".codebuddy")] {
+                for ledger in ["plugins/installed_plugins.json", "settings.json"] {
+                    match listed(root.join(ledger), &json_key()) {
+                        Some(true) => return Some(true),
+                        Some(false) => ledger_seen = true,
+                        None => {}
+                    }
+                }
             }
+            // 一本都读不到 = 这家没用过，退回去看目录；读到了但没有我们这条 = 没装
+            ledger_seen.then_some(false)
         }
         "codex" => listed(harness_home("CODEX_HOME", ".codex").join("config.toml"),
                           &format!("[plugins.\"{PLUGIN_ID}\"]")),
@@ -383,6 +401,46 @@ mod tests {
             Some(value) => env::set_var("CODEX_HOME", value),
             None => env::remove_var("CODEX_HOME"),
         }
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    /// WorkBuddy：判据不能只押在 `installed_plugins.json` 上。
+    ///
+    /// 🔴 目录型 marketplace 装出来的插件**不进那本账** —— 2026-09-03 实机上
+    /// `codebuddy plugin install agent-avatar@agent-avatar` 报成功，
+    /// `installed_plugins.json` 里从头到尾没出现过 agent-avatar，
+    /// 只有 `settings.json` 的 `enabledPlugins` 多了一个键。
+    #[test]
+    fn workbuddy_counts_the_enabled_plugins_map_too() {
+        let scratch = std::env::temp_dir().join(format!("agent-avatar-wb-{}", std::process::id()));
+        let app = scratch.join(".workbuddy");
+        let cli = scratch.join(".codebuddy");
+        fs::create_dir_all(app.join("plugins")).unwrap();
+        fs::create_dir_all(cli.join("plugins")).unwrap();
+        let previous = (env::var("WORKBUDDY_HOME").ok(), env::var("CODEBUDDY_CONFIG_DIR").ok());
+        env::set_var("WORKBUDDY_HOME", &app);
+        env::set_var("CODEBUDDY_CONFIG_DIR", &cli);
+
+        // 两本账都在、都没有我们这条 → 没装
+        for root in [&app, &cli] {
+            fs::write(root.join("plugins/installed_plugins.json"), r#"{"plugins":{}}"#).unwrap();
+            fs::write(root.join("settings.json"), r#"{"enabledPlugins":{}}"#).unwrap();
+        }
+        assert_eq!(installed_by_record("workbuddy"), Some(false));
+
+        // 只有 settings.json 记着 —— 这正是目录型 marketplace 装完的真实样子
+        fs::write(cli.join("settings.json"),
+                  r#"{"enabledPlugins":{"agent-avatar@agent-avatar":true}}"#).unwrap();
+        assert_eq!(installed_by_record("workbuddy"), Some(true),
+                   "只读 installed_plugins.json 的话，装成功了界面还说没装");
+
+        // 别人的登记仍然不算我们的
+        fs::write(cli.join("settings.json"),
+                  r#"{"enabledPlugins":{"agent-avatar@agent-avatar-local":true}}"#).unwrap();
+        assert_eq!(installed_by_record("workbuddy"), Some(false));
+
+        match previous.0 { Some(v) => env::set_var("WORKBUDDY_HOME", v), None => env::remove_var("WORKBUDDY_HOME") }
+        match previous.1 { Some(v) => env::set_var("CODEBUDDY_CONFIG_DIR", v), None => env::remove_var("CODEBUDDY_CONFIG_DIR") }
         let _ = fs::remove_dir_all(&scratch);
     }
 

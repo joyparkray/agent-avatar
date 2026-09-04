@@ -107,10 +107,33 @@ fn cli_candidates(harness: &str) -> Vec<PathBuf> {
             }
         }
         "codex" => found.extend(newest_codex()),
+        "workbuddy" => found.extend(workbuddy_clis()),
         _ => {}
     }
     found
 }
+
+/// WorkBuddy / CodeBuddy 的 CLI **藏在 app 包里，不在 PATH 上**。
+///
+/// 🔴 **装了 app 不等于装了 CLI。** npm 上那个包是另一回事，用户没有理由两个都装。
+/// 2026-09-03 实机（macOS）只装了 app：`which codebuddy` 空，npm 全局列表里也没有，
+/// 于是 `resolve_cli("workbuddy")` 全程落空，界面报「找不到 workbuddy 的命令行程序」——
+/// 而用户明明装着 WorkBuddy，`plugin install` 也完全跑得通（实测 2.115.0）。
+///
+/// 它和 `newest_codex()` 是同一类问题：CLI 存在、但只有 app 自己知道在哪。
+///
+/// 只补 macOS 这一处 —— Windows 上 WorkBuddy 装在哪没在实机上验过，不猜。
+#[cfg(target_os = "macos")]
+fn workbuddy_clis() -> Vec<PathBuf> {
+    // app 改过名（CodeBuddy → WorkBuddy），两个都试
+    ["WorkBuddy", "CodeBuddy"].iter()
+        .map(|name| PathBuf::from(format!(
+            "/Applications/{name}.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy")))
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn workbuddy_clis() -> Vec<PathBuf> { Vec::new() }
 
 /// POSIX 上 node 的全局 bin 可能在的地方。
 ///
