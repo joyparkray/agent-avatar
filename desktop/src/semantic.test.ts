@@ -57,6 +57,7 @@ describe("six-state semantics", () => {
  * 跟着 sequence 走就会让状态栏每两百毫秒重画一次。
  */
 describe("详情那一行", () => {
+  afterEach(() => { vi.useRealTimers(); });
   const drive = (snapshots: (StateSnapshot | null)[]) => {
     const said: string[] = [];
     let i = 0;
@@ -67,26 +68,35 @@ describe("详情那一行", () => {
     return { driver, said };
   };
 
+  // 这三条现在要把「每条详情至少占屏 1 秒」一起算进来（见下一个 describe）：
+  // tick 是连着跑的，同一毫秒内的第二条会被压到 1 秒后才换。推进假时钟而不是绕过约束 ——
+  // 绕过就等于这三条不再覆盖真实路径。
   it("值变了才派发一次", async () => {
+    vi.useFakeTimers();
     const { driver, said } = drive([
       { state: "executing", doing: "Run tests" },
       { state: "executing", doing: "Run tests" },
       { state: "researching", doing: "main.ts" },
     ]);
     for (let round = 0; round < 3; round += 1) await (driver as never as { tick(): Promise<void> }).tick();
+    vi.advanceTimersByTime(1000);
     expect(said).toEqual(["Run tests", "main.ts"]);
   });
 
   // 🔴 回落 idle 时详情必须跟着清 —— 空闲的人物身上挂着一句「Run tests」看起来像卡住了
   it("读不到状态而回落 idle 时，详情清空", async () => {
+    vi.useFakeTimers();
     const { driver, said } = drive([{ state: "executing", doing: "Run tests" }, null, null, null, null]);
     for (let round = 0; round < 5; round += 1) await (driver as never as { tick(): Promise<void> }).tick();
+    vi.advanceTimersByTime(1000);
     expect(said.at(-1)).toBe("");
   });
 
   it("没有 doing 字段的老快照当作没有详情", async () => {
+    vi.useFakeTimers();
     const { driver, said } = drive([{ state: "executing", doing: "x" }, { state: "executing" }]);
     for (let round = 0; round < 2; round += 1) await (driver as never as { tick(): Promise<void> }).tick();
+    vi.advanceTimersByTime(1000);
     expect(said).toEqual(["x", ""]);
   });
 });
@@ -110,5 +120,57 @@ describe("详情的有效期", () => {
   it("没有详情就是空", () => {
     expect(liveDoing({}, Date.now())).toBe("");
     expect(liveDoing({ doing: null }, Date.now())).toBe("");
+  });
+});
+
+describe("每条详情至少占屏 1 秒", () => {
+  // 🔴 连接器那边的 1 秒保底管的是「工具结束后详情别立刻消失」，管不了**相邻两条互相顶**：
+  // 连着调两个工具时第一条刚摆上去就被第二条顶掉，一样看不清。
+  // 2026-09-04 用户实测原话：「第一个详情一闪而过被第二个顶掉了」。
+  const setup = () => {
+    const shown: string[] = [];
+    let snapshot: StateSnapshot | null = { state: "executing" };
+    const driver = new SemanticDriver(
+      async () => snapshot, () => {}, 200, 2000, () => {}, d => shown.push(d));
+    return { shown, driver, set: (s: StateSnapshot | null) => { snapshot = s; } };
+  };
+
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("没到 1 秒的第二条被压住，到点才换", () => {
+    vi.useFakeTimers();
+    const { shown, driver } = setup();
+    const emit = (d: string, now: number) =>
+      (driver as unknown as { emitDoingChanged(d: string, now?: number): void }).emitDoingChanged(d, now);
+
+    emit("read a.md", 10_000);
+    expect(shown).toEqual(["read a.md"]);
+    emit("read b.md", 10_100);                 // 才过 100ms
+    expect(shown, "不该立刻顶掉第一条").toEqual(["read a.md"]);
+    vi.advanceTimersByTime(900);
+    expect(shown).toEqual(["read a.md", "read b.md"]);
+  });
+
+  it("连着来五条只显示第一条和最后一条 —— 不排队，否则状态栏越拖越落后现实", () => {
+    vi.useFakeTimers();
+    const { shown, driver } = setup();
+    const emit = (d: string, now: number) =>
+      (driver as unknown as { emitDoingChanged(d: string, now?: number): void }).emitDoingChanged(d, now);
+
+    emit("t1", 20_000);
+    for (const [i, at] of [20_100, 20_200, 20_300, 20_400].entries()) emit(`t${i + 2}`, at);
+    vi.advanceTimersByTime(1000);
+    expect(shown).toEqual(["t1", "t5"]);
+  });
+
+  it("超过 1 秒之后来的立刻显示，不用等", () => {
+    vi.useFakeTimers();
+    const { shown, driver } = setup();
+    const emit = (d: string, now: number) =>
+      (driver as unknown as { emitDoingChanged(d: string, now?: number): void }).emitDoingChanged(d, now);
+
+    emit("first", 30_000);
+    emit("second", 31_500);                    // 已过 1.5 秒
+    expect(shown).toEqual(["first", "second"]);
   });
 });

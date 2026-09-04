@@ -24,6 +24,12 @@ export interface StateSnapshot {
 const MISSES_BEFORE_IDLE = 3;
 
 /**
+ * 一条详情至少占屏多久。与连接器那边的 `DOING_HOLD_SECONDS` 是**两件事**：
+ * 那个管「工具结束后别立刻消失」，这个管「相邻两条别互相顶」。
+ */
+const DOING_FLOOR_MS = 1000;
+
+/**
  * 还在有效期内的详情，过期了就是空。
  *
  * 🔴 **详情比状态活得久，这是它能被看见的前提。** 工具跑完状态立刻回 idle，而快照是
@@ -44,6 +50,10 @@ export function liveDoing(snapshot: StateSnapshot, now = Date.now()): string {
 
 export class SemanticDriver {
   private timer?: number; private lastState?: SemanticState; private lastReactionKey?: string; private lastDoing = ""; private idleRounds = 0; private misses = 0;
+  /** 当前这条详情是什么时候摆上去的 —— 最短占屏时间从这里算。 */
+  private doingShownAt = 0;
+  /** 还没轮到的下一条详情（只留最后一条，见 `emitDoingChanged`）。 */
+  private pendingDoing?: string; private pendingTimer?: ReturnType<typeof setTimeout>;
   constructor(
     private readonly read: () => Promise<StateSnapshot | null>,
     private readonly emit: (state: SemanticState) => void,
@@ -58,10 +68,45 @@ export class SemanticDriver {
     this.timer = window.setTimeout(() => { void this.tick().finally(() => this.schedule(this.nextDelay())); }, delay);
   }
   private nextDelay(): number { return Math.min(this.maxIntervalMs, this.intervalMs * 2 ** Math.min(this.idleRounds, 4)); }
-  stop(): void { if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
+  stop(): void {
+    if (this.timer) clearTimeout(this.timer);
+    if (this.pendingTimer) clearTimeout(this.pendingTimer);
+    this.timer = undefined; this.pendingTimer = undefined; this.pendingDoing = undefined;
+  }
   private emitChanged(state: SemanticState): void { if (state !== this.lastState) { this.lastState = state; this.emit(state); } }
-  /** 详情跟着值变，不跟着 sequence —— 同一个工具连着报两次不该让状态栏闪。 */
-  private emitDoingChanged(doing: string): void { if (doing !== this.lastDoing) { this.lastDoing = doing; this.emitDoing(doing); } }
+  /**
+   * 详情跟着值变，不跟着 sequence —— 同一个工具连着报两次不该让状态栏闪。
+   *
+   * 🔴 **每条至少占屏 `DOING_FLOOR_MS`。** 连接器那边的 1 秒保底管的是「工具结束后详情
+   * 别立刻消失」，管不了**相邻两条互相顶**：连着调两个工具时，第一条刚摆上去就被第二条
+   * 顶掉，一样看不清（2026-09-04 用户实测原话：「第一个详情一闪而过被第二个顶掉了」）。
+   *
+   * 所以没到时间就把新的一条压住，到点再换。**只留最后一条**：连着来五个工具时显示
+   * 第一个和最后一个，而不是排一条越拖越长的队 —— 状态栏落后现实好几秒比少显示两条更糟。
+   */
+  private emitDoingChanged(doing: string, now = Date.now()): void {
+    if (doing === this.lastDoing && this.pendingDoing === undefined) return;
+    const waited = now - this.doingShownAt;
+    if (waited >= DOING_FLOOR_MS) {
+      if (this.pendingTimer) { clearTimeout(this.pendingTimer); this.pendingTimer = undefined; }
+      this.pendingDoing = undefined;
+      if (doing === this.lastDoing) return;
+      this.lastDoing = doing; this.doingShownAt = now; this.emitDoing(doing);
+      return;
+    }
+    // 还没到时间：记下最后一条，到点一次性换过去
+    this.pendingDoing = doing;
+    if (this.pendingTimer) return;
+    // 用全局 setTimeout 而不是 window.setTimeout：这段要能在 node 测试环境里跑
+    this.pendingTimer = setTimeout(() => {
+      this.pendingTimer = undefined;
+      const next = this.pendingDoing;
+      this.pendingDoing = undefined;
+      if (next !== undefined && next !== this.lastDoing) {
+        this.lastDoing = next; this.doingShownAt = Date.now(); this.emitDoing(next);
+      }
+    }, DOING_FLOOR_MS - waited);
+  }
   /**
    * 去重键是 hook 的单调时间戳 `at`，不是 `sequence`。
    *
