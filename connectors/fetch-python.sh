@@ -52,7 +52,7 @@ if [ -z "$platform" ]; then
 fi
 
 target=$out/python
-if [ -x "$target/python.exe" ] || [ -x "$target/bin/python3" ]; then
+if [ -x "$target/python.exe" ] || [ -x "$target/bin/python3.13" ]; then
   echo "python already in $target (delete it to refetch)"
   exit 0
 fi
@@ -108,6 +108,19 @@ PY
     mv "$staging/python" "$target"
     rm -rf "$staging" "$archive"
 
+    # 🔴 **软链接必须在打包之前就没有。** 上游的 `bin/` 里 `python` 和 `python3` 是指向
+    # `python3.13` 的软链接（各 10 字节），而 **Tauri 打包时会跟着链接走、把目标完整复制
+    # 一份**。于是同一个 18 MB 的二进制在 .app 里躺三份：实测 2026-09-03，
+    # python 目录 67 MB → 102 MB，白占 35 MB 硬盘、约 14 MB 下载
+    # （三份分开压缩后 21.7 MB vs 一份 7.2 MB —— 压缩器的窗口只有几十 KB，
+    # 隔着 18 MB 的两份相同内容它看不见，去不了重）。
+    #
+    # 删在这儿而不是打包后补回软链接：打包后再动 .app 里的文件会让代码签名失效，
+    # 而这份解释器是要逐个二进制签过再随 app 公证的（见下面那段）。这条路完全绕开签名。
+    #
+    # 留下的是真身 `python3.13`，`python_relative()`（connector_install.rs）指的就是它。
+    rm -f "$target/bin/python" "$target/bin/python3"
+
     # 🔴 **签名。** 这份解释器是下载来的，没有我们的签名；Gatekeeper 不会让一个没签过的
     # 可执行文件在别人机器上跑起来，而症状还是那个老形状 —— 装好了，形象不动。
     # app 的公证会覆盖它，但前提是它先被**逐个二进制**签过（hardened runtime）。
@@ -120,7 +133,7 @@ PY
       echo "⚠️  未签名：设 AGENT_AVATAR_CODESIGN_IDENTITY 后重跑，否则打出来的包在别人机器上跑不起来" >&2
     fi
 
-    "$target/bin/python3" -c "import json,os,sys,time,tempfile,shlex,re,datetime,fcntl,pathlib,subprocess,io; print('bundled python', sys.version.split()[0], 'stdlib OK')"
+    "$target/bin/python3.13" -c "import json,os,sys,time,tempfile,shlex,re,datetime,fcntl,pathlib,subprocess,io; print('bundled python', sys.version.split()[0], 'stdlib OK')"
     ;;
   *)
     echo "unknown platform: $platform" >&2; exit 1 ;;

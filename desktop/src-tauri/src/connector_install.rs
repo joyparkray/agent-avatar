@@ -497,7 +497,10 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 
 /// 解释器在工作副本里的相对位置。
 fn python_relative() -> &'static str {
-    if cfg!(windows) { "python/python.exe" } else { "python/bin/python3" }
+    // POSIX 上指**真身** `python3.13`，不是 `python3` —— 那两个名字（`python` / `python3`）
+    // 是上游的软链接，而 Tauri 打包会把软链接解引用成完整副本，同一个 18 MB 二进制
+    // 进 .app 三份。`fetch-python.sh` 在打包之前就把它们删掉了（那里有完整原委）。
+    if cfg!(windows) { "python/python.exe" } else { "python/bin/python3.13" }
 }
 
 /// 自带解释器那棵树的根 —— 从解释器二进制的位置往回推。
