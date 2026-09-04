@@ -633,6 +633,43 @@ fn interpreter_token(python: &str) -> String {
     }
 }
 
+/// 砍掉命令行开头那个解释器，把**剩下的原样交回来**。
+///
+/// 🔴 **不能按第一个空格切 —— 解释器路径自己就带空格。** macOS 的数据目录是
+/// `~/Library/Application Support/…`，`Application` 和 `Support` 之间那个空格是躲不掉的；
+/// Windows 上是 `AppData\Roaming\…`，不带空格，所以这条在那边**永远不会触发**。
+///
+/// 而这段改写会跑第二遍：`lay_out_tree` 见到版本槽已存在就不重铺，树里那份已经是改写过的。
+/// 于是第二次安装时按空格切，切在了 `Application` 和 `Support` 中间，后半截被当成脚本路径
+/// 补上引号塞回去 —— 命令行变成（2026-09-03 实机原话）：
+///
+/// ```text
+/// "…/Application Support/…/python3" "Support/…/python3"" "${CLAUDE_PLUGIN_ROOT}/…" ; exit 0
+///                                    ^^^^^^^^^^^^^^^^^^^ 凭空多出来的一段
+/// ```
+///
+/// Claude Code 直接把用户的提问拦下：
+///
+/// ```text
+/// A hook blocked your prompt
+/// /bin/sh: -c: line 0: unexpected EOF while looking for matching `"'
+/// ```
+///
+/// **第一次装是好的，第二次装才烂** —— 所以只装一次的测试永远看不见它。
+///
+/// 判据是引号：开头是 `"` 就找配对的收尾引号，否则才退回按空格切。
+fn split_off_interpreter(source: &str) -> String {
+    if let Some(rest) = source.strip_prefix('"') {
+        if let Some((_, tail)) = rest.split_once('"') {
+            return tail.trim().to_string();
+        }
+    }
+    match source.split_once(' ') {
+        Some((_, rest)) => rest.trim().to_string(),
+        None => source.to_string(),
+    }
+}
+
 /// 改写 hooks.json 里每一条命令的解释器。
 ///
 /// 写出来的那一行形状是有讲究的，每一处都是实测出来的：
@@ -666,10 +703,7 @@ fn rewrite_hooks_json(path: &Path, python: &str, harness: &str) -> Result<usize,
                         .or_else(|| hook.get("command").and_then(Value::as_str))
                         .unwrap_or("").to_string();
                     // 只换解释器；脚本路径原样保留（含 ${PLUGIN_ROOT} 这类占位符）
-                    let tail = match source.trim().split_once(' ') {
-                        Some((_, rest)) => rest.trim().to_string(),
-                        None => source.trim().to_string(),
-                    };
+                    let tail = split_off_interpreter(source.trim());
                     let tail = if tail.starts_with('"') { tail } else {
                         match tail.split_once(' ') {
                             Some((first, rest)) => format!("\"{first}\" {rest}"),
@@ -1452,6 +1486,44 @@ mod tests {
         let command = document["hooks"]["SessionStart"][0]["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(command,
                    "C:/PROGRA~1/py/python.exe \"${PLUGIN_ROOT}/hooks/agent-avatar-hook.py\" ; exit 0");
+    }
+
+    /// 🔴 **改写要能跑第二遍。** `lay_out_tree` 见到版本槽已存在就不重铺，所以第二次安装
+    /// 改写的是**已经改写过的那份**。而 macOS 的解释器路径必然带空格
+    /// （`~/Library/Application Support/…`），原来按第一个空格切，就切在了
+    /// `Application` 和 `Support` 中间 —— 后半截被当成脚本路径补上引号塞回去。
+    ///
+    /// 实机症状（2026-09-03，装第二遍之后）：Claude Code 每次提问都被拦下，原话是
+    ///
+    /// ```text
+    /// A hook blocked your prompt
+    /// /bin/sh: -c: line 0: unexpected EOF while looking for matching `"'
+    /// ```
+    ///
+    /// Windows 的数据目录不带空格，所以那边永远碰不到；**只装一次的测试也永远碰不到**。
+    #[test]
+    fn rewriting_twice_is_idempotent_even_when_the_interpreter_path_has_spaces() {
+        let dir = scratch("hooks-twice");
+        let path = dir.join("hooks.json");
+        fs::write(&path, r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"python3 ${PLUGIN_ROOT}/hooks/agent-avatar-hook.py ; exit 0"}]}]}}"#).unwrap();
+
+        let spaced = "/Users/me/Library/Application Support/io.github.x/python/bin/python3";
+        let read = |path: &std::path::Path| -> String {
+            let document: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+            document["hooks"]["SessionStart"][0]["hooks"][0]["command"].as_str().unwrap().to_string()
+        };
+
+        rewrite_hooks_json(&path, spaced, "claude-code").unwrap();
+        let once = read(&path);
+        assert_eq!(once, format!("\"{spaced}\" \"${{PLUGIN_ROOT}}/hooks/agent-avatar-hook.py\" ; exit 0"));
+
+        // 第二遍必须原地不动
+        rewrite_hooks_json(&path, spaced, "claude-code").unwrap();
+        assert_eq!(read(&path), once, "改写第二遍把命令行写坏了");
+
+        // 引号必须配对 —— 不配对正是 `unexpected EOF while looking for matching` 的来源
+        assert_eq!(read(&path).matches('"').count() % 2, 0, "{}", read(&path));
     }
 
     /// Codex 有自己的 `commandWindows` 覆盖字段。Windows 上写它、POSIX 的 `command` 不动，
