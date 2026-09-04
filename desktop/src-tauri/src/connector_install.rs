@@ -132,8 +132,68 @@ fn workbuddy_clis() -> Vec<PathBuf> {
         .collect()
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows 版把同一个 CLI 放在安装目录下的同一条相对路径上（2026-09-04 实机确认，
+/// WorkBuddyAI 2.132.0，装在 `C:\Program Files\WorkBuddyAI`）：
+/// `resources\app.asar.unpacked\cli\bin\codebuddy`。
+///
+/// 🔴 **它没有扩展名，是一个带 shebang 的 Node 脚本。** POSIX 上 shebang 由内核处理，
+/// 直接执行就行；Windows 的 CreateProcess 不认，实测原话：
+///
+/// ```text
+/// The specified executable is not a valid application for this OS platform.
+/// ```
+///
+/// 所以光把这条路径找出来是不够的 —— 真正去跑它的是 `launcher_for()`，用 node 带着它跑。
+/// 这里**只在找得到 node 时才报出来**：报一个我们跑不了的路径，只会把「找不到 CLI」
+/// 换成一句更难懂的系统错误，而前者至少是准的。
+#[cfg(windows)]
+fn workbuddy_clis() -> Vec<PathBuf> {
+    if node_exe().is_none() { return Vec::new(); }
+    let mut roots = Vec::new();
+    for base in [env::var("ProgramFiles").ok(), env::var("ProgramW6432").ok(),
+                 env::var("ProgramFiles(x86)").ok(),
+                 // 每用户安装（Electron 安装器的默认去处之一）
+                 env::var("LOCALAPPDATA").ok().map(|dir| format!("{dir}\\Programs"))]
+        .into_iter().flatten()
+    {
+        // app 改过名（CodeBuddy → WorkBuddy），装出来的目录名几种都见过
+        for name in ["WorkBuddyAI", "WorkBuddy", "CodeBuddyAI", "CodeBuddy"] {
+            roots.push(PathBuf::from(&base).join(name));
+        }
+    }
+    roots.into_iter()
+        .map(|root| joined(&root, "resources/app.asar.unpacked/cli/bin/codebuddy"))
+        .collect()
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn workbuddy_clis() -> Vec<PathBuf> { Vec::new() }
+
+/// node 在哪 —— WorkBuddy 桌面版包里那个 CLI 要靠它才跑得起来。
+///
+/// 桌面版自带的是 `resources\vendor\node.zip`，**没有解压**（实机确认），所以指望不上；
+/// 用用户自己那一份。找不到就等于那条路走不通，`workbuddy_clis()` 据此不报。
+#[cfg(windows)]
+fn node_exe() -> Option<PathBuf> {
+    if run(Path::new("node"), &["--version"]).is_ok() { return Some(PathBuf::from("node")); }
+    for base in [env::var("ProgramFiles").ok(), env::var("ProgramW6432").ok(),
+                 env::var("ProgramFiles(x86)").ok()].into_iter().flatten() {
+        let candidate = PathBuf::from(base).join("nodejs").join("node.exe");
+        if candidate.is_file() { return Some(candidate); }
+    }
+    None
+}
+
+/// 这个「可执行文件」其实是个 shebang 脚本吗？是的话返回 `(node, 脚本)`。
+///
+/// 🔴 **判据必须排除裸命令名。** `node_exe()` 里那次 `node --version` 传进来的是
+/// `Path::new("node")` —— 它同样没有扩展名，若被判成脚本就会再去找 node 来跑它，
+/// 于是无限递归。所以要求：绝对路径、没有扩展名、而且**文件真的存在**。
+#[cfg(windows)]
+fn launcher_for(program: &Path) -> Option<(PathBuf, PathBuf)> {
+    if !program.is_absolute() || program.extension().is_some() || !program.is_file() { return None; }
+    node_exe().map(|node| (node, program.to_path_buf()))
+}
 
 /// POSIX 上 node 的全局 bin 可能在的地方。
 ///
@@ -309,7 +369,17 @@ fn run(program: &Path, args: &[&str]) -> Result<String, String> {
 fn run_in_home(program: &Path, args: &[&str], home: Option<&Path>) -> Result<String, String> {
     use std::io::Read;
 
-    let mut command = Command::new(program);
+    // Windows：带 shebang 的 Node 脚本要显式交给 node 去跑（见 `launcher_for`）。
+    // 其余情况、以及所有非 Windows 平台，都还是直接执行它自己。
+    #[cfg(windows)]
+    let wrapper = launcher_for(program);
+    #[cfg(not(windows))]
+    let wrapper: Option<(PathBuf, PathBuf)> = None;
+
+    let mut command = match &wrapper {
+        Some((node, script)) => { let mut command = Command::new(node); command.arg(script); command }
+        None => Command::new(program),
+    };
     command.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -451,6 +521,20 @@ fn joined(base: &Path, relative: &str) -> PathBuf {
         .fold(base.to_path_buf(), |path, part| path.join(part))
 }
 
+/// 树里缺了哪几家。全齐时返回 `None`。
+///
+/// 判据是每家的插件目录**存在且非空** —— 空目录正是 `assemble.sh` 建了目录、
+/// 随后冒烟自检失败留下的形状。
+fn missing_from_tree(tree: &Path) -> Option<Vec<&'static str>> {
+    let missing: Vec<&'static str> = HARNESSES.into_iter()
+        .filter(|harness| {
+            let dir = tree.join(harness_relative(harness));
+            !dir.is_dir() || fs::read_dir(&dir).map(|mut entries| entries.next().is_none()).unwrap_or(true)
+        })
+        .collect();
+    (!missing.is_empty()).then_some(missing)
+}
+
 /// app 里带的连接器树与解释器。
 fn bundled(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
     let root = joined(&app.path().resource_dir()
@@ -459,6 +543,18 @@ fn bundled(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
     let python = joined(&root, python_relative());
     if !tree.is_dir() {
         return Err(format!("app 里没有连接器树（{}）—— 构建时漏跑 connectors/build-bundle.sh", tree.display()));
+    }
+    // 🔴 **「目录在」不等于「五家都在」。** 2026-09-04 实机：Windows 上 `build-bundle.sh`
+    // 因为 `python3` 是应用商店存根而中途失败，但它**已经先删掉了旧树**，于是留下一棵
+    // 只有 hermes 的半成品。上面那一条只看目录在不在，照样放行；`tauri build` 也照样成功，
+    // 于是坏包被打了出去，用户点安装才拿到一句
+    // `...hooks.json: The system cannot find the path specified. (os error 3)`。
+    //
+    // 构建脚本那边已经改成「先铺暂存目录、最后整体换上」，半成品不该再出现；这一条是
+    // 第二道闸：**缺哪家就说哪家**，而不是让一个 OS 错误码代替诊断。
+    if let Some(missing) = missing_from_tree(&tree) {
+        return Err(format!("app 里的连接器树不完整，缺 {}（{}）—— 重跑 connectors/build-bundle.sh",
+                           missing.join("、"), tree.display()));
     }
     if !python.is_file() {
         return Err(format!("app 里没有解释器（{}）—— 构建时漏跑 connectors/fetch-python.sh", python.display()));
@@ -928,7 +1024,37 @@ fn edit_dsh_registration(tree: &Path, remove: bool) -> Result<PathBuf, String> {
     let temporary = path.with_extension("yml.tmp");
     fs::write(&temporary, body).map_err(|error| format!("{}: {error}", temporary.display()))?;
     fs::rename(&temporary, &path).map_err(|error| format!("{}: {error}", path.display()))?;
+    // 🔴 **卸载要把备份也带走。** 备份是「万一这次改写出错，原样还在」的保险，而卸载成功之后
+    // 那份保险就没有对象了 —— 留下的是**我们自己写在别人配置目录里的一个文件**，内容是我们
+    // 自己那段托管块，里面那条路径还指向一个已经不存在的地方。而「不把垃圾留在别人应用里」
+    // 正是卸载这件事存在的全部理由（2026-09-04 实测：卸完之后它还在）。
+    if remove {
+        let _ = fs::remove_file(path.with_extension("yml.agent-avatar-backup"));
+    }
     Ok(path)
+}
+
+/// 早先版本留在各家 home 里的备份文件。
+///
+/// 🔴 这些名字**现在的代码已经不再产生**（它们来自已经废弃的提示词安装路线），但装过老版本的
+/// 机器上还留着，而且卸载从来没收过它们。2026-09-04 在实机上找到的原样两条：
+///
+/// ```text
+/// C:\Users\<user>\.codex\config.toml.bak-agent-avatar
+/// C:\Users\<user>\AppData\Local\hermes\config.yaml.bak-agent-avatar-cleanup
+/// ```
+///
+/// 名字是钉死的，只删我们自己起的这几个 —— 不去猜、不做通配。
+fn sweep_legacy_backups(harness: &str) {
+    let leftovers: Vec<PathBuf> = match harness {
+        "codex" => vec![crate::connectors::harness_home("CODEX_HOME", ".codex")
+            .join("config.toml.bak-agent-avatar")],
+        "hermes" => hermes_homes().into_iter()
+            .map(|root| root.join("config.yaml.bak-agent-avatar-cleanup")).collect(),
+        "dsh" => vec![dsh_patch_file().with_extension("yml.agent-avatar-backup")],
+        _ => Vec::new(),
+    };
+    for path in leftovers { let _ = fs::remove_file(path); }
 }
 
 /// `C:\a\b` -> `file:///C:/a/b`
@@ -1144,6 +1270,8 @@ pub(crate) fn uninstall_from(tree: &Path, harness: &str) -> Result<Value, String
     }
     // 装机记录跟着走：留着它的话，界面会把「刚装好，等新会话」说给一个已经卸载的用户听
     let _ = fs::remove_file(env::temp_dir().join(format!("agent-avatar-install.{harness}.json")));
+    // 老版本留下的备份文件也一并收掉（见 `sweep_legacy_backups`）
+    sweep_legacy_backups(harness);
     Ok(json!({ "harness": harness }))
 }
 
@@ -1420,7 +1548,7 @@ pub fn uninstall_connector(app: tauri::AppHandle, harness: String) -> Result<Val
 
 #[cfg(test)]
 mod tests {
-    use super::{command_line_path, edit_dsh_registration, file_url, harness_relative, interpreter_token, joined, split_off_interpreter,
+    use super::{command_line_path, edit_dsh_registration, file_url, harness_relative, interpreter_token, joined, missing_from_tree, split_off_interpreter,
                 python_relative, restore_list, restore_list_path, rewrite_hooks_json, rewrite_index_mjs, smoke_test};
     use std::{env, fs, path::PathBuf, sync::{Mutex, MutexGuard}};
 
@@ -1709,6 +1837,87 @@ mod tests {
         edit_dsh_registration(&PathBuf::from("/bundle/marketplace"), false).unwrap();
         let body = fs::read_to_string(dir.join("cordis.patch.yml")).unwrap();
         assert!(!body.contains("[]"), "{body}");
+        restore_dsh_home(previous);
+    }
+
+    /// 半成品的树必须被挡下来，而且要**说出缺哪家**。
+    ///
+    /// 🔴 这条测试存在的理由：2026-09-04 Windows 上 `build-bundle.sh` 中途失败，留下一棵
+    /// 只有 hermes 的树。老判据只看 `tree.is_dir()`，照样放行，于是坏包被打了出去，
+    /// 用户点安装拿到的是 `hooks.json: The system cannot find the path specified. (os error 3)`。
+    #[test]
+    fn a_half_built_tree_is_rejected_and_names_what_is_missing() {
+        let tree = scratch("bundle-partial");
+        // 只铺 hermes —— 正是那次失败留下的形状
+        let hermes = tree.join(harness_relative("hermes"));
+        fs::create_dir_all(&hermes).unwrap();
+        fs::write(hermes.join("plugin.yaml"), "version: 1.1.0").unwrap();
+
+        let missing = missing_from_tree(&tree).expect("缺四家的树必须被判为不完整");
+        assert!(!missing.contains(&"hermes"), "{missing:?}");
+        for harness in ["claude-code", "codex", "dsh", "workbuddy"] {
+            assert!(missing.contains(&harness), "没报出缺 {harness}：{missing:?}");
+        }
+
+        // 空目录也算缺 —— assemble.sh 建了目录、冒烟自检才失败时就是这个形状
+        for harness in ["claude-code", "codex", "dsh", "workbuddy"] {
+            fs::create_dir_all(tree.join(harness_relative(harness))).unwrap();
+        }
+        assert_eq!(missing_from_tree(&tree).map(|list| list.len()), Some(4),
+                   "空目录被当成装好了");
+
+        // 五家都有内容才算齐
+        for harness in ["claude-code", "codex", "dsh", "workbuddy"] {
+            fs::write(tree.join(harness_relative(harness)).join("plugin.json"), "{}").unwrap();
+        }
+        assert!(missing_from_tree(&tree).is_none());
+    }
+
+    /// shebang 脚本的判据**不能命中裸命令名**。
+    ///
+    /// 🔴 这条测试存在的理由是一个会挂死的坑：`node_exe()` 用 `Path::new("node")` 去试
+    /// `node --version`，而 `node` 同样没有扩展名。若判据只看「有没有扩展名」，那次探测
+    /// 就会被判成脚本、再去找 node 来跑它 —— 无限递归。所以还要求绝对路径且文件存在。
+    #[cfg(windows)]
+    #[test]
+    fn a_bare_command_name_is_never_mistaken_for_a_shebang_script() {
+        use super::launcher_for;
+        use std::path::Path;
+        assert!(launcher_for(Path::new("node")).is_none(), "裸命令名被当成脚本会无限递归");
+        assert!(launcher_for(Path::new("codebuddy")).is_none());
+        // 绝对路径但不存在 —— 同样不该包
+        assert!(launcher_for(&env::temp_dir().join("definitely-not-here")).is_none());
+        // 有扩展名的（npm 的 .cmd、真 .exe）直接执行，不需要 node
+        let cmd = scratch("launcher").join("codebuddy.cmd");
+        fs::write(&cmd, "@echo off").unwrap();
+        assert!(launcher_for(&cmd).is_none(), ".cmd 能直接跑，不该再包一层 node");
+    }
+
+    /// 卸载不能把我们自己的备份文件留在 dsh 的配置目录里。
+    ///
+    /// 🔴 2026-09-04 实机：卸完之后 `.dsh/cordis.patch.yml.agent-avatar-backup` 还在，
+    /// 内容是我们自己那段托管块，里面的路径指向一个已经不存在的地方。
+    /// 「不把垃圾留在别人应用里」正是卸载存在的理由。
+    #[test]
+    fn uninstalling_takes_our_dsh_backup_with_it() {
+        let dir = scratch("dsh-backup-swept");
+        let (_guard, previous) = with_dsh_home(&dir);
+        let backup = dir.join("cordis.patch.yml.agent-avatar-backup");
+        let tree = PathBuf::from("/bundle/marketplace");
+
+        // 用户本来就有内容 —— 改写时会先留一份备份
+        fs::write(dir.join("cordis.patch.yml"), "- insert:
+    - id: theirs
+").unwrap();
+        edit_dsh_registration(&tree, false).unwrap();
+        assert!(backup.is_file(), "装的时候本来就该留一份保险");
+
+        edit_dsh_registration(&tree, true).unwrap();
+        assert!(!backup.is_file(), "卸完之后备份还留在 dsh 的目录里");
+        // 用户自己那条要原样还在
+        let body = fs::read_to_string(dir.join("cordis.patch.yml")).unwrap();
+        assert!(body.contains("id: theirs"), "{body}");
+        assert!(!body.contains("agent-avatar"), "{body}");
         restore_dsh_home(previous);
     }
 
