@@ -693,13 +693,30 @@ fn interpreter_token(python: &str) -> String {
 ///
 /// **第一次装是好的，第二次装才烂** —— 所以只装一次的测试永远看不见它。
 ///
-/// 判据是引号：开头是 `"` 就找配对的收尾引号，否则才退回按空格切。
+/// 🔴 **Windows 上是同一个坑的另一半。** 那边首 token **有意不加引号**（带引号会噎住
+/// PowerShell，靠 8.3 短路径避空格，见 `command_line_path`），所以「开头是引号」这一条
+/// 认不出来，一样退回按空格切、一样切在 `Application` 和 `Support` 中间。CI 抓到的原话：
+///
+/// ```text
+/// …/Application Support/…/python3 "Support/io.github.x/python/bin/python3" "${PLUGIN_ROOT}/…"
+/// ```
+///
+/// 所以判据分三档，靠的是**脚本那一段永远带引号**这个事实，而不是去猜路径在哪结束
+/// （猜不准：`C:/Program Files/py/python.exe` 里的空格既可能是分隔符也可能在路径里）。
 fn split_off_interpreter(source: &str) -> String {
+    // 1) 解释器自己带引号（POSIX 改写过一遍的样子）—— 找配对的收尾引号
     if let Some(rest) = source.strip_prefix('"') {
         if let Some((_, tail)) = rest.split_once('"') {
             return tail.trim().to_string();
         }
     }
+    // 2) 解释器不带引号，但后面的脚本带（Windows 改写过一遍的样子）——
+    //    尾巴就从第一个引号开始。**不用去猜路径在哪结束**，那是猜不准的：
+    //    `C:/Program Files/py/python.exe "…"` 里空格既可能是分隔符也可能在路径里。
+    if let Some(at) = source.find('"') {
+        return source[at..].trim().to_string();
+    }
+    // 3) 一个引号都没有（打包树里的原始模板，解释器是裸的 `python3`）—— 按空格切是对的
     match source.split_once(' ') {
         Some((_, rest)) => rest.trim().to_string(),
         None => source.to_string(),
@@ -1403,7 +1420,7 @@ pub fn uninstall_connector(app: tauri::AppHandle, harness: String) -> Result<Val
 
 #[cfg(test)]
 mod tests {
-    use super::{command_line_path, edit_dsh_registration, file_url, harness_relative, interpreter_token, joined,
+    use super::{command_line_path, edit_dsh_registration, file_url, harness_relative, interpreter_token, joined, split_off_interpreter,
                 python_relative, restore_list, restore_list_path, rewrite_hooks_json, rewrite_index_mjs, smoke_test};
     use std::{env, fs, path::PathBuf, sync::{Mutex, MutexGuard}};
 
@@ -1558,6 +1575,27 @@ mod tests {
     /// 失败，根本轮不到写进配置。**只装一次的测试同样永远碰不到**。
     ///
     /// 首 token 的形状两个平台不同（见断言处），所以这条断言问 `interpreter_token`。
+    /// 三档判据各来一条 —— **不依赖当前平台**，所以 mac 上也能验到 Windows 那一支。
+    ///
+    /// 那一支是 CI 抓出来的：Windows 首 token 不带引号，「开头是引号」认不出来，
+    /// 退回按空格切就切在了 `Application` 和 `Support` 中间。
+    #[test]
+    fn the_interpreter_is_split_off_by_quotes_not_by_the_first_space() {
+        let script = "\"${PLUGIN_ROOT}/hooks/agent-avatar-hook.py\" ; exit 0";
+
+        // ① 解释器带引号（POSIX 改写过一遍）
+        assert_eq!(split_off_interpreter(&format!("\"/a b/py\" {script}")), script);
+        // ② 解释器不带引号但**路径里有空格**（Windows 改写过一遍）—— 这一条是 CI 抓到的
+        assert_eq!(split_off_interpreter(&format!("/a b/py {script}")), script,
+                   "按第一个空格切会把路径后半截当成脚本");
+        assert_eq!(split_off_interpreter(&format!("C:/Program Files/py/python.exe {script}")), script);
+        // ③ 一个引号都没有（打包树里的原始模板）—— 按空格切才是对的
+        assert_eq!(split_off_interpreter("python3 ${PLUGIN_ROOT}/hooks/x.py ; exit 0"),
+                   "${PLUGIN_ROOT}/hooks/x.py ; exit 0");
+        // 只有一个 token 时原样返回，别切出空串
+        assert_eq!(split_off_interpreter("python3"), "python3");
+    }
+
     #[test]
     fn rewriting_twice_is_idempotent_even_when_the_interpreter_path_has_spaces() {
         let dir = scratch("hooks-twice");
