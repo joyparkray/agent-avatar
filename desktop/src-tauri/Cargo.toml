@@ -1,6 +1,6 @@
 [package]
 name = "agent-avatar"
-version = "1.0.13"
+version = "1.0.14"
 edition = "2021"
 [lib]
 name = "agent_avatar_lib"
