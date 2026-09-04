@@ -283,7 +283,14 @@ function renderStatus(): void {
   // 用两个子节点而不是拼一个字符串：第二行要能单独设样式（更小、更淡），也要能整行省略。
   status.textContent = "";
   status.append(Object.assign(document.createElement("span"), { className: "status-line", textContent: first }));
-  if (doing) status.append(Object.assign(document.createElement("span"), { className: "status-doing", textContent: doing }));
+  // 开着详情就**总是**建第二行，哪怕它是空的：空行占住位置，第一行才不会被顶上去。
+  // 关着的时候连节点都不建 —— 那些用户拿到的应当是一模一样的老胶囊。
+  if (detailEnabled) {
+    status.dataset.detail = "";
+    status.append(Object.assign(document.createElement("span"), { className: "status-doing", textContent: doing }));
+  } else {
+    delete status.dataset.detail;
+  }
   // 标题只带状态：任务栏/程序坞上那一行更短，而详情每几秒就变一次，
   // 让窗口标题跟着抖等于让整个任务栏跟着抖。
   void getCurrentWindow().setTitle(`Agent Avatar${currentState ? ` · ${currentState}` : ""}`).catch(console.error);
@@ -724,6 +731,10 @@ async function installMenu(model: Live2DAvatarModel, audio: AudioSourceControlle
   model.setSemanticMotions(readStateMotions(dir));
   model.setSemanticExpressions(readStateExpressions(dir));
   stateLabels = readStateLabels();
+  // 🔴 每次启动都重申一遍。开关文件在临时目录里，而临时目录会被系统清扫 —— 清掉之后
+  // hook 回到「默认关」，于是一个明明开着的功能悄悄不动了，界面上还打着勾。
+  void invoke("set_activity_detail", { enabled: detailEnabled })
+    .catch(error => log({ event: "activity-detail:assert:error", error: String(error).slice(0, 200) }));
 
   const buildState = () => ({
     models, currentDir: dir, inventory, audioSource, stateSource,

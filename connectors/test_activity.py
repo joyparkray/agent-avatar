@@ -57,9 +57,11 @@ def test_nothing_usable_means_nothing_shown():
     assert field(description="   ", file_path="/tmp/a/b.py") == "b.py"
 
 
-def test_off_is_a_choice_the_app_writes_down(tmp_path, monkeypatch):
+def test_on_is_a_choice_the_app_writes_down(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_AVATAR_STATE_PATH", str(tmp_path / "state.json"))
-    assert activity_allowed(), "没有那个文件时默认是开的"
+    # 🔴 没有那个文件 = 关。默认开的话，对一个从没要过这功能的用户，工具名和文件名照样
+    # 会被写进磁盘 —— 一个关着的开关，底下的东西还在跑。
+    assert not activity_allowed()
     with open(options_path(), "w", encoding="utf-8") as handle:
         json.dump({"activity": False}, handle)
     assert not activity_allowed()

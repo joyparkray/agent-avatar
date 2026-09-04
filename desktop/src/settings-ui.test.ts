@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 describe("settings information architecture", () => {
   const html = readFileSync("settings.html", "utf8");
 
-  it.each(["general", "video", "agent", "behavior", "models"])("has the %s tab and panel", name => {
+  it.each(["general", "video", "agent", "behavior", "models", "about"])("has the %s tab and panel", name => {
     expect(html).toContain(`data-tab="${name}"`);
     expect(html).toContain(`data-panel="${name}"`);
   });

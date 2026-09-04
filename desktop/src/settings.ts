@@ -36,7 +36,7 @@ const setLabel = (name: string, text: string) => { $(`[data-label="${name}"]`).t
 
 const TEXT: Record<Language, Record<string, string>> = {
   "zh-CN": {
-    "tab.general": "通用", "tab.video": "视频", "tab.agent": "Agent", "tab.behavior": "行为", "tab.models": "模型",
+    "tab.general": "通用", "tab.video": "视频", "tab.agent": "Agent", "tab.behavior": "行为", "tab.about": "关于", "about.by": "作者", "about.rights": "保留所有权利。", "about.repo": "源码仓库", "about.thirdParty": "第三方组件", "about.thirdPartyHint": "本应用用到下列组件，版权归各自作者所有。", "about.live2d": "Live2D 专有软件许可", "tab.models": "模型",
     "general.language": "语言", "general.interfaceLanguage": "界面语言", "general.languageHint": "语言切换会立即应用到设置窗口。", "general.statusBar": "状态栏", "general.statusHint": "显示 Agent 当前在做什么，并可调整到不遮挡模型的位置。", "general.position": "位置",
     "general.about": "关于", "general.updateCheck": "自动检查更新", "general.updateHint": "只查一个版本号，不会下载或安装任何东西。查不到时（离线、代理、网络限制）不会有任何提示。", "general.checkNow": "检查更新", "general.checking": "查询中…", "general.upToDate": "已是最新版本。", "general.unreachable": "这会儿查不到（离线或网络受限），不影响使用。", "general.newVersion": "有新版本 {version}", "general.applyUpdate": "去下载",
     "video.display": "显示", "video.scale": "缩放", "video.opacity": "透明度", "video.focus": "聚焦范围：显示顶部", "video.focusHint": "仅在右键菜单启用聚焦模式时生效。", "video.rendering": "渲染", "video.renderHint": "降低画质通常比降低帧率更省 GPU。", "video.quality": "画质", "video.fps": "帧率",
@@ -52,7 +52,7 @@ const TEXT: Record<Language, Record<string, string>> = {
     ...Object.fromEntries(SEMANTIC_STATES.map(state => [`state.${state}`, state])),
   },
   en: {
-    "tab.general": "General", "tab.video": "Video", "tab.agent": "Agent", "tab.behavior": "Behavior", "tab.models": "Models",
+    "tab.general": "General", "tab.video": "Video", "tab.agent": "Agent", "tab.behavior": "Behavior", "tab.about": "About", "about.by": "By", "about.rights": "All rights reserved.", "about.repo": "Source repository", "about.thirdParty": "Third-party components", "about.thirdPartyHint": "This app uses the components below; each remains the property of its author.", "about.live2d": "Live2D Proprietary Software License", "tab.models": "Models",
     "general.language": "Language", "general.interfaceLanguage": "Interface language", "general.languageHint": "Language changes apply to this settings window immediately.", "general.statusBar": "Status bar", "general.statusHint": "Show what the agent is doing and place the label where it does not cover the avatar.", "general.position": "Position",
     "general.about": "About", "general.updateCheck": "Check for updates automatically", "general.updateHint": "It reads a version number and nothing else — no download, no install. If it cannot reach the network, it says nothing.", "general.checkNow": "Check for updates", "general.checking": "Checking…", "general.upToDate": "You are on the latest version.", "general.unreachable": "Can't reach it right now (offline or restricted). Nothing is affected.", "general.newVersion": "Version {version} is available", "general.applyUpdate": "Download",
     "video.display": "Display", "video.scale": "Scale", "video.opacity": "Opacity", "video.focus": "Focus crop: show top", "video.focusHint": "Only applies when Focus Mode is enabled from the context menu.", "video.rendering": "Rendering", "video.renderHint": "Lowering quality usually saves more GPU power than lowering frame rate.", "video.quality": "Quality", "video.fps": "Frame rate",
@@ -813,6 +813,19 @@ async function boot(): Promise<void> {
   const idleDefault = actions.map(item => item.key);
 
   guard("state-motions", () => bindStateActions(dir, actions));
+  // 🔴 **webview 里不能直接跳转。** 设置页就是这个 webview 的全部内容，点一个 http 链接
+  // 会把整页替换成 GitHub，而这个窗口没有地址栏也没有后退键 —— 用户就困在里面了。
+  // 一律交给系统浏览器/邮件客户端（同 open_in_browser 那条既有路径）。
+  guard("about-links", () => {
+    document.querySelectorAll<HTMLElement>("[data-link], [data-mail]").forEach(node => {
+      const url = node.dataset.link ?? (node.dataset.mail ? `mailto:${node.dataset.mail}` : "");
+      if (!url) return;
+      node.addEventListener("click", event => {
+        event.preventDefault();
+        void invoke("open_in_browser", { url }).catch(console.error);
+      });
+    });
+  });
   guard("activity-detail", () => {
     const box = $<HTMLInputElement>('[data-act="activity-detail"]');
     box.checked = readActivityDetail();

@@ -189,14 +189,17 @@ export function readUpdateCheck(): boolean {
 export function writeUpdateCheck(value: boolean): void { writeRaw("updateCheck", value); }
 
 /**
- * 状态栏第二行：显示 agent 具体在做什么。默认开。
+ * 状态栏第二行：显示 agent 具体在做什么。**默认关**。
+ *
+ * 默认关是因为它显示的是 agent 在这台机器上具体动了什么 —— 文件名、域名、它给自己那一步
+ * 写的说明。这些东西出现在一个常驻置顶的窗口上（会被录屏、被投屏、被同事看见），应当是
+ * 用户主动打开的，不是他某天低头发现已经在那儿了。
  *
  * 这一份只管**界面显不显示**；真正决定「工具信息写不写进磁盘」的是 hook 那边读的开关文件，
  * 由 `set_activity_detail` 命令写。两处要一起改，否则会出现「界面关了但文件里还在写」。
  */
 export function readActivityDetail(): boolean {
-  const raw = readRaw("activityDetail");
-  return raw === undefined || raw === null ? true : Boolean(raw);
+  return Boolean(readRaw("activityDetail"));
 }
 export function writeActivityDetail(value: boolean): void { writeRaw("activityDetail", value); }
 

@@ -139,12 +139,21 @@ def options_path():
 
 
 def activity_allowed():
-    """Off is a **choice the app writes down**; absent means on.
+    """On is a **choice the app writes down**; absent means off.
 
-    Gated here rather than in the skin: with it off, nothing about the tool is written
-    to disk at all. Costs one small read per event (usually ENOENT).
+    🔴 **Default off, and the default has to live here too.** The skin defaults to not
+    showing it; if this side defaulted to on, the tool names and file names would be
+    written to disk anyway for every user who never asked for the feature — a switch
+    that is off while the thing it switches keeps running.
+
+    Gated here rather than in the skin for the same reason: with it off, nothing about
+    the tool reaches disk at all. Costs one small read per event (usually ENOENT).
+
+    The app re-asserts this file at every launch, because it lives in the temp
+    directory and gets swept — without that, the feature would quietly stop working
+    for someone who had turned it on.
     """
-    return read_json(options_path(), {}).get("activity") is not False
+    return read_json(options_path(), {}).get("activity") is True
 
 
 # The vocabulary has to cover both Hermes's tool names (terminal, exec_command,
