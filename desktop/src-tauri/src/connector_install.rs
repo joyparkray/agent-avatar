@@ -467,6 +467,25 @@ fn python_relative() -> &'static str {
     if cfg!(windows) { "python/python.exe" } else { "python/bin/python3" }
 }
 
+/// 自带解释器那棵树的根 —— 从解释器二进制的位置往回推。
+///
+/// 🔴 **两个平台的布局不一样**，而差别正好藏在「往上几层」里：
+/// Windows 上 python-build-standalone 是扁平的（`python.exe` 和 `Lib\` 同级），
+/// POSIX 上是 `bin/python3` + `lib/python3.13`。所以只拿 `python3` 旁边那一层的话，
+/// Windows 恰好整套带走，mac 上拷出来的却是个找不到 stdlib 的空壳 —— 一跑就是
+///
+///   Could not find platform independent libraries <prefix>
+///   ModuleNotFoundError: No module named 'encodings'
+///
+/// 而它连 `sys.prefix` 都退回了编译期烤进去的 `/install`。
+/// 这条规则原来只写在 `lay_out_tree` 里，live 测试自己又写了一遍**而且写漏了** ——
+/// 于是那个测试在 Windows 上一直是绿的，在 mac 上从来没跑通过（2026-09-03 首次发现）。
+/// 一份定义，两处调用。
+fn python_root_of(binary: &Path) -> Option<PathBuf> {
+    let dir = binary.parent()?;
+    if cfg!(windows) { Some(dir.to_path_buf()) } else { dir.parent().map(Path::to_path_buf) }
+}
+
 /// 把打包的那棵树**和解释器**铺进「这个版本自己的目录」，返回可以直接用的两个路径。
 ///
 /// 🔴 **解释器不能就地用资源目录里那份。** 资源目录是 Tauri 按当前可执行文件的位置在运行时
@@ -495,8 +514,7 @@ fn lay_out_tree(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
         let _ = fs::remove_dir_all(&staging);
         copy_tree(&bundle_tree, &staging.join("marketplace"))
             .map_err(|error| format!("拷贝连接器树失败：{error}"))?;
-        let python_source = bundle_python.parent()
-            .and_then(|dir| if cfg!(windows) { Some(dir.to_path_buf()) } else { dir.parent().map(Path::to_path_buf) })
+        let python_source = python_root_of(&bundle_python)
             .ok_or_else(|| "自带解释器的位置不对".to_string())?;
         copy_tree(&python_source, &staging.join("python"))
             .map_err(|error| format!("拷贝解释器失败：{error}"))?;
@@ -961,7 +979,7 @@ pub(crate) fn install_into(tree: &Path, python: &Path, harness: &str, hermes_dir
             // marketplace 那两个动词三家一致（实测），不同的只有插件本身那两个。
             let _ = run(&cli, &["plugin", "marketplace", "remove", "agent-avatar"]);
             run(&cli, &["plugin", "marketplace", "add", &tree_text])?;
-            run(&cli, &["plugin", &add, "agent-avatar@agent-avatar"])?;
+            run(&cli, &["plugin", &add, crate::connectors::PLUGIN_ID])?;
         }
     }
 
@@ -1016,7 +1034,7 @@ pub(crate) fn uninstall_from(tree: &Path, harness: &str) -> Result<Value, String
             // found.`）而插件原样留着 —— 那次看起来成功，是下一步删 marketplace 时顺带
             // 带走的，靠副作用卸载迟早会漏。
             let (_, remove) = plugin_verbs(&cli, harness);
-            run(&cli, &["plugin", &remove, "agent-avatar@agent-avatar"])?;
+            run(&cli, &["plugin", &remove, crate::connectors::PLUGIN_ID])?;
             let _ = run(&cli, &["plugin", "marketplace", "remove", "agent-avatar"]);
         }
     }
@@ -1538,9 +1556,10 @@ mod tests {
         let root = scratch("live-install");
         let tree = root.join("marketplace");
         super::copy_tree(&bundle, &tree).unwrap();
-        let python_root = root.join("python");
-        super::copy_tree(bundled_python.parent().unwrap(), &python_root).unwrap();
-        let python = python_root.join(bundled_python.file_name().unwrap());
+        // 布局规则和 app 走同一条 —— 自己再写一遍正是这个测试在 mac 上从没跑通的原因
+        let source = super::python_root_of(&bundled_python).expect("自带解释器的位置不对");
+        super::copy_tree(&source, &root.join("python")).unwrap();
+        let python = joined(&root, super::python_relative());
 
         let report = super::install_into(&tree, &python, &harness, &root.join("hermes-repo"))
             .unwrap_or_else(|error| panic!("装 {harness} 失败：{error}"));
