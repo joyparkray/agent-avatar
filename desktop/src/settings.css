@@ -156,10 +156,14 @@ input[type="number"] {
 .about-version { font-size: 11px; }
 /* 作者名单独一行、比应用名小一号 —— 它是这一页的主语，不该淹在链接里 */
 .about-author { margin: 8px 0 0; font-size: 15px; font-weight: 600; }
-.about-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px; margin: 6px 0 0; font-size: 12px; }
+.about-links { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 4px 14px; margin: 6px 0 0; font-size: 12px; }
+.about-links + .about-links { margin-top: 4px; }
+/* 邮箱跟在名字后面的括号里，**不做链接**：mailto 要有默认邮件客户端才有反应，
+   没配的机器上点了什么都不会发生 —— 又是一个「点了没反应」。 */
+.about-mail { font-size: 12px; font-weight: 400; opacity: .6; }
 /* 🔴 小红书只有号，没有能拼出个人主页的地址 —— 所以它是**可选中的文本**，不是链接。
    做成假链接点了没反应，正是这一页刚犯过的那个错。 */
-.about-xhs { margin: 2px 0 0; font-size: 12px; opacity: .75; }
+.about-xhs { opacity: .75; }
 .about-xhs code { padding: 1px 5px; border-radius: 4px; background: #0000000f; font-size: 12px; user-select: all; }
 .about-copyright { margin: 10px 0 0; font-size: 11px; opacity: .6; }
 .about-status:empty { display: none; }

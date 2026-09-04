@@ -97,7 +97,6 @@ const EXTERNAL_URLS: &[&str] = &[
     "https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_cn.html",
     "https://github.com/joyparkray/agent-avatar",
     "https://x.com/sorockxr",
-    "mailto:joyparkray@gmail.com",
 ];
 
 #[tauri::command]

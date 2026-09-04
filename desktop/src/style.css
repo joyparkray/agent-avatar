@@ -1,17 +1,25 @@
-:root{font-family:system-ui;color:white;--state:#77d8ff;--vocal:0}*{box-sizing:border-box}html,body,#app{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}.shell{height:100%;position:relative;background:transparent}.drag{position:absolute;inset:0 0 auto;height:42px;z-index:5;cursor:grab}.model{width:100%;height:100%;background:transparent;cursor:grab}.model:active,.drag:active{cursor:grabbing}canvas{display:block}.status{position:absolute;left:18px;bottom:16px;padding:7px 11px;border:1px solid color-mix(in srgb,var(--state) 70%,white);border-radius:18px;background:#102030bf;box-shadow:0 0 calc(8px + 22px * var(--vocal)) var(--state);font-size:12px;max-width:calc(100% - 36px)}
+:root{font-family:system-ui;color:white;--state:#77d8ff;--vocal:0}*{box-sizing:border-box}html,body,#app{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}.shell{height:100%;position:relative;background:transparent}.drag{position:absolute;inset:0 0 auto;height:42px;z-index:5;cursor:grab}.model{width:100%;height:100%;background:transparent;cursor:grab}.model:active,.drag:active{cursor:grabbing}canvas{display:block}.status{position:absolute;left:12%;bottom:26px;padding:7px 11px;border:1px solid color-mix(in srgb,var(--state) 70%,white);border-radius:18px;background:#102030bf;box-shadow:0 0 calc(8px + 22px * var(--vocal)) var(--state);font-size:12px;max-width:calc(100% - 36px)}
 /* 状态栏两行：第一行是状态（常驻），第二行是「具体在干嘛」。
    🔴 **必须有宽度上限。** 胶囊原来 left:18px 且不换行，而 body 是 overflow:hidden ——
    一条 471px 的搜索词会有一半在窗口外面，静默地没了（跟当初首启向导是同一个毛病）。
    详情在 hook 那边已经截到 40 字符，这里是第二道：最多两行，再长就省略号。 */
-.status-line{display:block}
+/* 🔴 第一行**不许折行**。框窄了之后它是会折的（状态名 + 手动触发提示 + 穿透提示能叠到
+   两百多像素），而一折行，上面那条「第一行位置不变」的保证就没了 —— 高度变了，底边锚定
+   会把它顶上去。宁可把尾巴截掉：最前面的状态名才是常驻要看的那个。 */
+.status-line{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .status-doing{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:3px;font-size:11px;opacity:.72;line-height:1.35;word-break:break-word}
 /* 开着详情时，胶囊变成一个**固定的对话框**：撑满可用宽度，并且**永远两行高**。
    🔴 两条都是为了同一件事 —— 第一行不许动。胶囊锚在底边（bottom:16px），所以第二行一出现
    就把第一行顶上去；而第一行是常驻信息，它跳来跳去比第二行本身还碍眼。永远留出第二行的
    位置，高度就恒定了。宽度同理：跟着内容伸缩的话，每换一个工具框子就变一次宽。
    关掉详情的用户看到的还是原来那个随内容伸缩的小胶囊 —— 这段完全不生效。 */
-.status[data-detail]{width:calc(100% - 36px)}
+/* 🔴 **一行和两行，第一行必须在同一高度。** 胶囊锚在底边，所以两行的那个要往下挪整
+   一行的量（下面那个 8px 与上面那个 26px 的差，就是一行的高度）—— 否则开关一勾，
+   常驻的状态字就跳一下。左右两侧留同样的边距，看起来像游戏里的对话框而不是一个贴边的标签。
+   顶部对齐的那两档（top-left / top-right）不需要这条：它们本来就从上往下长。 */
+.status[data-detail]{bottom:8px;width:76%}
 .status[data-detail] .status-doing{min-height:15px}
+.status[data-pos="top-left"][data-detail],.status[data-pos="top-right"][data-detail]{bottom:auto}
 /* 🔴 卡片可能比窗口高 —— 桌宠窗口本来就小，而中文文案又比英文长。
    不给上限的话它被窗口直接裁掉：实机上「下载免费模型」那个按钮有一半在窗外，
    而用户既看不到它、也没有滚动条提示还有内容。连接器向导单独写过这两条，
@@ -19,8 +27,8 @@
 .fallback{position:relative;margin:34px 24px;padding:22px;max-height:calc(100% - 68px);overflow:auto;color:#17324d;background:#eef7ff;border:1px solid #b8daf4;border-radius:14px;box-shadow:0 10px 30px #27648a2e}.fallback b{display:block;margin-bottom:10px;font-size:16px}.fallback p{margin:0 0 16px;line-height:1.65}.fallback strong{color:#075f9f}.onboarding{padding-top:54px}.onboarding-language{position:absolute;top:12px;right:14px;display:flex;align-items:center;gap:6px;color:#537087;font-size:11px}.onboarding-language select{padding:3px 5px;color:#17324d;background:#fff;border:1px solid #b8daf4;border-radius:6px}.fallback-actions{display:grid;gap:8px}.fallback button{width:100%;padding:8px 10px;color:#16466b;background:#fff;border:1px solid #9bc8e8;border-radius:8px;font:inherit;cursor:pointer}.fallback button:first-child{color:#fff;background:#1683c7;border-color:#1683c7}.fallback button:hover{filter:brightness(.96)}.idle{--state:#77d8ff}.thinking{--state:#b997ff}.working{--state:#ffd166}.error{--state:#ff5577}.speaking{--state:#70ffbd}
 /* 状态栏位置：默认左下，其余由 data-pos 覆盖。窗口是透明悬浮窗，人物在窗口里的位置随构图变化，固定一个角落未必合适。 */
 .status[data-pos="top-left"]{top:14px;bottom:auto}
-.status[data-pos="top-right"]{top:14px;bottom:auto;left:auto;right:18px}
-.status[data-pos="bottom-right"]{left:auto;right:18px}
+.status[data-pos="top-right"]{top:14px;bottom:auto;left:auto;right:12%}
+.status[data-pos="bottom-right"]{left:auto;right:12%}
 .status[data-pos="none"]{display:none}
 
 /* 接入向导：窗口只有 340×440，五家 + 手动步骤放不下时让卡片自己滚，不要撑出窗口。
