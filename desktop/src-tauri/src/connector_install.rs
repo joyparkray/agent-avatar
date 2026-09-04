@@ -255,6 +255,19 @@ fn child_path() -> std::ffi::OsString {
     }).clone()
 }
 
+/// WorkBuddy 要登记进哪几个 home。
+///
+/// 两个产品各一套账（见 `run_in_home`），而用户可能只装了其中一个、也可能两个都用。
+/// **只登记已经存在的那些** —— 给只用桌面版的人凭空造一个 `~/.codebuddy` 出来是噪音，
+/// 而那个目录一旦存在，检测那一侧还会把它当成「这家用过」。
+///
+/// 一个都不存在时返回空，调用方退回让 CLI 自己决定（它会按默认建 `.codebuddy`）。
+fn workbuddy_homes() -> Vec<PathBuf> {
+    [crate::connectors::harness_home("WORKBUDDY_CONFIG_DIR", ".workbuddy"),
+     crate::connectors::harness_home("CODEBUDDY_CONFIG_DIR", ".codebuddy")]
+        .into_iter().filter(|dir| dir.is_dir()).collect()
+}
+
 /// 跑一条命令，失败时把 harness 自己说的话原样带回来。
 ///
 /// 错误信息**必须是它的原话**：这条链路上我们能给用户的唯一线索就是 harness 的输出
@@ -277,6 +290,23 @@ const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 /// - **超时后杀掉。** 上一条挡不住铁了心要等的实现，也挡不住卡在网络上的那种。
 ///   宁可报「超时」让用户看见，也不能让安装线程停在那儿。
 fn run(program: &Path, args: &[&str]) -> Result<String, String> {
+    run_in_home(program, args, None)
+}
+
+/// 同上，但可以把 CLI 的**配置目录**钉死在某一个 home。
+///
+/// 🔴 只有 WorkBuddy 需要这个，因为它一个二进制服务两个产品：桌面版读 `~/.workbuddy`，
+/// 独立 CLI 读 `~/.codebuddy`（它自己代码里 `USER_DATA_DIR_NAME = ".codebuddy"`，
+/// 而 `.workbuddy` 只在「产品名包含 workbuddy」时才用）。**两边是完全独立的两套账**：
+/// settings.json、known_marketplaces.json、installed_plugins.json 各一份，互不相通。
+///
+/// 不指定的话，从我们这儿拉起来的 CLI 认的是 `.codebuddy` —— 而用户看的是桌面版的插件
+/// 列表，读的是 `.workbuddy`。表现就是 2026-09-03 实机那句：**「安装显示成功，但 app 里
+/// 看不到插件」**。装是真装了，只是装进了那个 app 不读的 home。
+///
+/// `CODEBUDDY_CONFIG_DIR` 是它自己认的变量（实测：指到空目录后它在那儿造出了完整的
+/// `plugins/known_marketplaces.json`）。
+fn run_in_home(program: &Path, args: &[&str], home: Option<&Path>) -> Result<String, String> {
     use std::io::Read;
 
     let mut command = Command::new(program);
@@ -284,6 +314,9 @@ fn run(program: &Path, args: &[&str]) -> Result<String, String> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    if let Some(home) = home {
+        command.env("CODEBUDDY_CONFIG_DIR", home);
+    }
     #[cfg(unix)]
     command.env("PATH", child_path());
     #[cfg(windows)]
@@ -1009,11 +1042,19 @@ pub(crate) fn install_into(tree: &Path, python: &Path, harness: &str, hermes_dir
             let cli = resolve_cli(harness)
                 .ok_or_else(|| format!("找不到 {harness} 的命令行程序"))?;
             let (add, _) = plugin_verbs(&cli, harness);
-            // 同名 marketplace 已登记时 `add` 会报「已存在」，那不是失败 —— 先撤再加。
-            // marketplace 那两个动词三家一致（实测），不同的只有插件本身那两个。
-            let _ = run(&cli, &["plugin", "marketplace", "remove", "agent-avatar"]);
-            run(&cli, &["plugin", "marketplace", "add", &tree_text])?;
-            run(&cli, &["plugin", &add, crate::connectors::PLUGIN_ID])?;
+            // WorkBuddy 一个 CLI 两个 home，两边都要登记；其余各家只有一个 home（None）
+            let homes: Vec<Option<PathBuf>> = if harness == "workbuddy" {
+                let found = workbuddy_homes();
+                if found.is_empty() { vec![None] } else { found.into_iter().map(Some).collect() }
+            } else { vec![None] };
+            for home in &homes {
+                let home = home.as_deref();
+                // 同名 marketplace 已登记时 `add` 会报「已存在」，那不是失败 —— 先撤再加。
+                // marketplace 那两个动词三家一致（实测），不同的只有插件本身那两个。
+                let _ = run_in_home(&cli, &["plugin", "marketplace", "remove", "agent-avatar"], home);
+                run_in_home(&cli, &["plugin", "marketplace", "add", &tree_text], home)?;
+                run_in_home(&cli, &["plugin", &add, crate::connectors::PLUGIN_ID], home)?;
+            }
         }
     }
 
@@ -1068,8 +1109,17 @@ pub(crate) fn uninstall_from(tree: &Path, harness: &str) -> Result<Value, String
             // found.`）而插件原样留着 —— 那次看起来成功，是下一步删 marketplace 时顺带
             // 带走的，靠副作用卸载迟早会漏。
             let (_, remove) = plugin_verbs(&cli, harness);
-            run(&cli, &["plugin", &remove, crate::connectors::PLUGIN_ID])?;
-            let _ = run(&cli, &["plugin", "marketplace", "remove", "agent-avatar"]);
+            // 装进了几个 home，就要从几个 home 收回来 —— 只收一个的话，另一个里那份
+            // 还挂着 hook，而界面（也读两个 home）会继续说「已安装」。
+            let homes: Vec<Option<PathBuf>> = if harness == "workbuddy" {
+                let found = workbuddy_homes();
+                if found.is_empty() { vec![None] } else { found.into_iter().map(Some).collect() }
+            } else { vec![None] };
+            for home in &homes {
+                let home = home.as_deref();
+                run_in_home(&cli, &["plugin", &remove, crate::connectors::PLUGIN_ID], home)?;
+                let _ = run_in_home(&cli, &["plugin", "marketplace", "remove", "agent-avatar"], home);
+            }
         }
     }
     // 装机记录跟着走：留着它的话，界面会把「刚装好，等新会话」说给一个已经卸载的用户听

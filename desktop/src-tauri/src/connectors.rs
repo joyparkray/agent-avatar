@@ -89,7 +89,7 @@ fn plugin_dirs(harness: &str) -> Vec<PathBuf> {
             let root = harness_home("CODEX_HOME", ".codex");
             vec![root.join(LOCAL_MARKETPLACE), root.join("plugins/agent-avatar")]
         }
-        "workbuddy" => vec![harness_home("WORKBUDDY_HOME", ".workbuddy").join(LOCAL_MARKETPLACE)],
+        "workbuddy" => vec![harness_home("WORKBUDDY_CONFIG_DIR", ".workbuddy").join(LOCAL_MARKETPLACE)],
         // dsh 与 hermes 不走 marketplace：dsh 是 cordis patch 指过来的目录，
         // hermes 是 in-process 的 Python 包，两家的位置没变过。
         "dsh" => vec![harness_home("DSH_HOME", ".dsh").join("plugins/agent-avatar")],
@@ -123,7 +123,7 @@ fn ledger_installed_at(harness: &str) -> Option<String> {
         "claude-code" => vec![harness_home("CLAUDE_CONFIG_DIR", ".claude").join("plugins/installed_plugins.json")],
         // 两个 home 都要看，理由同 `installed_by_record` —— 这里原来只看 `.workbuddy`，
         // 于是用独立 CLI 装的用户拿不到装机时间，「刚装好」的宽限期直接失效。
-        "workbuddy" => vec![harness_home("WORKBUDDY_HOME", ".workbuddy").join("plugins/installed_plugins.json"),
+        "workbuddy" => vec![harness_home("WORKBUDDY_CONFIG_DIR", ".workbuddy").join("plugins/installed_plugins.json"),
                             harness_home("CODEBUDDY_CONFIG_DIR", ".codebuddy").join("plugins/installed_plugins.json")],
         _ => return None,
     };
@@ -220,6 +220,11 @@ pub(crate) fn installed_by_record(harness: &str) -> Option<bool> {
         // WorkBuddy 的同一个 CLI 有两个 home：app 读 .workbuddy，独立 CLI 默认读 .codebuddy。
         // 任一本账记着就算装了 —— 用户可能只用其中一个。
         //
+        // 变量名是 `WORKBUDDY_CONFIG_DIR`，**不是我们原来写的 `WORKBUDDY_HOME`** ——
+        // 后者是我们自己发明的，CLI 根本不读它（它自己的 `getUserConfigPath` 只认
+        // `WORKBUDDY_CONFIG_DIR` 和 `CODEBUDDY_CONFIG_DIR`）。默认值一样所以平时不显，
+        // 但用户一旦设了那个变量，装进去的和我们去找的就是两个地方。
+        //
         // 🔴 **两个文件都要看，`installed_plugins.json` 一个人不够。** 从**目录型**
         // marketplace 装的插件根本不进那本账 —— WorkBuddy 不往 cache 里拷，只在
         // `settings.json` 的 `enabledPlugins` 里翻一个键。而我们正是目录型
@@ -234,7 +239,7 @@ pub(crate) fn installed_by_record(harness: &str) -> Option<bool> {
         // 删掉，所以拿它当判据是准的。
         "workbuddy" => {
             let mut ledger_seen = false;
-            for root in [harness_home("WORKBUDDY_HOME", ".workbuddy"),
+            for root in [harness_home("WORKBUDDY_CONFIG_DIR", ".workbuddy"),
                          harness_home("CODEBUDDY_CONFIG_DIR", ".codebuddy")] {
                 for ledger in ["plugins/installed_plugins.json", "settings.json"] {
                     match listed(root.join(ledger), &json_key()) {
@@ -417,8 +422,8 @@ mod tests {
         let cli = scratch.join(".codebuddy");
         fs::create_dir_all(app.join("plugins")).unwrap();
         fs::create_dir_all(cli.join("plugins")).unwrap();
-        let previous = (env::var("WORKBUDDY_HOME").ok(), env::var("CODEBUDDY_CONFIG_DIR").ok());
-        env::set_var("WORKBUDDY_HOME", &app);
+        let previous = (env::var("WORKBUDDY_CONFIG_DIR").ok(), env::var("CODEBUDDY_CONFIG_DIR").ok());
+        env::set_var("WORKBUDDY_CONFIG_DIR", &app);
         env::set_var("CODEBUDDY_CONFIG_DIR", &cli);
 
         // 两本账都在、都没有我们这条 → 没装
@@ -439,7 +444,7 @@ mod tests {
                   r#"{"enabledPlugins":{"agent-avatar@agent-avatar-local":true}}"#).unwrap();
         assert_eq!(installed_by_record("workbuddy"), Some(false));
 
-        match previous.0 { Some(v) => env::set_var("WORKBUDDY_HOME", v), None => env::remove_var("WORKBUDDY_HOME") }
+        match previous.0 { Some(v) => env::set_var("WORKBUDDY_CONFIG_DIR", v), None => env::remove_var("WORKBUDDY_CONFIG_DIR") }
         match previous.1 { Some(v) => env::set_var("CODEBUDDY_CONFIG_DIR", v), None => env::remove_var("CODEBUDDY_CONFIG_DIR") }
         let _ = fs::remove_dir_all(&scratch);
     }
