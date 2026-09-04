@@ -56,9 +56,15 @@ jobs:
         # build-bundle.sh 的自检要一个解释器，默认找 `python3`。Windows 上 `python3` 可能
         # 是那个 0 字节的 Microsoft Store 空壳（fetch-python.sh 开头的注释就在说这件事），
         # 所以用 setup-python 保证有的 `python`，别让它去撞空壳。
+        #
+        # 🔴 用 `env:` 而不是 `VAR=value cmd` 前缀：**windows runner 的默认 shell 是
+        # PowerShell**，它不认那种前缀，会把 `AGENT_AVATAR_PYTHON=python` 当成命令名找：
+        #   The term 'AGENT_AVATAR_PYTHON=python' is not recognized as a name of a cmdlet
+        env:
+          AGENT_AVATAR_PYTHON: python
         run: |
           bash ../connectors/fetch-python.sh
-          AGENT_AVATAR_PYTHON=python bash ../connectors/build-bundle.sh
+          bash ../connectors/build-bundle.sh
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
@@ -128,9 +134,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Connector bundle
+        env:
+          AGENT_AVATAR_PYTHON: python
         run: |
           bash ../connectors/fetch-python.sh
-          AGENT_AVATAR_PYTHON=python bash ../connectors/build-bundle.sh
+          bash ../connectors/build-bundle.sh
       - name: Build NSIS installer
         run: npm run tauri build
       - uses: actions/upload-artifact@v4
