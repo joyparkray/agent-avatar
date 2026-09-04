@@ -148,14 +148,25 @@ input[type="number"] {
 .lip-mark{position:absolute;top:-2px;bottom:-2px;width:2px;background:#d0455f;border-radius:1px}
 .lip-meter.open .lip-fill{background:linear-gradient(90deg,#7ad0a4,#39a0e0)}
 
-/* 关于页。整块居中：这一页只有一件事要说 —— 这是谁做的东西。 */
-.about-card { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; }
-.about-logo { border-radius: 18px; }
-.about-name { font-size: 17px; }
-.about-by, .about-copyright { margin: 0; font-size: 12px; opacity: .75; }
-.about-links { justify-content: center; gap: 12px; }
-.about-card .row { width: 100%; }
+/* 关于页。名片式：一块居中的署名，下面是更新，最后是第三方清单。
+   三段的字号依次递减 —— 视觉重量要跟「这一页想说的事」的重要性一致。 */
+.about-card { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; padding: 4px 0 2px; }
+.about-logo { border-radius: 18px; margin-bottom: 4px; }
+.about-name { font-size: 18px; letter-spacing: .2px; }
+.about-version { font-size: 11px; }
+/* 作者名单独一行、比应用名小一号 —— 它是这一页的主语，不该淹在链接里 */
+.about-author { margin: 8px 0 0; font-size: 15px; font-weight: 600; }
+.about-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px; margin: 6px 0 0; font-size: 12px; }
+/* 🔴 小红书只有号，没有能拼出个人主页的地址 —— 所以它是**可选中的文本**，不是链接。
+   做成假链接点了没反应，正是这一页刚犯过的那个错。 */
+.about-xhs { margin: 2px 0 0; font-size: 12px; opacity: .75; }
+.about-xhs code { padding: 1px 5px; border-radius: 4px; background: #0000000f; font-size: 12px; user-select: all; }
+.about-copyright { margin: 10px 0 0; font-size: 11px; opacity: .6; }
+.about-status:empty { display: none; }
+.about-status { margin: 8px 0 0; font-size: 11px; color: #b3261e; }
 /* 🔴 Live2D Cubism Core 是**专有许可**，不是 MIT —— 它的 EULA 要求署名，这一段是义务，
    不是客气话。清单里的许可名都照抄各自的 package.json / LICENSE，不凭印象写。 */
-.about-credits { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.9; opacity: .85; }
+.about-third h2 { font-size: 13px; }
+.about-third .hint { font-size: 11px; }
+.about-credits { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.85; opacity: .8; }
 .about-credits b { font-weight: 600; }

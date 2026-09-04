@@ -84,11 +84,26 @@ fn loopback_url(raw: &str) -> Option<&str> {
     (host == "localhost" || host == "127.0.0.1").then_some(raw)
 }
 
+/// 界面上印着的那几条外部地址。
+///
+/// 🔴 **白名单，不是过滤器。** 逐条写死，而不是「放行 https 开头的」—— 这个命令能让宿主
+/// 打开任意地址，而调用它的是一个渲染着我们控制不了的内容（模型名、harness 的报错原话）
+/// 的 webview。列表短、可读、改一条要动 Rust，正是想要的摩擦。
+///
+/// 加过一次坑：关于页刚做好时这里只有 Live2D 样例页，于是「源码仓库」点下去被拒，
+/// 而前端只 console.error —— 表现是「点了没反应」，一个没人能自己查出来的形状。
+const EXTERNAL_URLS: &[&str] = &[
+    "https://www.live2d.com/en/learn/sample/momose-hiyori/",
+    "https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_cn.html",
+    "https://github.com/joyparkray/agent-avatar",
+    "https://x.com/sorockxr",
+    "mailto:joyparkray@gmail.com",
+];
+
 #[tauri::command]
 fn open_in_browser(url: String) -> Result<(), String> {
-    const LIVE2D_SAMPLE_URL: &str = "https://www.live2d.com/en/learn/sample/momose-hiyori/";
-    let url = if url == LIVE2D_SAMPLE_URL { url.as_str() } else {
-        loopback_url(&url).ok_or_else(|| "only the Live2D sample page or loopback URLs are allowed".to_owned())?
+    let url = if EXTERNAL_URLS.contains(&url.as_str()) { url.as_str() } else {
+        loopback_url(&url).ok_or_else(|| format!("这个地址不在允许打开的名单里：{url}"))?
     };
     platform::open_in_default_browser(url)
 }
