@@ -135,6 +135,20 @@ def activity_from(payload):
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         return None
+    # 🔴 有些调用把真正的参数又包了一层 `arguments`。实机抓到（2026-09-04，Hermes）：
+    #     pre_tool_call tool=read_file tool_input_keys=['path']         ← 扁平
+    #     pre_tool_call tool=read_file tool_input_keys=['arguments']    ← 包了一层
+    # 同一个工具两种形状都出现过。包着的那种看不穿，详情就是空的 —— 而用户看到的是
+    # 「时灵时不灵」。dsh 那边是同一个字段名（工具参数的 JSON 字符串），所以两处形状一致。
+    # 只在它是**唯一的键**时才拆：那时候它必然是个信封，不可能是某个工具真叫 arguments 的参数。
+    if set(tool_input) == {"arguments"}:
+        inner = tool_input["arguments"]
+        if isinstance(inner, str):
+            try:
+                inner = json.loads(inner)
+            except Exception:
+                inner = None
+        tool_input = inner if isinstance(inner, dict) else {}
     for field in ACTIVITY_FIELDS:
         value = tool_input.get(field)
         if not isinstance(value, str) or not value.strip():

@@ -90,3 +90,27 @@ def test_hermes_names_its_path_fields_differently():
 def test_command_stays_out_even_next_to_the_new_path_fields():
     # 新加字段不能顺手把 command 带进来：命令行可能含 token
     assert field(command="curl -H 'Authorization: Bearer sk-xxx' https://x") is None
+
+
+def test_the_arguments_envelope_is_unwrapped():
+    """🔴 有些调用把真参数又包了一层 `arguments`。
+
+    实机抓到（2026-09-04，Hermes，只记字段名不记值）：
+
+        pre_tool_call tool=read_file tool_input_keys=['path']       ← 扁平
+        pre_tool_call tool=read_file tool_input_keys=['arguments']  ← 包了一层
+
+    **同一个工具两种形状都出现过**，所以用户看到的是「时灵时不灵」。
+    """
+    assert field(arguments='{"path": "/tmp/x/report.md"}') == "report.md"
+    assert field(arguments={"description": "整理今天的记录"}) == "整理今天的记录"
+    # 坏 JSON / 不是对象 → 没详情，但不能炸
+    assert field(arguments="{not json") is None
+    assert field(arguments=["a", "b"]) is None
+    # 信封里也照样排除 command
+    assert field(arguments='{"command": "curl -H \'Authorization: Bearer sk\' x"}') is None
+
+
+def test_arguments_is_only_an_envelope_when_it_is_alone():
+    # 真有工具的参数就叫 arguments、且还带别的键时，不能当信封拆
+    assert field(arguments="whatever", path="/tmp/a/b.md") == "b.md"
