@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0] — 2026-09-04
 
 Windows support, and the model handling needed to make third-party models work there.
 
@@ -41,8 +41,10 @@ Windows support, and the model handling needed to make third-party models work t
   writing without one, so concurrent hooks — parallel tool calls, subagents — could
   overwrite each other's bookkeeping and leave the avatar stuck in the wrong state.
 - Opening the model folder and external links use the platform file manager and browser.
-- Global audio capture is still macOS only; on Windows the app degrades to no lip sync
-  instead of failing to start.
+- Global audio capture works on both platforms, through the API each one actually has:
+  a Core Audio process tap on macOS (which can exclude the app's own output), WASAPI
+  loopback on Windows. Both emit the same two events, so lip sync behaves the same either
+  side; nothing in the front end knows which one is running.
 
 ### The avatar
 
@@ -125,6 +127,48 @@ Windows support, and the model handling needed to make third-party models work t
   autonomy was actually drawing from the double-click pool, so turning entries off for
   idle did nothing. It now uses the column you set.
 
+### Connectors
+
+Found by running the five harnesses' own command line tools on macOS for the first time —
+the install path had only ever been exercised on Windows.
+
+- Fixed: **installing a second time corrupted the hook command line**, and Claude Code then
+  refused every prompt with `A hook blocked your prompt` / `unexpected EOF while looking for
+  matching "`. Localisation strips the old interpreter off the front of the command by
+  splitting at the first space, and the interpreter lives under
+  `~/Library/Application Support/…` — the space in "Application Support" is unavoidable. The
+  first install was fine; the second one split the path in half and pasted the remainder back
+  as an argument. Windows has the same shape for a different reason (its first token is
+  deliberately unquoted), so both are handled: the interpreter is now split off by its quotes,
+  falling back to the space only when there are none.
+- Fixed: a plugin of the same name from **another marketplace** counted as ours. The check
+  matched the `agent-avatar@` prefix, so an entry left by an older install
+  (`agent-avatar@agent-avatar-local`) made the app say "installed" for something it could
+  neither manage nor remove — uninstalling then failed with the harness's own
+  `Plugin "agent-avatar@agent-avatar" is not installed in user scope`, and on Codex the
+  removal reported success while the row stayed "installed". The full id is matched now.
+- Fixed: **WorkBuddy was reported as not installed after installing successfully**, and its
+  plugin list did not show us at all. Two causes: its command line tool ships inside the
+  desktop app rather than on PATH, and it serves two products from one binary with a
+  separate configuration directory each — we registered into the one the standalone CLI
+  reads while the desktop app reads the other. Both directories are written now, and both
+  are read back. A plugin installed from a directory marketplace also never reaches
+  `installed_plugins.json`; only `settings.json` records it, and both files are consulted.
+- Fixed: the "say what it is doing" switch was **turned off at every start**. The reassertion
+  that keeps it alive across temp-directory cleanups read the setting before the settings
+  file had loaded, so it asserted the default — the switch stayed ticked while the connector
+  was told to stay quiet.
+- Fixed: the second line was **too brief to read**. It only existed between a tool starting
+  and finishing, which is 62–184 ms for a file read, against a 200 ms poll — measured on a
+  real session. The detail now outlives the tool by a second, and each one holds the line for
+  a second before the next replaces it.
+- The tool's command line is shown now. It had been excluded because a command can carry an
+  auth header, but that left the one tool that runs long enough to be read as the only one
+  with nothing to say. File contents and replacement strings are still never shown.
+- The bundled interpreter is no longer **copied three times** into the app. Its `bin/`
+  directory ships two symlinks beside the real binary, and the packager followed them: 35 MB
+  of duplicate on disk and 14 MB of download, for one 18 MB file stored three times.
+
 ### Uninstalling
 
 - The uninstaller asked whether to delete your data **on top of** the installer's own
@@ -161,6 +205,22 @@ Windows support, and the model handling needed to make third-party models work t
 - The built-in file server rejected any URL containing a percent escape, so models whose
   file names contain spaces or non-ASCII characters could be installed but never loaded.
   Escapes are now decoded before the path checks rather than being treated as suspect.
+
+### Known limitations
+
+- **Windows builds are not code signed.** SmartScreen will warn on first run; choose "More
+  info" then "Run anyway". macOS builds are signed with a Developer ID certificate and
+  notarised, so a normal double-click works there.
+- **Headless runs do not move the avatar** on Claude Code. `claude -p` fires no plugin hooks
+  at all — measured, not inferred — so nothing reaches the connector. Interactive sessions are
+  unaffected. WorkBuddy's headless mode does fire them and is handled.
+- **Hermes and dsh load their plugin inside their own process.** Installing or upgrading their
+  connector takes effect only after that process restarts — a new session in the same process
+  keeps running the old code. The other three spawn a fresh hook per event and pick up changes
+  immediately. The app says which one it is when you install.
+- The second line under the state is only as good as the field names it knows. Tools whose
+  arguments use a name it does not recognise show no detail; the state itself is unaffected.
+- Live2D models using Cubism 5.1 offscreen compositing cannot be rendered.
 
 ## [1.0.0] — 2026-08-29
 
