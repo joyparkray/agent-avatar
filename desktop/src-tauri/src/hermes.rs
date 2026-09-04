@@ -174,7 +174,12 @@ fn candidates(name: &str) -> Vec<PathBuf> {
 ///
 /// 🔴 开关不能只做在界面上。关掉的时候我们要的是「工具信息根本不被写进磁盘」，而写文件的
 /// 是 hook（一个独立的 Python 进程，读不到 app 的配置）。所以约定一个它认得的文件：
-/// 没有这个文件 = 开着；`{"activity": false}` = 关。对应 `state_machine.activity_allowed()`。
+/// **只有 `{"activity": true}` 才算开；文件不在、读不动、或者写着别的，一律算关。**
+/// 对应 `state_machine.activity_allowed()`，那边是 `.get("activity") is True`。
+///
+/// ⚠️ 这里原来写的是「没有这个文件 = 开着」，**和实现正好相反**。默认关是故意的，
+/// 而且默认值必须两边一致：这个开关的全部意义就是关着的时候工具名和文件名根本不落盘，
+/// 默认开会让从没要过这个功能的用户也在往磁盘上写。
 ///
 /// 写到**每一个候选临时目录**：hook 与 app 算出的 tmp 未必是同一个（`candidates` 那段注释
 /// 讲了为什么），只写一个的话开关可能对某些 harness 无效 —— 而那种失效是完全静默的。
@@ -320,7 +325,16 @@ fn fetch_path(base_url: &str, path: &str) -> Result<String, ()> {
     if authority.contains('/') { return Err(()); }
     let mut stream = authority.to_socket_addrs().map_err(|_| ())?.find(|a| a.ip().is_loopback()).and_then(|a| TcpStream::connect_timeout(&a, Duration::from_secs(2)).ok()).ok_or(())?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).map_err(|_| ())?;
-    write!(stream, "GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n").map_err(|_| ())?;
+    // 🔴 **整个请求一次写出去，不要用 `write!`。** `write_fmt` 会把格式串拆成好几段，
+    // 每段一次 `write` 系统调用（这里是 5 段）。服务端只要在中间那几段之前就把响应写完并
+    // 关掉连接，剩下几段就写在一个已关闭的 socket 上 —— Windows 回的是
+    // WSAECONNABORTED(10053) / WSAECONNRESET(10054)，表现是「刚连上、请求还没发完，对端没了」。
+    //
+    // 这正是 `hermes_status_accepts_only_a_real_hermes_probe` 在 Windows 上约 40% 变红的成因
+    // （见 WINDOWS-PORT.md WP2，此前记的是「根因未定位」）。POSIX 上同样的拆分很少出事，
+    // 因为小请求通常一段就走完、服务端那一次 read 也就拿全了。
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).map_err(|_| ())?;
     let mut response = String::new(); stream.read_to_string(&mut response).map_err(|_| ())?;
     let (headers, body) = response.split_once("\r\n\r\n").ok_or(())?;
     if !headers.lines().next().is_some_and(|line| line.contains(" 200 ")) { return Err(()); }
@@ -341,7 +355,20 @@ mod tests {
         thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut buffer = [0u8; 1024];
-            let _ = stream.read(&mut buffer);
+            // 🔴 **把请求头读干净再回应。** 只 read 一次的话，客户端剩下的字节还在路上，
+            // 而我们已经回应并关闭 —— 带着未读数据关闭，内核发的是 RST。客户端那边
+            // 表现为写失败（Windows 上 10053/10054）。真实服务端都是读完头再回应的。
+            let mut seen = Vec::new();
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        seen.extend_from_slice(&buffer[..count]);
+                        if seen.windows(4).any(|window| window == b"\r\n\r\n") { break; }
+                    }
+                    Err(_) => break,
+                }
+            }
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             // 必须先冲刷 + 半关闭 + 把客户端剩余请求读干净再放手：带着未读数据关闭 socket，
             // 内核发的是 RST 而不是 FIN，客户端会收到 ConnectionReset 且响应被截断（这条测试
@@ -432,16 +459,13 @@ mod tests {
         assert!(parse_listening_ports("COMMAND\n").is_empty());
     }
 
+    /// 🔴 **这条曾经在 Windows 上约 40% 变红，一度被 ignore 掉。** 根因不在测试里：
+    /// `fetch_path` 用 `write!` 发请求，而 `write_fmt` 把格式串拆成 5 次 `write` 系统调用；
+    /// 服务端只 read 一次就回应并关闭，客户端剩下几段便写在已关闭的 socket 上，
+    /// Windows 回 WSAECONNABORTED(10053) / WSAECONNRESET(10054)。
+    /// 两边都改了：客户端整包一次写出，服务端读完请求头再回应。
     #[test]
-    // Windows 上这条 10 次里约 4 次红，原因还没定位清楚：`fetch_path` 的 **write** 会以
-    // WSAECONNABORTED(10053) / WSAECONNRESET(10054) 失败，也就是刚 connect 完、请求还没发出去，
-    // 对端就没了。用独立最小复现验证过，把 serve_once 换成常驻服务端**也照样复现**
-    // （300 次里 3~10 次），所以不能简单归给「一次性服务端关太早」。
     //
-    // 先 ignore 只是为了不让 CI 常年红 —— **这条不是纯测试问题**：Windows 上 Hermes 音频
-    // 已降级成只认 AGENT_AVATAR_AUDIO_ENDPOINT，而那条路正是走 `hermes_status`/`fetch_path`。
-    // 也就是说「Windows 上 Hermes 能不能稳定连上」目前是未验证的。见 WINDOWS-PORT.md WP2。
-    #[cfg_attr(windows, ignore = "Windows 上间歇失败（约 40% 运行），根因未定位，见 WINDOWS-PORT.md WP2")]
     fn hermes_status_accepts_only_a_real_hermes_probe() {
         let hermes = serve_once(r#"{"version":"1.0","config_version":3,"gateway_running":true,"auth_required":false}"#);
         assert_eq!(hermes_status(&hermes).unwrap()["auth_required"], false);
