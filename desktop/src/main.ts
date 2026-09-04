@@ -283,9 +283,9 @@ function renderStatus(): void {
   // 用两个子节点而不是拼一个字符串：第二行要能单独设样式（更小、更淡），也要能整行省略。
   status.textContent = "";
   status.append(Object.assign(document.createElement("span"), { className: "status-line", textContent: first }));
-  // 开着详情就**总是**建第二行，哪怕它是空的：空行占住位置，第一行才不会被顶上去。
-  // 关着的时候连节点都不建 —— 那些用户拿到的应当是一模一样的老胶囊。
-  if (detailEnabled) {
+  // 只在真有详情文字时才变成大对话框：没有 doing 就是原来那个随内容伸缩的小胶囊，
+  // 第一行跟着小胶囊一起挪位置——比起常年占一条空行，更像真的在说话。
+  if (detailEnabled && doing) {
     status.dataset.detail = "";
     status.append(Object.assign(document.createElement("span"), { className: "status-doing", textContent: doing }));
   } else {

@@ -149,15 +149,20 @@ input[type="number"] {
 .lip-meter.open .lip-fill{background:linear-gradient(90deg,#7ad0a4,#39a0e0)}
 
 /* 关于页。名片式：一块居中的署名，下面是更新，最后是第三方清单。
-   三段的字号依次递减 —— 视觉重量要跟「这一页想说的事」的重要性一致。 */
-.about-card { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; padding: 4px 0 2px; }
+   三段的字号依次递减 —— 视觉重量要跟「这一页想说的事」的重要性一致。
+   整页行距比其余标签页紧一档，目的是让 460×640 的设置窗口一次装下、不用下拉——
+   缩小只作用在 [data-panel="about"] 范围内，不动其余标签页已经调好的间距。 */
+.about-card { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 2px; padding: 4px 0 2px; }
 .about-logo { border-radius: 18px; margin-bottom: 4px; }
+/* 应用名和版本号同一行——原来各占一行，用户报过「1.0.7 和晓之间距离太大」，两行占的
+   高度正是多出来的那截。 */
+.about-title { display: flex; align-items: baseline; justify-content: center; gap: 6px; }
 .about-name { font-size: 18px; letter-spacing: .2px; }
 .about-version { font-size: 11px; }
 /* 作者名单独一行、比应用名小一号 —— 它是这一页的主语，不该淹在链接里 */
-.about-author { margin: 8px 0 0; font-size: 15px; font-weight: 600; }
-.about-links { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 4px 14px; margin: 6px 0 0; font-size: 12px; }
-.about-links + .about-links { margin-top: 4px; }
+.about-author { margin: 6px 0 0; font-size: 15px; font-weight: 600; }
+.about-links { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 4px 14px; margin: 4px 0 0; font-size: 12px; }
+.about-links + .about-links { margin-top: 2px; }
 /* 邮箱跟在名字后面的括号里，**不做链接**：mailto 要有默认邮件客户端才有反应，
    没配的机器上点了什么都不会发生 —— 又是一个「点了没反应」。 */
 .about-mail { font-size: 12px; font-weight: 400; opacity: .6; }
@@ -165,12 +170,17 @@ input[type="number"] {
    做成假链接点了没反应，正是这一页刚犯过的那个错。 */
 .about-xhs { opacity: .75; }
 .about-xhs code { padding: 1px 5px; border-radius: 4px; background: #0000000f; font-size: 12px; user-select: all; }
-.about-copyright { margin: 10px 0 0; font-size: 11px; opacity: .6; }
+.about-copyright { margin: 6px 0 0; font-size: 11px; opacity: .6; }
 .about-status:empty { display: none; }
-.about-status { margin: 8px 0 0; font-size: 11px; color: #b3261e; }
+.about-status { margin: 6px 0 0; font-size: 11px; color: #b3261e; }
 /* 🔴 Live2D Cubism Core 是**专有许可**，不是 MIT —— 它的 EULA 要求署名，这一段是义务，
    不是客气话。清单里的许可名都照抄各自的 package.json / LICENSE，不凭印象写。 */
 .about-third h2 { font-size: 13px; }
 .about-third .hint { font-size: 11px; }
-.about-credits { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.85; opacity: .8; }
+.about-credits { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.6; opacity: .8; }
 .about-credits b { font-weight: 600; }
+/* 关于页专属的紧凑间距：其余标签页的 section 之间、h2 下方、hint 下方留的量是给
+   长表单用的，关于页三段本身短，原样搬过来只会把窗口撑到要下拉。 */
+.tab-panel[data-panel="about"] section + section { margin-top: 12px; padding-top: 10px; }
+.tab-panel[data-panel="about"] h2 { margin-bottom: 5px; }
+.tab-panel[data-panel="about"] .hint { margin-bottom: 6px; }

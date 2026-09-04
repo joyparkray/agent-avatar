@@ -29,7 +29,7 @@ def test_url_is_reduced_to_a_host():
 
 
 def test_long_values_are_cut_here_not_by_the_window():
-    long_query = "Rust Windows system audio loopback capture crate WASAPI 2026 cpal vs wasapi"
+    long_query = "Rust Windows system audio loopback capture crate WASAPI 2026 cpal vs wasapi vs miniaudio benchmarks"
     out = field(query=long_query)
     assert len(out) == ACTIVITY_LIMIT and out.endswith("\u2026")
 

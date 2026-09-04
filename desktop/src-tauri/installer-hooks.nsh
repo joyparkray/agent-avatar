@@ -18,22 +18,18 @@
     Goto done
   ${EndIf}
 
-  ; 设置和模型是**用户的东西**，默认留着。问一句，默认「否」—— 卸载器顺手带走用户内容
-  ; 是一种很容易被原谅、但不该犯的错。
-  MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 \
-    "同时删除你的设置和已导入的模型吗？$\r$\n$\r$\n选「否」的话它们会留在 %APPDATA% 下，重装后仍在。" \
-    /SD IDNO IDYES purge_data IDNO keep_data
-
-  purge_data:
+  ; 设置和模型是**用户的东西**，默认留着——但问这一句的不是我们：Tauri 自带的卸载确认页
+  ; 已经有一个「同时删除应用数据」的勾选框（un.ConfirmShow 建的，默认不勾，状态存在
+  ; $DeleteAppDataCheckboxState 里），用户在那一页已经回答过了。这里直接读那个变量，
+  ; 不再自己弹一个 MessageBox 问同一件事——问两遍，两次答案还可能对不上。
+  ${If} $DeleteAppDataCheckboxState = 1
     DetailPrint "正在移除连接器，并清除设置与模型…"
     nsExec::ExecToLog '"$INSTDIR\agent-avatar.exe" --uninstall --purge'
-    Pop $0
-    Goto done
-
-  keep_data:
+  ${Else}
     DetailPrint "正在从各个 agent 里移除连接器…"
     nsExec::ExecToLog '"$INSTDIR\agent-avatar.exe" --uninstall'
-    Pop $0
+  ${EndIf}
+  Pop $0
 
   done:
   ; 失败不阻断卸载：用户要的是把这个 app 弄走，而收不回来的那几家，

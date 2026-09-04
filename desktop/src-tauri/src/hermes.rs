@@ -30,7 +30,7 @@ fn normalize_semantic_state(value: &Value) -> Option<Value> {
     });
     // 「它具体在干嘛」的一行。挑白名单是 Python 侧的事（见 state_machine.activity_from），
     // 这里只负责**别让它无限长** —— 这个字段最终会被贴进状态栏，而状态栏没有宽度上限。
-    // 上游已经截到 40 字符，这条是防「快照被手改过 / 版本不一致」的第二道。
+    // 上游已经截到 80 字符（两行的实际容量），这条是防「快照被手改过 / 版本不一致」的第二道。
     let doing = value.get("doing").and_then(Value::as_str)
         .map(|text| text.chars().take(80).collect::<String>());
     Some(serde_json::json!({ "state": state, "sequence": sequence, "token": token, "reaction": reaction, "doing": doing }))
@@ -321,7 +321,15 @@ mod tests {
     fn normalizes_flat_state_and_rejects_star_office_schema() {
         // 自带 hook 的扁平快照
         let flat = serde_json::json!({ "state": "working", "sequence": 3, "detail": "x" });
-        assert_eq!(normalize_semantic_state(&flat).unwrap(), serde_json::json!({ "state": "working", "sequence": 3, "token": null, "reaction": null }));
+        assert_eq!(normalize_semantic_state(&flat).unwrap(), serde_json::json!({ "state": "working", "sequence": 3, "token": null, "reaction": null, "doing": null }));
+        // 详情那一行：有就透传，长度在这里再兜一道（上游已截到 40 字符）
+        let doing = serde_json::json!({ "state": "executing", "sequence": 5, "doing": "Run the test suite" });
+        assert_eq!(normalize_semantic_state(&doing).unwrap()["doing"], serde_json::json!("Run the test suite"));
+        let long = serde_json::json!({ "state": "executing", "sequence": 5, "doing": "x".repeat(300) });
+        assert_eq!(normalize_semantic_state(&long).unwrap()["doing"].as_str().unwrap().chars().count(), 80);
+        // 不是字符串的当作没有 —— 快照被手改过时不该把一个对象贴到状态栏上
+        let bogus = serde_json::json!({ "state": "executing", "sequence": 5, "doing": { "text": "x" } });
+        assert_eq!(normalize_semantic_state(&bogus).unwrap()["doing"], serde_json::Value::Null);
         // reaction 透传：合法形状（kind+sequence）带出，缺省/非法为 null（叠加层，不影响基态）
         let with_reaction = serde_json::json!({ "state": "writing", "sequence": 4, "reaction": { "kind": "blocked", "sequence": 2 } });
         assert_eq!(normalize_semantic_state(&with_reaction).unwrap()["reaction"], serde_json::json!({ "kind": "blocked", "sequence": 2, "at": 0.0 }));

@@ -1080,9 +1080,29 @@ fn app_data_dir() -> PathBuf {
 ///
 /// 这条路径**不解析资源目录**（理由同 `remove_all_headless`：app 可能已经删了一半），
 /// 数据目录则是照 Tauri 的规则自己算的 —— 那时候已经没有 AppHandle 可用了。
+/// 「卸载前本来接着哪几家」。保留数据的卸载会写它，下次装回来时照着恢复。
+///
+/// 🔴 放在数据目录**根上**，不是 `connectors/` 里面 —— 那个目录几行之后就被删了。
+/// 选了清除数据的话整个数据目录都没了，这个文件跟着消失，于是「全清」仍然是全清。
+fn restore_list_path() -> PathBuf {
+    app_data_dir().join("connectors-restore.json")
+}
+
 pub fn uninstall_everything_of_ours(purge: bool) -> String {
+    // 先记下来，再动手 —— remove_all_headless 跑完就查不出原来装了哪几家了
+    let connected: Vec<&str> = HARNESSES.into_iter()
+        .filter(|harness| crate::connectors::is_installed(harness))
+        .collect();
     let mut report = remove_all_headless();
     let data = app_data_dir();
+
+    // 🔴 **保留数据就该连配置一起保留。** 卸载必须把五家里的登记收走（那些 hook 指向一个
+    // 就要消失的解释器），但用户选的是「留着我的东西」—— 装回来还要一家家重点一遍「安装」，
+    // 那句「保留」就没兑现。记下名单，reconcile 时照着恢复。
+    if !purge && !connected.is_empty() {
+        let _ = fs::create_dir_all(&data);
+        let _ = fs::write(restore_list_path(), json!({ "harnesses": connected }).to_string());
+    }
 
     // 我们自己的缓存无论如何都删：21 MB 的解释器副本，留着没有任何意义
     let ours = data.join("connectors");
@@ -1186,6 +1206,27 @@ pub fn reconcile_connectors(app: tauri::AppHandle) -> Result<Value, String> {
     let mut refreshed = Vec::new();
     let mut failed = Vec::new();
 
+    // 上一次卸载（保留数据）记下的那份名单，装回来时照着恢复。消费一次就删掉 ——
+    // 留着的话，一家永远装不上的 harness 会每次打开设置都重试一遍。
+    let restore: Vec<String> = fs::read_to_string(restore_list_path()).ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|value| value.get("harnesses").and_then(Value::as_array).cloned())
+        .map(|list| list.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
+    if !restore.is_empty() { let _ = fs::remove_file(restore_list_path()); }
+    let mut restored = Vec::new();
+    for harness in HARNESSES {
+        if !restore.iter().any(|name| name == harness) { continue; }
+        if crate::connectors::is_installed(harness) { continue; }
+        match lay_out_tree(&app).and_then(|(tree, python)| {
+            let hermes_dir = working_root(&app)?.join("hermes-repo");
+            install_into(&tree, &python, harness, &hermes_dir)
+        }) {
+            Ok(_) => restored.push(json!({ "harness": harness })),
+            Err(error) => failed.push(json!({ "harness": harness, "error": error })),
+        }
+    }
+
     for harness in HARNESSES {
         if !crate::connectors::is_installed(harness) { continue; }
         // 装机记录里记的是**我们装进去的那一版**，而不是它上报的版本 —— 上报要等下一个
@@ -1204,7 +1245,7 @@ pub fn reconcile_connectors(app: tauri::AppHandle) -> Result<Value, String> {
             Err(error) => failed.push(json!({ "harness": harness, "error": error })),
         }
     }
-    Ok(json!({ "version": bundled, "refreshed": refreshed, "failed": failed }))
+    Ok(json!({ "version": bundled, "refreshed": refreshed, "restored": restored, "failed": failed }))
 }
 
 #[tauri::command(async)]
@@ -1221,13 +1262,38 @@ pub fn uninstall_connector(app: tauri::AppHandle, harness: String) -> Result<Val
 #[cfg(test)]
 mod tests {
     use super::{command_line_path, edit_dsh_registration, file_url, harness_relative, joined,
-                python_relative, rewrite_hooks_json, rewrite_index_mjs, smoke_test};
+                python_relative, restore_list_path, rewrite_hooks_json, rewrite_index_mjs, smoke_test};
     use std::{env, fs, path::PathBuf, sync::{Mutex, MutexGuard}};
 
     /// 🔴 改环境变量的测试必须串行。cargo 默认并行跑，而 `DSH_HOME` 是**进程级**的 ——
     /// 三条测试各自设一遍再还原，交错起来就会有人读到别人的值。
     /// 症状是随机失败（同一份代码，上一轮全绿，这一轮红一条）。
     static ENVIRONMENT: Mutex<()> = Mutex::new(());
+
+    /// 🔴 恢复名单必须落在**数据目录根上**，不能在 `connectors/` 里面 —— 卸载几行之后
+    /// 就把那个目录整个删了，写在里面等于写完就没。这条测试钉住的是位置，不是格式。
+    #[test]
+    fn restore_list_survives_the_directory_that_uninstall_deletes() {
+        let guard = ENVIRONMENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = env::var("APPDATA").ok();
+        let root = env::temp_dir().join(format!("agent-avatar-restore-{}", std::process::id()));
+        env::set_var("APPDATA", &root);
+
+        let path = restore_list_path();
+        let doomed = path.parent().unwrap().join("connectors");
+        assert!(!path.starts_with(&doomed), "{} 在卸载会删掉的目录里", path.display());
+        assert_eq!(path.file_name().unwrap(), "connectors-restore.json");
+
+        // 真写一次再删掉那个目录，确认名单还在
+        fs::create_dir_all(&doomed).unwrap();
+        fs::write(&path, r#"{"harnesses":["claude-code"]}"#).unwrap();
+        fs::remove_dir_all(&doomed).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"harnesses":["claude-code"]}"#);
+
+        fs::remove_dir_all(&root).ok();
+        match previous { Some(value) => env::set_var("APPDATA", value), None => env::remove_var("APPDATA") }
+        drop(guard);
+    }
 
     fn with_dsh_home(dir: &PathBuf) -> (MutexGuard<'static, ()>, Option<String>) {
         let guard = ENVIRONMENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());

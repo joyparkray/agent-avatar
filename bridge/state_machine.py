@@ -85,10 +85,12 @@ def detail_for(state, label):
 # "What exactly is it doing" — one short line, from the payload we already have
 # ---------------------------------------------------------------------------
 
-# The status pill is ~280 px wide at 12 px, which is about 46 latin characters. The
-# state label takes the line above, so the whole budget is this line's — but a search
-# query can be 75 characters, so cap it here rather than letting the UI clip it.
-ACTIVITY_LIMIT = 40
+# The status pill's detail row wraps up to *two* lines (CSS -webkit-line-clamp:2, see
+# style.css) at ~236 px usable width and 11 px font — about 37 latin characters per
+# line, ~74-80 across both. The state label takes the line above, so the whole budget
+# is this row's — but a search query can be 75 characters, so cap it here rather than
+# letting the UI clip it. Matches the Rust-side secondary cap in hermes.rs (`take(80)`).
+ACTIVITY_LIMIT = 80
 
 # 带详情的那几档。idle / writing / awaiting 没有工具在跑，挂着上一个只会误导。
 ACTIVITY_STATES = frozenset({"executing", "researching", "reviewing", "syncing", "error"})
