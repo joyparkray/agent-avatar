@@ -44,7 +44,8 @@ def main():
             # never announced. Hermes's "dequeue the oldest" rule would evict a
             # subagent that is genuinely still running.
             update(translated, WORKBUDDY["label"], orphan_subagent_stop=ORPHAN_IGNORE,
-                   harness=WORKBUDDY["id"])
+                   harness=WORKBUDDY["id"],
+                   lazy_turns=WORKBUDDY.get("lazy_turns", False))
     except Exception as exc:
         diagnostic("hook event ignored: " + str(exc), WORKBUDDY["id"])
     return 0  # never return 2 — see the module docstring

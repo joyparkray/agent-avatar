@@ -476,7 +476,7 @@ ORPHAN_DEQUEUE_OLDEST = "dequeue-oldest"
 ORPHAN_IGNORE = "ignore"
 
 
-def apply_event(data, payload, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST):
+def apply_event(data, payload, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST, lazy_turns=False):
     event = payload.get("hook_event_name")
     current_session_id = session_id(payload, data)
     sessions = data.setdefault("sessions", {})
@@ -534,6 +534,40 @@ def apply_event(data, payload, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST):
         else:
             session["phase"] = "writing"
     elif event == "pre_tool_call":
+        # 🔴 **有的 harness 根本不发 `pre_llm_call`。** 那样 `turns` 一直是空的，而
+        # `display_state` 的防御规则会把「所属轮次不在 turns 里」的工具全部跳过 ——
+        # 于是每一次工具调用都被当成孤儿丢掉，形象停在 writing，详情那一行永远不出现。
+        #
+        # 2026-09-04 在 Windows 上实测 WorkBuddy 无头模式（`codebuddy -p`），
+        # 抓到的完整事件流里没有 UserPromptSubmit：
+        #
+        #     SessionStart → PreToolUse → PreToolUse → PostToolUse → PostToolUse → Stop
+        #
+        # 对照实验（同一条工具载荷、同一个 session_id）：只发 PreToolUse 得到
+        # `state=writing doing=None`，前面补一个 UserPromptSubmit 就变成
+        # `state=researching doing=README.md`。
+        #
+        # 所以这里补登记：**工具在跑，就说明它那一轮是活的**，这是事实，不是猜测。
+        # 已经登记过的不动，因此走正常流程（pre_llm_call 先到）的几家行为一字不变。
+        #
+        # 🔴 **但这不能对所有人默认打开。** 「没announce过的轮次」和「已经结束的轮次上
+        # 残留的 active 条目」在 pre_tool_call 这一刻**形状完全一样** —— 后者正是
+        # `test_stale_active_on_dead_turn_never_escalates_to_executing` 守着的那个
+        # 「永久卡执行态」的根源。光看事件分不出来，所以判据只能来自**带外知识**：
+        # 这家的适配器知不知道自己的 harness 会不会先announce轮次。于是它是一个
+        # 逐家的开关，和 `turn_fields` / `reset_sources` 那些差异放在同一张表里
+        #（`pascal_events.py`）。
+        #
+        # 目前只有 WorkBuddy 打开 —— 那是**实测**的（见上面的事件流）。claude-code 与
+        # codex 的无头模式没量过（本机 OAuth 过期 / 额度用尽），要开之前先照上面的办法
+        # 抓一次事件流：没有 UserPromptSubmit 就该开。
+        #
+        # `llm_active` 留 False —— 我们**没有**被告知模型在思考，不能替它宣称。写成 True 的话，
+        # 工具跑完后 `post_tool_call` 会把 phase 算成 writing 而不是 idle，那是另一种撒谎。
+        # 轮次的清理仍然照旧：post_llm_call / on_session_end 会把它 pop 掉。
+        lazy_turn_id = turn_id(payload) if lazy_turns else None
+        if lazy_turn_id and lazy_turn_id not in turns:
+            turns[lazy_turn_id] = {"llm_active": False, "review": False}
         call_id = explicit_correlation_id(payload)
         if call_id is None:
             counter = int(session.get("fallback_counter", 0)) + 1
@@ -790,13 +824,17 @@ def release_lock(handle):
         pass
 
 
-def update(payload, label, audio=None, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST, harness=None):
+def update(payload, label, audio=None, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDEST, harness=None,
+           lazy_turns=False):
     """Run one event through the state machine and persist the result.
 
     `label`: the subject written into `detail` ("Hermes", "Claude Code", ...).
     `audio`: the audio block this harness wants to pass along; `None` means keep the
              previous value rather than overwrite it.
     `harness`: decides which snapshot file is written (see `state_path`).
+    `lazy_turns`: this harness may send tool events without announcing the turn first
+             (no pre_llm_call). See the `pre_tool_call` comment in `apply_event`.
+             Off unless measured on the real CLI.
     """
     path = state_path(harness)
     sessions_path = path + ".sessions"
@@ -807,7 +845,7 @@ def update(payload, label, audio=None, orphan_subagent_stop=ORPHAN_DEQUEUE_OLDES
         if data.get("schema_version") != STATE_SCHEMA_VERSION:
             data = default_sessions.copy()
             data["sessions"] = {}
-        apply_event(data, payload, orphan_subagent_stop)
+        apply_event(data, payload, orphan_subagent_stop, lazy_turns)
         state = display_state(data)
         previous = read_json(path, {})
         sequence = previous.get("sequence", 0)

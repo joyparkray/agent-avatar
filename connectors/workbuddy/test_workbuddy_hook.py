@@ -93,3 +93,30 @@ def test_never_exits_two_on_garbage(tmp_path):
                                 capture_output=True, env=env, check=False)
         assert result.returncode == 0, payload
         assert result.stdout == "", "stdout 必须为空（§7.4）"
+
+def test_headless_stream_without_a_prompt_event_still_shows_the_tool(tmp_path):
+    """无头模式（`codebuddy -p`）**不发 UserPromptSubmit**，工具事件照样要算数。
+
+    🔴 这条钉的是 2026-09-04 在 Windows 上实测到的真实事件流 —— 给已装的 hook 加埋点抓的：
+
+        SessionStart → PreToolUse → PreToolUse → PostToolUse → PostToolUse → Stop
+
+    没有 UserPromptSubmit，于是 `turns` 一直是空的，而 display_state 的防御规则会把
+    「所属轮次不在 turns 里」的工具全部跳过：形象整轮停在 writing，状态栏第二行
+    （doing）永远不出现。修法是 WORKBUDDY 配置里的 `lazy_turns` —— 工具在跑就说明
+    它那一轮是活的，由 pre_tool_call 自己补登记。
+    """
+    p = tmp_path / "state.json"
+    # 详情默认是关的（隐私开关，见 state_machine.activity_allowed）——
+    # 开关文件与状态文件同目录
+    (tmp_path / "agent-avatar-options.json").write_text('{"activity": true}', encoding="utf-8")
+
+    send(p, "SessionStart", source="startup")
+    snapshot = send(p, "PreToolUse", tool_name="Read",
+                    tool_input={"file_path": "C:/repo/README.md"}, tool_use_id="call_1")
+    assert snapshot["state"] == "researching", snapshot
+    # 详情那一行正是这个缺陷让用户看不到的东西
+    assert snapshot["doing"] == "README.md", snapshot
+
+    assert send(p, "PostToolUse", tool_name="Read", tool_use_id="call_1")["state"] == "idle"
+    assert send(p, "Stop")["state"] == "idle"

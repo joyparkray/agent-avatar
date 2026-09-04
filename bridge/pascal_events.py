@@ -164,6 +164,20 @@ WORKBUDDY = {
     # At startup the session is new anyway, so not resetting costs nothing; the source
     # that genuinely needs a reset is clear.
     "reset_sources": ("clear",),
+    # 🔴 **无头模式下它根本不发 UserPromptSubmit。** 上面那条讲的是同一个症状的另一个成因
+    # （SessionStart 被当成 reset，把刚开始的轮次抹掉）；那个修好之后，`codebuddy -p`
+    # 这条路仍然坏着 —— 因为它压根没有那一步。2026-09-04 在 Windows 上给已装的 hook
+    # 加埋点，抓到的完整事件流是：
+    #
+    #     SessionStart → PreToolUse → PreToolUse → PostToolUse → PostToolUse → Stop
+    #
+    # 对照（同一条工具载荷、同一个 session_id）：只发 PreToolUse 得到
+    # `state=writing doing=None`；前面补一个 UserPromptSubmit 就是
+    # `state=researching doing=README.md`。
+    #
+    # 于是打开这个开关：工具事件自己把轮次补登记上。交互模式下 UserPromptSubmit 照样先到，
+    # 轮次已经在了，这个开关不会生效 —— 所以两种模式共用一份配置是安全的。
+    "lazy_turns": True,
     "events": dict(_BASE_EVENTS,
                    PostToolUseFailure="post_tool_call",
                    PermissionDenied="post_tool_call"),
